@@ -1,0 +1,53 @@
+# Follow-up implementation plan
+
+## Milestone 1: shared foundations
+
+- Introduce library modules for IDs, `CommunityConfig`, agent specifications, operation states, and stable API errors.
+- Add SQLite WAL storage, numbered migrations, repository interfaces, audit records, and idempotency keys.
+- Add direct `buzz-core` and `buzz-ws-client` dependencies at the same reviewed Buzz revision.
+- Wire `scripts/check-buzz-upstream.sh` into weekly CI once the repository credential has GitHub workflow-write scope.
+- Implement the upstream provider-wire fixture suite as a compatibility gate; prepare the provider-protocol extraction proposal.
+- Add the runtime catalog with digest-pinned Sprig and Codex entries.
+
+Exit: migrations and repositories pass restart/idempotency tests; dependency and fixture checks are green.
+
+## Milestone 2: disposable vertical slice
+
+- Configure one community through its authoritative relay URL.
+- Generate a disposable owner and agent identity; issue NIP-OA through `buzz-sdk`.
+- Implement constrained signer IPC for the one authorize-agent operation.
+- Implement `ServiceSpec`, deployment receipt, narrow helper protocol, and local Compose driver.
+- Build the first Codex runtime image and run the 15-second ACP preflight.
+- Deploy one agent, observe expected signed presence within 30 seconds, restart Server, and adopt the same service and identity.
+
+Exit: no duplicate identity or service across injected restart points; the agent is reachable through the relay.
+
+## Milestone 3: lifecycle API
+
+- Add authenticated Unix-socket and TLS/NIP-98 adapters over one application service.
+- Implement create, get/list, update, enable, disable, logs, recoverable delete, purge, and durable operation polling.
+- Add fixed administrator and draft-submitter authority classes and redacted audit attribution.
+- Add optional drafts that promote through the same direct-create service.
+
+Exit: full lifecycle contract passes API, reconciliation, retention, and audit tests.
+
+## Milestone 4: provider compatibility
+
+- Add trusted `buzz-backend-*` discovery and staged `info`/`deploy` invocation.
+- Verify the full upstream fixture corpus and explicit unsupported lifecycle behavior.
+- Reuse or consume the proposed upstream provider-protocol crate when available.
+
+Exit: the Kubernetes reference provider and a fake provider pass the compatibility suite without receiving secrets before negotiation.
+
+## Milestone 5: production hardening
+
+- Replace disposable owner custody with reviewed encrypted import and KMS envelope encryption.
+- Exercise encrypted backup/restore, owner rotation, reauthorization, retention, and purge.
+- Add resource/network restrictions, artifact provenance verification, upgrades/rollback, monitoring, and alerts.
+- Add additional runtime-specific images only through catalog entries and readiness fixtures.
+
+Exit: production threat-model checklist and disaster-recovery exercise pass.
+
+## Work ordering
+
+Milestones are sequential at their acceptance boundaries, but schema/API work, signer IPC, Compose driver, and runtime-image work can proceed in parallel once Milestone 1 types and fixtures are stable.

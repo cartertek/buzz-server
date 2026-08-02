@@ -27,7 +27,7 @@ such as Discord. They are explicitly outside the first implementation milestone.
 
 ## Status
 
-Architecture and planning scaffold only. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
-[docs/COMPATIBILITY_WITH_BUZZ.md](docs/COMPATIBILITY_WITH_BUZZ.md), and
-[docs/MVP_PLAN.md](docs/MVP_PLAN.md).
+Architecture, planning, and executable Phase 0 compatibility scaffold. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
+[docs/COMPATIBILITY_WITH_BUZZ.md](docs/COMPATIBILITY_WITH_BUZZ.md),
+[docs/MVP_PLAN.md](docs/MVP_PLAN.md), [docs/PHASE_0_PROOFS.md](docs/PHASE_0_PROOFS.md), and [docs/FOLLOW_UP_IMPLEMENTATION_PLAN.md](docs/FOLLOW_UP_IMPLEMENTATION_PLAN.md).
 

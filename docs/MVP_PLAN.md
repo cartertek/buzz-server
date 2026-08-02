@@ -6,9 +6,9 @@ Create, verify, update, disable, re-enable, and delete an always-on server-hoste
 Buzz agent from a name and day-to-day purpose, without requiring Buzz Desktop or
 a client laptop to remain online.
 
-## Phase 0 — protocol and threat-model spike
+## Phase 0 — protocol and threat-model spike (completed)
 
-- depend directly on pinned `buzz-core`, `buzz-sdk`, and `buzz-ws-client`;
+- depend directly on pinned `buzz-sdk` and identify the first production call sites for `buzz-core` and `buzz-ws-client`;
 - inventory Tauri-free managed-agent logic suitable for an upstream shared crate;
 - document the provider v1 request/response contract at the pinned Buzz commit;
 - prove Desktop/Server NIP-OA parity with shared fixtures;
@@ -18,7 +18,7 @@ a client laptop to remain online.
 - decide naming/licensing/upstream relationship;
 - define readiness and deletion-retention acceptance criteria.
 
-Exit: reviewed decisions plus an executable disposable signing compatibility test.
+Exit satisfied at Buzz revision `7ff5fc31895efe6265a379d01637c8ee301872e5`; see [PHASE_0_PROOFS.md](PHASE_0_PROOFS.md).
 
 ## Phase 1 — local administrative control plane
 
@@ -68,14 +68,9 @@ identity or service creation.
 - Discord and other bridges as clients of the API/event system;
 - broader headless Buzz Desktop functionality.
 
-## Remaining Phase 0 proofs
+## Phase 0 outputs
 
-1. Pin and audit current Buzz `main`, including the Kubernetes provider, and record the first reviewed revision.
-2. Decide the exact Tauri-free shared-crate boundary and whether extraction lands upstream before or alongside Server work.
-3. Choose one multi-runtime image or runtime-specific images after measuring the existing runtime packaging.
-4. Define the exact harness-level readiness probe and timeout from an executable vertical slice.
-5. Verify Desktop-compatible authorization renewal and revocation behavior against the pinned Buzz implementation.
-6. Decide the upstream/licensing relationship before publishing shared changes.
+The six proofs, decisions, source evidence, and measured follow-up seams are recorded in [PHASE_0_PROOFS.md](PHASE_0_PROOFS.md). Implementation milestones and acceptance boundaries are recorded in [FOLLOW_UP_IMPLEMENTATION_PLAN.md](FOLLOW_UP_IMPLEMENTATION_PLAN.md).
 
 ## Quality gates
 
