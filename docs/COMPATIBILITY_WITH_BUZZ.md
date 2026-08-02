@@ -63,9 +63,9 @@ official files inspected at Buzz commit `b1b283cd4c7f926e12eeee8ae1f38c7471922b1
 6. Support generic ACP runtime configuration while working toward a shared
    canonical runtime catalog instead of maintaining a drifting copy.
 7. Keep Buzz Server deployable independently of the relay host.
-8. Support multiple explicit relay connections as isolated client workspaces,
-   not as a multi-tenant control-plane namespace. Scope every agent and all
-   operational state by connection, following Desktop's community boundary.
+8. Support multiple explicit communities as isolated client workspaces, not as a
+   multi-tenant control-plane namespace. Scope every agent and all operational
+   state by Server-local `community_id`, following Desktop's community boundary.
 
 ## Sources
 

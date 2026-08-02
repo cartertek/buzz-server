@@ -11,6 +11,6 @@ MVP to Desktop/Tauri, and leaves bridges as independent API/event clients.
 
 Buzz Server may run anywhere with network reachability to its configured relays.
 It neither shares relay storage nor assumes host co-location. It supports multiple
-explicit relay connections as isolated client workspaces, following Desktop's
-community boundary; this is not a Buzz Server multi-tenancy abstraction.
+explicit communities as isolated client workspaces, following Desktop's boundary;
+this is not a Buzz Server multi-tenancy abstraction.
 

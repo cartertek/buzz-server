@@ -31,13 +31,12 @@ The relay remains authoritative for Buzz events, channels, membership, and share
 conversation state. Buzz Server's registry is authoritative only for operational
 desired state, deployment receipts, secrets references, and reconciliation.
 
-Buzz Server supports multiple explicitly configured relay connections, matching
-Buzz Desktop's multiple-community model. A connection binds a relay URL to an
-owner identity/key reference. It is a client workspace boundary, not a Buzz
-Server tenant: all agents, drafts, operations, credentials, workspaces, caches,
-and background jobs are scoped by immutable `connection_id`. Cross-connection
-behavior requires an explicit future bridge with separate authorization and
-audit. Whether several URLs reach one physical relay is transparent to Server.
+Buzz Server supports multiple explicitly configured communities, matching Buzz
+Desktop's model. Each community has a Server-local UUID, display name, one relay
+URL, and an owner identity/key reference. It is a client workspace boundary, not
+a Buzz Server tenant: agents, drafts, operations, credentials, workspaces,
+caches, and jobs are scoped by immutable `community_id`. Cross-community behavior
+requires an explicit future bridge with separate authorization and audit.
 
 ## Terminology
 
@@ -169,8 +168,9 @@ GET    /v1/agent-drafts/{id}
 POST   /v1/agent-drafts/{id}/deploy
 ```
 
-Every agent and draft request names a `connection_id`; the server never relies
-on a process-global active relay.
+Every agent and draft request names a `community_id`; the server never relies on
+a process-global active community. The ID is local control-plane metadata and is
+never sent as a Buzz/Nostr protocol field.
 
 Ordinary callers receive product-level controls. Arbitrary environment variables,
 mounts, signing operations, and raw supervisor access are privileged administration.
@@ -190,9 +190,8 @@ Host C..N: managed agents
 
 Initial topology colocates Host A and B. Buzz Server and the signer should run as
 separate hardened system services. The relay project and agent Compose project
-remain separate. Co-location is only a topology choice. Multiple relay
-connections may run concurrently, and each agent receives only its connection's
-relay URL and authorization. Compose project/service names, secret paths,
+remain separate. Co-location is only a topology choice. Multiple communities may run concurrently, and each agent receives only its
+community's relay URL and authorization. Compose project/service names, secret paths,
 workspace paths, runtime state, and networks are isolated per agent and
 connection.
 

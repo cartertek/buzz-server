@@ -13,7 +13,7 @@ a client laptop to remain online.
 - reproduce owner authorization generation with disposable identities;
 - define the server-native create request and exact NIP-OA signing policy;
 - specify Unix-socket and remote TLS API authentication/authorization profiles;
-- define connection-scoping and cross-connection isolation invariants;
+- define community scoping and cross-community isolation invariants;
 - decide naming/licensing/upstream relationship;
 - define readiness and deletion-retention acceptance criteria.
 
@@ -24,7 +24,7 @@ Exit: reviewed decisions plus an executable disposable signing compatibility tes
 - transport-independent authenticated API and companion CLI, with Unix socket as
   an optional same-host transport and TLS for remote administration;
 - SQLite registry behind a repository interface;
-- multiple explicit, isolated relay connections keyed by `connection_id`;
+- multiple explicit, isolated communities keyed by Server-local `community_id`;
 - durable operation state machine and reconciliation loop;
 - server-native agent key generation;
 - separate disposable-key signer service;
