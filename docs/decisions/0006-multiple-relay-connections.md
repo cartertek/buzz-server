@@ -3,16 +3,18 @@
 Status: accepted
 
 Buzz Server supports multiple explicitly configured communities, matching Buzz
-Desktop. Each has a Server-local UUID `community_id`, display name, one relay URL,
-and an owner identity/key reference.
+Desktop. Each `CommunityConfig` has a Server-local UUID `id`, display name, one
+authoritative `relay_url`, and an owner identity/key reference. Foreign keys use
+`community_config_id`.
 
 Agents, drafts, operations, credentials, provider configuration, workspaces,
 caches, jobs, logs, and runtime state are community-scoped. There is no global
 active community and no implicit cross-community data flow. Cross-relay automation
 requires a separately authorized and audited bridge.
 
-The ID is local control-plane metadata, not the relay's internal database ID and
-not a Buzz/Nostr wire field. One physical relay serving multiple communities is
+The relay URL is the shared locator used by multiple clients. The configuration
+ID is local control-plane metadata, not the relay's internal database ID and not
+a Buzz/Nostr wire field. One physical relay serving multiple communities is
 represented by their distinct authoritative URLs. Independent relays are likewise
 separate communities. Buzz Server does not merge several relay URLs into one
 community; failover or federation requires a future explicit protocol/feature.

@@ -32,11 +32,13 @@ conversation state. Buzz Server's registry is authoritative only for operational
 desired state, deployment receipts, secrets references, and reconciliation.
 
 Buzz Server supports multiple explicitly configured communities, matching Buzz
-Desktop's model. Each community has a Server-local UUID, display name, one relay
-URL, and an owner identity/key reference. It is a client workspace boundary, not
-a Buzz Server tenant: agents, drafts, operations, credentials, workspaces,
-caches, and jobs are scoped by immutable `community_id`. Cross-community behavior
-requires an explicit future bridge with separate authorization and audit.
+Desktop's model. A `CommunityConfig` has a Server-local UUID `id`, display name,
+one authoritative `relay_url`, and an owner identity/key reference. The relay URL
+is the shared community locator used by all clients; the local ID only identifies
+Server's saved configuration and is stored as `community_config_id` in foreign
+keys. Agents, drafts, operations, credentials, workspaces, caches, and jobs are
+scoped to that configuration. Cross-community behavior requires an explicit
+future bridge with separate authorization and audit.
 
 ## Terminology
 
@@ -168,9 +170,10 @@ GET    /v1/agent-drafts/{id}
 POST   /v1/agent-drafts/{id}/deploy
 ```
 
-Every agent and draft request names a `community_id`; the server never relies on
-a process-global active community. The ID is local control-plane metadata and is
-never sent as a Buzz/Nostr protocol field.
+Every agent and draft request names a `community_config_id`; the server never
+relies on a process-global active community. The API exposes configurations as
+`/v1/communities/{id}`. The relay URL—not this local ID—selects the shared
+community on the Buzz/Nostr connection.
 
 Ordinary callers receive product-level controls. Arbitrary environment variables,
 mounts, signing operations, and raw supervisor access are privileged administration.

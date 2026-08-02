@@ -65,7 +65,8 @@ official files inspected at Buzz commit `b1b283cd4c7f926e12eeee8ae1f38c7471922b1
 7. Keep Buzz Server deployable independently of the relay host.
 8. Support multiple explicit communities as isolated client workspaces, not as a
    multi-tenant control-plane namespace. Scope every agent and all operational
-   state by Server-local `community_id`, following Desktop's community boundary.
+   state by Server-local `community_config_id`, following Desktop's community
+   boundary. The authoritative relay URL is the shared community locator.
 
 ## Sources
 

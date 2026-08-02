@@ -24,7 +24,8 @@ Exit: reviewed decisions plus an executable disposable signing compatibility tes
 - transport-independent authenticated API and companion CLI, with Unix socket as
   an optional same-host transport and TLS for remote administration;
 - SQLite registry behind a repository interface;
-- multiple explicit, isolated communities keyed by Server-local `community_id`;
+- multiple explicit, isolated `CommunityConfig` records referenced by local
+  `community_config_id`, each with one authoritative relay URL;
 - durable operation state machine and reconciliation loop;
 - server-native agent key generation;
 - separate disposable-key signer service;
