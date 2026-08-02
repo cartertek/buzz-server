@@ -3,7 +3,7 @@
 ## Assessment
 
 The proposal is compatible with Buzz when Buzz Server is described as an optional
-headless application/control plane rather than the relay or a replacement for
+headless Buzz client rather than the relay or a replacement for
 `buzz-acp`.
 
 This follows existing Buzz boundaries:
@@ -30,6 +30,7 @@ authority. “Headless Buzz Desktop” is a long-term direction, not the v0 cont
   community-scoped state reset at relay-boundary changes;
 - `Local` versus `Provider { id, config }` backend model;
 - `buzz-backend-*` discovery and the `info`/`deploy` executable protocol;
+- a public Kubernetes backend provider on current Buzz `main`, pending exact revision pinning and audit;
 - provider JSON configuration schemas and provider-aware Desktop UI;
 - complete remote deployment payload construction;
 - ACP runtime command and argument configuration.
@@ -47,8 +48,7 @@ authority. “Headless Buzz Desktop” is a long-term direction, not the v0 cont
 - provider-host functionality outside Desktop;
 - future bridges such as Discord.
 
-These “not implemented” claims are scoped to the tracked public Buzz tree and
-official files inspected at Buzz commit `b1b283cd4c7f926e12eeee8ae1f38c7471922b16`.
+The earlier compatibility inventory was made at Buzz commit `b1b283cd4c7f926e12eeee8ae1f38c7471922b16`. Phase 0 must refresh it against the exact current revision selected for the dependency pin before implementation begins.
 
 ## Compatibility decisions
 

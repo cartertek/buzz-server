@@ -68,16 +68,14 @@ identity or service creation.
 - Discord and other bridges as clients of the API/event system;
 - broader headless Buzz Desktop functionality.
 
-## Initial decisions to resolve
+## Remaining Phase 0 proofs
 
-1. Recoverable workspace retention period after delete?
-2. Bundled provider name: `self-hosted`, `managed-host`, or another term?
-3. Can runtime definitions and deployment types move into a shared Buzz crate?
-4. One multi-runtime image or runtime-specific images?
-5. Exact harness-level readiness probe and timeout policy?
-6. Exact remote API credential and authorization mechanism?
-7. Authorization revocation semantics for already issued NIP-OA tags?
-8. Independent companion, private deployment component, or upstream candidate?
+1. Pin and audit current Buzz `main`, including the Kubernetes provider, and record the first reviewed revision.
+2. Decide the exact Tauri-free shared-crate boundary and whether extraction lands upstream before or alongside Server work.
+3. Choose one multi-runtime image or runtime-specific images after measuring the existing runtime packaging.
+4. Define the exact harness-level readiness probe and timeout from an executable vertical slice.
+5. Verify Desktop-compatible authorization renewal and revocation behavior against the pinned Buzz implementation.
+6. Decide the upstream/licensing relationship before publishing shared changes.
 
 ## Quality gates
 

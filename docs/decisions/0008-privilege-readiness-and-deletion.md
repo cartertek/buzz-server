@@ -12,4 +12,4 @@ harness-level probe succeeds. Container-running status alone is insufficient.
 
 Delete stops the service immediately and retains secrets and workspace
 recoverably until a configurable retention policy expires, after which purge is
-performed. The default duration is intentionally still open.
+performed. The default retention period is 30 days, configurable per installation; administrators may request immediate purge.
