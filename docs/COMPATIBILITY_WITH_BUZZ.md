@@ -26,6 +26,8 @@ authority. “Headless Buzz Desktop” is a long-term direction, not the v0 cont
 - Desktop-managed agent identity generation and owner authorization;
 - access policy and runtime/model configuration;
 - Desktop's built-in local process supervision;
+- Desktop's multiple-community model, with each community backed by a relay and
+  community-scoped state reset at relay-boundary changes;
 - `Local` versus `Provider { id, config }` backend model;
 - `buzz-backend-*` discovery and the `info`/`deploy` executable protocol;
 - provider JSON configuration schemas and provider-aware Desktop UI;
@@ -61,6 +63,9 @@ official files inspected at Buzz commit `b1b283cd4c7f926e12eeee8ae1f38c7471922b1
 6. Support generic ACP runtime configuration while working toward a shared
    canonical runtime catalog instead of maintaining a drifting copy.
 7. Keep Buzz Server deployable independently of the relay host.
+8. Support multiple explicit relay connections as isolated client workspaces,
+   not as a multi-tenant control-plane namespace. Scope every agent and all
+   operational state by connection, following Desktop's community boundary.
 
 ## Sources
 
@@ -69,4 +74,5 @@ official files inspected at Buzz commit `b1b283cd4c7f926e12eeee8ae1f38c7471922b1
 - [Managed-agent backend types](https://github.com/block/buzz/blob/main/desktop/src-tauri/src/managed_agents/types.rs)
 - [Deployment payload builder](https://github.com/block/buzz/blob/main/desktop/src-tauri/src/commands/agents_deploy.rs)
 - [`buzz-acp` guide](https://github.com/block/buzz/blob/main/crates/buzz-acp/README.md)
+- [Desktop community-switching guidance](https://github.com/block/buzz/blob/main/AGENTS.md#community-switching)
 

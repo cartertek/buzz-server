@@ -18,11 +18,12 @@ events and ACP-compatible agent runtimes.
 - deploy `buzz-acp` plus an ACP runtime through a supervisor interface;
 - implement Docker Compose as the first supervisor driver;
 - verify relay connectivity, authorization, and runtime health;
+- manage multiple explicitly configured, isolated relay connections;
 - expose a private administrative API and CLI.
 
 Longer-term possibilities include more Buzz Desktop capabilities, additional
-supervisors, third-party providers, multi-owner administration, and bridges such
-as Discord. They are explicitly outside the first implementation milestone.
+supervisors, third-party providers, richer identity administration, and bridges
+such as Discord. They are explicitly outside the first implementation milestone.
 
 ## Status
 

@@ -10,6 +10,8 @@
 - The signer is isolated from providers, the API daemon, the relay, agent
   containers, Docker access, and workspaces as far as the host permits.
 - Agent containers never receive the owner private key.
+- Every agent belongs to exactly one relay connection and receives only that
+  connection's relay URL and owner authorization.
 
 ## Owner signing
 
@@ -38,14 +40,16 @@ or inspect the authorized signer.
 - memory-dump prevention and hardened service accounts;
 - key versioning, rotation, revocation, and reauthorization runbooks;
 - idempotent operations to prevent duplicate identity creation;
-- explicit deletion retention policy; no implicit workspace destruction.
+- explicit deletion retention policy; no implicit workspace destruction;
+- connection-scoped registry access, caches, jobs, provider configuration,
+  secrets, workspaces, Compose projects, runtime state, logs, and audit records;
+- no implicit cross-connection queries, defaults, or data movement;
+- a thin privileged supervisor helper instead of Docker access in the API daemon.
 
 ## Open threat-model questions
 
-- single-owner versus multi-owner data model;
-- API authentication for remote administration;
+- exact API credential and authorization mechanism for remote administration;
 - provider subprocess sandboxing;
-- narrow supervisor helper versus direct Docker access;
 - agent-to-signer network and filesystem isolation;
 - authorization revocation semantics for already issued NIP-OA tags;
 - identity attribution and membership policy for future external bridges.

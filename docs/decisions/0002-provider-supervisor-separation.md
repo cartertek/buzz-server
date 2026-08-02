@@ -1,6 +1,6 @@
 # ADR 0002: Separate providers from supervisors
 
-Status: proposed
+Status: accepted
 
 A Buzz backend provider converts an authorized agent deployment into external
 compute. A supervisor driver applies and observes a service specification.

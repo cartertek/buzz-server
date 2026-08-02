@@ -31,6 +31,14 @@ The relay remains authoritative for Buzz events, channels, membership, and share
 conversation state. Buzz Server's registry is authoritative only for operational
 desired state, deployment receipts, secrets references, and reconciliation.
 
+Buzz Server supports multiple explicitly configured relay connections, matching
+Buzz Desktop's multiple-community model. A connection binds a relay URL to an
+owner identity/key reference. It is a client workspace boundary, not a Buzz
+Server tenant: all agents, drafts, operations, credentials, workspaces, caches,
+and background jobs are scoped by immutable `connection_id`. Cross-connection
+behavior requires an explicit future bridge with separate authorization and
+audit. Whether several URLs reach one physical relay is transparent to Server.
+
 ## Terminology
 
 - **Backend provider**: Buzz-compatible deployment adapter. Existing Desktop
@@ -59,10 +67,15 @@ reconciliation, audit records, provider selection, and health aggregation.
 Initial lifecycle:
 
 ```text
-draft -> authorizing -> authorized -> provisioning -> running
-                                  \-> failed <-/
+authorizing -> authorized -> provisioning -> running
+                              \-> failed <-/
 running -> updating | disabled | deleting
 ```
+
+An authorized direct-create request enters this lifecycle immediately. Optional
+agent drafts are separate, non-secret review resources, not lifecycle states.
+They mint no identity, authorization, workspace, or deployment. Approval invokes
+the same idempotent direct-create operation used by an authorized API caller.
 
 Every mutating request receives an idempotency key and durable operation record.
 Restarting Buzz Server must resume reconciliation without minting a second agent
@@ -107,6 +120,11 @@ delete(DeploymentReceipt, RetentionPolicy)
 logs(DeploymentReceipt, Cursor)
 ```
 
+The main API daemon does not receive unrestricted Docker access. A thin,
+separately privileged helper implements only this supervisor contract; it is not
+a general orchestration service or arbitrary command runner. The signer remains
+separate from both processes.
+
 The Compose driver renders configuration from registry state. Generated Compose
 files are output, never the source of truth. Secrets must not be embedded in the
 Compose YAML. Stable names derive from immutable internal agent IDs.
@@ -128,8 +146,10 @@ sharing strategy is decided.
 
 ### API
 
-The first API is private and local, preferably a Unix socket. A network listener
-is disabled until authentication, TLS, authorization, and audit design are done.
+The API contract is transport-independent and authenticated. A same-host
+deployment may use a Unix socket with peer/filesystem authorization. Remote
+administration uses a TLS network listener with explicit API authentication,
+authorization, and audit. Neither transport assumes the relay is local.
 
 Candidate resources:
 
@@ -144,7 +164,13 @@ DELETE /v1/agents/{id}
 GET    /v1/providers
 GET    /v1/runtimes
 GET    /v1/operations/{id}
+POST   /v1/agent-drafts
+GET    /v1/agent-drafts/{id}
+POST   /v1/agent-drafts/{id}/deploy
 ```
+
+Every agent and draft request names a `connection_id`; the server never relies
+on a process-global active relay.
 
 Ordinary callers receive product-level controls. Arbitrary environment variables,
 mounts, signing operations, and raw supervisor access are privileged administration.
@@ -164,6 +190,19 @@ Host C..N: managed agents
 
 Initial topology colocates Host A and B. Buzz Server and the signer should run as
 separate hardened system services. The relay project and agent Compose project
-remain separate. Longer term, a narrow privileged supervisor helper is preferable
-to giving the main API daemon unrestricted Docker access.
+remain separate. Co-location is only a topology choice. Multiple relay
+connections may run concurrently, and each agent receives only its connection's
+relay URL and authorization. Compose project/service names, secret paths,
+workspace paths, runtime state, and networks are isolated per agent and
+connection.
+
+## Readiness and deletion
+
+`running` requires more than a running container: the expected agent public key,
+valid owner authorization, successful connection to the configured relay, a
+healthy `buzz-acp` process, and a successful harness-level probe must all agree.
+
+Delete stops the agent immediately and enters recoverable retention. Secrets and
+workspace are purged only after the configured retention policy expires. The
+default retention duration remains an explicit product decision.
 

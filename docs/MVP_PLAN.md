@@ -12,7 +12,8 @@ a client laptop to remain online.
 - document the provider v1 request/response contract at the pinned Buzz commit;
 - reproduce owner authorization generation with disposable identities;
 - define the server-native create request and exact NIP-OA signing policy;
-- choose initial API authentication and signer isolation;
+- specify Unix-socket and remote TLS API authentication/authorization profiles;
+- define connection-scoping and cross-connection isolation invariants;
 - decide naming/licensing/upstream relationship;
 - define readiness and deletion-retention acceptance criteria.
 
@@ -20,17 +21,23 @@ Exit: reviewed decisions plus an executable disposable signing compatibility tes
 
 ## Phase 1 — local administrative control plane
 
-- private Unix-socket API and companion CLI;
+- transport-independent authenticated API and companion CLI, with Unix socket as
+  an optional same-host transport and TLS for remote administration;
 - SQLite registry behind a repository interface;
+- multiple explicit, isolated relay connections keyed by `connection_id`;
 - durable operation state machine and reconciliation loop;
 - server-native agent key generation;
 - separate disposable-key signer service;
 - bundled self-hosted provider;
+- discover trusted `buzz-backend-*` executables and implement provider v1
+  `info`/`deploy` compatibility;
 - Compose supervisor driver;
+- thin privileged supervisor helper with no arbitrary command surface;
 - version-pinned Codex ACP runtime image matching the current deployment;
 - create, inspect, update, disable, enable, and recoverable delete;
 - relay connection, owner authorization, and harness readiness verification;
-- structured audit log with secret redaction.
+- structured audit log with secret redaction;
+- optional non-secret agent draft resources that promote through direct create.
 
 Exit: a verified agent survives Buzz Server restart and reconciles without duplicate
 identity or service creation.
@@ -44,18 +51,15 @@ identity or service creation.
 - additional Desktop-compatible ACP runtimes;
 - resource/network hardening, upgrades, rollback, monitoring, and alerts.
 
-## Phase 3 — external provider compatibility
+## Phase 3 — provider hardening and protocol evolution
 
-- discover trusted `buzz-backend-*` executables;
-- expose provider schemas through the Buzz Server API;
-- implement provider v1 `info`/`deploy` compatibility;
 - accept already-signed Desktop-compatible deployments;
 - sandbox provider subprocesses;
 - define versioned lifecycle capability negotiation without breaking v1.
 
 ## Later phases
 
-- authenticated TLS API and multi-owner authorization;
+- richer identity and API authorization administration;
 - PostgreSQL/high availability if single-instance SQLite becomes insufficient;
 - remote supervisor nodes and more drivers;
 - administrative UI and Desktop integration;
@@ -64,16 +68,14 @@ identity or service creation.
 
 ## Initial decisions to resolve
 
-1. Single owner initially, or multi-owner schema from day one?
-2. Immediate create, or a reviewable draft state?
-3. Recoverable workspace retention period after delete?
-4. Bundled provider name: `self-hosted`, `managed-host`, or another term?
-5. Is provider v1 compatibility needed before the server-native MVP?
-6. Can runtime definitions and deployment types move into a shared Buzz crate?
-7. Direct Compose invocation or a narrow privileged helper?
-8. One multi-runtime image or runtime-specific images?
-9. Which readiness signals are mandatory?
-10. Independent companion, private deployment component, or upstream candidate?
+1. Recoverable workspace retention period after delete?
+2. Bundled provider name: `self-hosted`, `managed-host`, or another term?
+3. Can runtime definitions and deployment types move into a shared Buzz crate?
+4. One multi-runtime image or runtime-specific images?
+5. Exact harness-level readiness probe and timeout policy?
+6. Exact remote API credential and authorization mechanism?
+7. Authorization revocation semantics for already issued NIP-OA tags?
+8. Independent companion, private deployment component, or upstream candidate?
 
 ## Quality gates
 

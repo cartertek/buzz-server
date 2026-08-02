@@ -1,6 +1,6 @@
 # ADR 0005: Use Buzz Server as the product name
 
-Status: proposed
+Status: accepted
 
 The product name is **Buzz Server**. Its explanatory description is:
 

@@ -1,6 +1,6 @@
 # ADR 0003: Authorize deployments before provider invocation
 
-Status: proposed
+Status: accepted
 
 Server-native creation generates an agent identity and obtains a narrowly scoped
 owner authorization before invoking any provider. This matches Buzz Desktop's
