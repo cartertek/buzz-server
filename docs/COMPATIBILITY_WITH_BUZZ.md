@@ -67,6 +67,10 @@ official files inspected at Buzz commit `b1b283cd4c7f926e12eeee8ae1f38c7471922b1
    multi-tenant control-plane namespace. Scope every agent and all operational
    state by Server-local `community_config_id`, following Desktop's community
    boundary. The authoritative relay URL is the shared community locator.
+9. Communicate with every relay exactly as another Buzz client: use its configured
+   URL, standard NIP-42/NIP-98 authentication, and ordinary Buzz/Nostr APIs. Do
+   not require a tenant-administration API, relay database access, special
+   headers, or co-location.
 
 ## Sources
 

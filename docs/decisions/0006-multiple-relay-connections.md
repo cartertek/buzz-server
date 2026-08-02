@@ -18,4 +18,9 @@ a Buzz/Nostr wire field. One physical relay serving multiple communities is
 represented by their distinct authoritative URLs. Independent relays are likewise
 separate communities. Buzz Server does not merge several relay URLs into one
 community; failover or federation requires a future explicit protocol/feature.
+For each configuration, Buzz Server uses the same client-to-relay path as Buzz
+Desktop: connect to the configured URL, authenticate normally, and let the relay
+derive community context from the host. Server does not use a privileged tenant
+API, relay-internal ID, shared database, special header, or co-located path.
+
 This is client-side multi-workspace support, not a multi-tenant Server data model.
