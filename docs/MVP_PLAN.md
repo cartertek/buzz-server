@@ -8,10 +8,11 @@ a client laptop to remain online.
 
 ## Phase 0 — protocol and threat-model spike
 
-- inventory reusable Buzz types and isolate Desktop/Tauri coupling;
+- depend directly on pinned `buzz-core`, `buzz-sdk`, and `buzz-ws-client`;
+- inventory Tauri-free managed-agent logic suitable for an upstream shared crate;
 - document the provider v1 request/response contract at the pinned Buzz commit;
-- reproduce owner authorization generation with disposable identities;
-- define the server-native create request and exact NIP-OA signing policy;
+- prove Desktop/Server NIP-OA parity with shared fixtures;
+- define only the durable signing lifecycle Server adds around shared NIP-OA;
 - specify Unix-socket and remote TLS API authentication/authorization profiles;
 - define community scoping and cross-community isolation invariants;
 - decide naming/licensing/upstream relationship;

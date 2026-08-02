@@ -16,7 +16,7 @@ This follows existing Buzz boundaries:
 
 The name **Buzz Server** can be confused with the Buzz relay, which existing
 documentation also calls the server. Product documentation must consistently say
-“headless control plane” and preserve `buzz-relay` as the protocol/shared-state
+“headless Buzz client” and preserve `buzz-relay` as the protocol/shared-state
 authority. “Headless Buzz Desktop” is a long-term direction, not the v0 contract.
 
 ## Already implemented by public Buzz

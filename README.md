@@ -1,7 +1,7 @@
 # Buzz Server
 
-Buzz Server is a proposed optional, headless Buzz application and agent operations
-control plane. Its first milestone is creating and operating always-on Buzz agents
+Buzz Server is a proposed optional, headless Buzz client. Its first milestone is
+creating and operating always-on Buzz agents
 without depending on Buzz Desktop or a user's laptop.
 
 Buzz Server is not the Buzz relay, is not a replacement for `buzz-acp`, and is not

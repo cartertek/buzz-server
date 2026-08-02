@@ -16,7 +16,9 @@
 ## Owner signing
 
 Server-native creation requires the owner identity because each authorization is
-bound to a newly generated agent public key. The signer exposes only a structured,
+bound to a newly generated agent public key. Authorization construction and
+verification call Buzz's shared `buzz-sdk` NIP-OA implementation so Desktop and
+Server remain byte-for-byte compatible. The signer exposes only a structured,
 policy-limited “authorize agent” operation—never arbitrary Nostr signing.
 
 Development begins with a disposable owner identity. Production key import occurs

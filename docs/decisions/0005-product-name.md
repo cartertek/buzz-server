@@ -4,7 +4,7 @@ Status: accepted
 
 The product name is **Buzz Server**. Its explanatory description is:
 
-> The server-side automation and agent operations control plane for Buzz.
+> The optional headless client for operating always-on Buzz agents.
 
 This follows the familiar Desktop/Server product distinction: Buzz Desktop is
 the interactive consumer application, while Buzz Server provides durable,

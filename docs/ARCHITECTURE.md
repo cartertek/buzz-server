@@ -2,9 +2,9 @@
 
 ## Product boundary
 
-Buzz Server is a headless Buzz client and agent operations control plane. It may
-run on the relay host, as in the initial deployment, but communicates with the
-relay over the same network/protocol boundary as other Buzz applications.
+Buzz Server is a headless Buzz client. Internally, it provides the API, policy,
+registry, and reconciliation needed to operate agents. It communicates with the
+relay over the same network and protocol boundary as other Buzz clients.
 
 ```text
 administrative clients / future bridges
@@ -186,12 +186,11 @@ lifecycle logic.
 General topology:
 
 ```text
-Host A: Buzz relay
-Host B: Buzz Server, signer, and supervisor access
-Host C..N: managed agents
+Relay: any reachable host
+Execution host: Buzz Server, signer, supervisor helper, and Compose-managed agents
 ```
 
-Initial topology colocates Host A and B. Buzz Server and the signer should run as
+For self-hosters, installing Buzz Server alongside the relay is conceptually simplest, but co-location is optional and never changes the protocol boundary. Buzz Server and the signer should run as
 separate hardened system services. The relay project and agent Compose project
 remain separate. Co-location is only a topology choice. Multiple communities may run concurrently, and each agent receives only its
 community's relay URL and authorization. Compose project/service names, secret paths,
@@ -206,5 +205,5 @@ healthy `buzz-acp` process, and a successful harness-level probe must all agree.
 
 Delete stops the agent immediately and enters recoverable retention. Secrets and
 workspace are purged only after the configured retention policy expires. The
-default retention duration remains an explicit product decision.
+default retention period is 30 days, configurable per installation. A daily idempotent purge job retries failures, and an administrator may request immediate purge.
 

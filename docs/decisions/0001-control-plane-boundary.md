@@ -1,4 +1,4 @@
-# ADR 0001: Buzz Server is a separate headless control plane
+# ADR 0001: Buzz Server is a separate headless Buzz client
 
 Status: accepted
 
