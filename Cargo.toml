@@ -9,12 +9,14 @@ publish = false
 
 [dependencies]
 buzz-sdk = { git = "https://github.com/block/buzz.git", rev = "a5dbdf5e61e4c512acd99c219c79c154ddb57295", version = "0.1.0" }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.17"
+url = { version = "2.5.7", features = ["serde"] }
+uuid = { version = "1.19.0", features = ["serde", "v7"] }
 
 [lints.rust]
 unsafe_code = "forbid"
 
 [dev-dependencies]
 nostr = { version = "0.44", features = ["nip44", "nip98"] }
-serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-

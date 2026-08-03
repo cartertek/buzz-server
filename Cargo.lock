@@ -175,6 +175,9 @@ dependencies = [
  "nostr",
  "serde",
  "serde_json",
+ "thiserror",
+ "url",
+ "uuid",
 ]
 
 [[package]]
