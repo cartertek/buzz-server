@@ -6,7 +6,7 @@
 - Add SQLite WAL storage, numbered migrations, repository interfaces, audit records, and idempotency keys.
 - Add direct `buzz-core` and `buzz-ws-client` dependencies at the same reviewed Buzz revision.
 - Wire `scripts/check-buzz-upstream.sh` into weekly CI once the repository credential has GitHub workflow-write scope.
-- Implement the upstream provider-wire fixture suite as a compatibility gate; prepare the provider-protocol extraction proposal.
+- Identify and reuse or extract Tauri-free Desktop local-launch, configuration, runtime, and shared type semantics without importing Desktop/Tauri.
 - Add the runtime catalog with digest-pinned Sprig and Codex entries.
 
 Exit: migrations and repositories pass restart/idempotency tests; dependency and fixture checks are green.
@@ -16,8 +16,9 @@ Exit: migrations and repositories pass restart/idempotency tests; dependency and
 - Configure one community through its authoritative relay URL.
 - Generate a disposable owner and agent identity; issue NIP-OA through `buzz-sdk`.
 - Implement constrained signer IPC for the one authorize-agent operation.
-- Implement `ServiceSpec`, deployment receipt, narrow helper protocol, and local Compose driver.
-- Build the first Codex runtime image and run the 15-second ACP preflight.
+- Implement the durable Server-native local backend, launch receipt, and
+  reconciliation around `buzz-acp` and its ACP runtime.
+- Build the first version-pinned Codex runtime package and run the 15-second ACP preflight.
 - Deploy one agent, observe expected signed presence within 30 seconds, restart Server, and adopt the same service and identity.
 
 Exit: no duplicate identity or service across injected restart points; the agent is reachable through the relay.
@@ -34,6 +35,7 @@ Exit: full lifecycle contract passes API, reconciliation, retention, and audit t
 ## Milestone 4: provider compatibility
 
 - Add trusted `buzz-backend-*` discovery and staged `info`/`deploy` invocation.
+- Evaluate a Docker Compose provider as an optional external deployment path.
 - Verify the full upstream fixture corpus and explicit unsupported lifecycle behavior.
 - Reuse or consume the proposed upstream provider-protocol crate when available.
 
@@ -44,10 +46,12 @@ Exit: the Kubernetes reference provider and a fake provider pass the compatibili
 - Replace disposable owner custody with reviewed encrypted import and KMS envelope encryption.
 - Exercise encrypted backup/restore, owner rotation, reauthorization, retention, and purge.
 - Add resource/network restrictions, artifact provenance verification, upgrades/rollback, monitoring, and alerts.
-- Add additional runtime-specific images only through catalog entries and readiness fixtures.
+- Add additional runtime-specific artifacts only through catalog entries and readiness fixtures.
 
 Exit: production threat-model checklist and disaster-recovery exercise pass.
 
 ## Work ordering
 
-Milestones are sequential at their acceptance boundaries, but schema/API work, signer IPC, Compose driver, and runtime-image work can proceed in parallel once Milestone 1 types and fixtures are stable.
+Milestones are sequential at their acceptance boundaries, but schema/API work,
+signer IPC, local-backend supervision, and runtime-package work can proceed in
+parallel once Milestone 1 types and fixtures are stable.

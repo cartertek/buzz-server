@@ -4,12 +4,12 @@
 
 - API callers may request lifecycle operations but may not request arbitrary
   signatures or raw supervisor commands.
-- Provider executables are fully trusted deployment plugins. The current Buzz
-  protocol gives them agent secrets, so installation is administrator-only.
-- The self-hosted provider receives an already authorized deployment.
-- The signer is isolated from providers, the API daemon, the relay, agent
-  containers, Docker access, and workspaces as far as the host permits.
-- Agent containers never receive the owner private key.
+- The MVP local backend may request only typed launch and lifecycle operations
+  from its least-privilege headless process supervisor, never arbitrary commands.
+- The signer is isolated from the local backend, the API daemon, the relay,
+  supervised agent processes, and workspaces as far as the host permits.
+- Supervised agent processes never receive the owner private key or Server
+  administrative credentials.
 - Every agent belongs to exactly one configured community and receives only that
   community's relay URL and owner authorization.
 
@@ -32,9 +32,15 @@ or inspect the authorized signer.
 
 ## Required controls
 
-- secret redaction in API, provider, supervisor, and audit logs;
-- no plaintext owner key, agent key, auth tag, or model credential in registry
-  metadata or generated Compose YAML;
+- secret redaction in API, local-backend, process-supervisor, runtime, and audit
+  logs;
+- no plaintext owner key, agent key, auth tag, or model credential in command
+  arguments, Server-wide or ambient inherited environments, launch receipts,
+  registry metadata, logs, or audit records;
+- construct each supervised process environment from an explicit allowlist;
+  release only the target agent's required secrets immediately before launch,
+  preferably through private file descriptors or mode-restricted files, and do
+  not propagate the Server process environment wholesale;
 - stable agent keys across ordinary updates;
 - immediate signer/KMS disable path;
 - encrypted off-host backup and tested restoration;
@@ -43,16 +49,27 @@ or inspect the authorized signer.
 - key versioning, rotation, revocation, and reauthorization runbooks;
 - idempotent operations to prevent duplicate identity creation;
 - explicit deletion retention policy; no implicit workspace destruction;
-- community-scoped registry access, caches, jobs, provider configuration,
-  secrets, workspaces, Compose projects, runtime state, logs, and audit records;
+- community-scoped registry access, caches, jobs, local launch configuration,
+  secrets, workspaces, process state, logs, and audit records;
 - no implicit cross-community queries, defaults, or data movement;
-- a thin privileged supervisor helper instead of Docker access in the API daemon.
+- a least-privilege process-supervisor boundary with an explicit executable,
+  argument, environment, filesystem, signal, and lifecycle policy instead of an
+  arbitrary command surface in the API daemon.
+
+## Future provider and Compose controls
+
+- Provider executables are trusted deployment plugins because the current Buzz
+  protocol may give them agent secrets. Future provider installation is
+  administrator-only and requires allowlisting, checksum pinning, bounded
+  input/output, redacted logging, and subprocess sandboxing.
+- A future Docker Compose provider must keep plaintext secrets out of generated
+  YAML, launch receipts, logs, and audit records; isolate projects and secret
+  paths by community and agent; deny agents access to the Docker socket; and use
+  a narrow helper rather than granting Docker access to the API daemon.
 
 ## Open threat-model questions
 
 - exact API credential and authorization mechanism for remote administration;
-- provider subprocess sandboxing;
 - agent-to-signer network and filesystem isolation;
 - authorization revocation semantics for already issued NIP-OA tags;
 - identity attribution and membership policy for future external bridges.
-

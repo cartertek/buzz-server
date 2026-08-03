@@ -1,6 +1,11 @@
 # ADR 0004: Provider discovery is part of the MVP
 
-Status: accepted
+Status: superseded by [ADR 0012](0012-built-in-local-backend-first.md)
+
+**Current consequence:** provider discovery and provider v1 compatibility are
+future external-provider work, not part of the MVP's first deployment path.
+
+## Superseded decision
 
 Buzz Server's initial product contract includes searching for trusted
 `buzz-backend-*` executables, invoking provider v1 `info` and `deploy`, and

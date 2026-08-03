@@ -14,14 +14,14 @@ administrative clients / future bridges
        API, policy, registry, reconciliation
          |                         |
          v                         v
- provider host + bundled      constrained owner
- self-hosted provider             signer
+ durable local backend        constrained owner
+                                 signer
          |
          v
- supervisor interface -> Docker Compose driver (first)
+ headless process supervisor
          |
          v
- buzz-acp harness -> ACP runtime -> models/tools/workspace
+ buzz-acp/runtime child process -> models/tools/workspace
          |
          v
                Buzz relay
@@ -42,28 +42,34 @@ future bridge with separate authorization and audit.
 
 ## Terminology
 
-- **Backend provider**: Buzz-compatible deployment adapter. Existing Desktop
+- **Deployment backend**: the choice between Desktop-style `Local` execution and
+  an external `Provider { id, config }` deployment. The MVP implements a
+  Server-native durable local backend; Desktop Local is not a `buzz-backend-*`
+  provider.
+- **Backend provider**: an external Buzz-compatible deployment adapter. Existing
   providers are executables named `buzz-backend-<id>` supporting `info` and
-  `deploy` operations.
-- **Self-hosted provider**: the bundled Buzz Server provider that converts an
-  authorized agent deployment into a supervisor-neutral service specification.
-- **Supervisor driver**: implementation that creates and keeps the service alive,
-  such as Compose, systemd, Kubernetes, or a VM service.
+  `deploy` operations. Provider discovery is a future extension.
+- **Process supervisor**: the Server component that launches and keeps the local
+  `buzz-acp`/runtime child process alive, including process-group, restart, and
+  health handling.
 - **Harness**: `buzz-acp`, which connects to the relay and manages ACP sessions.
 - **ACP runtime**: the reasoning/tool process, such as `buzz-agent`, Codex ACP,
   Goose, or Claude ACP.
+- **Model API provider**: the service selected through an ACP runtime's model and
+  credential configuration. It is not a deployment backend or backend provider.
 - **Signer**: isolated service permitted only to issue policy-constrained owner
   authorizations for new agents.
 
-Docker Compose is a supervisor implementation, not a Buzz provider and not part
-of the product-facing agent identity.
+Docker Compose, containers, and remote supervisors are future execution options,
+not part of the local MVP or the product-facing agent identity.
 
 ## Core components
 
 ### Control plane
 
 Owns validation, policy, idempotent operations, desired-state transitions,
-reconciliation, audit records, provider selection, and health aggregation.
+reconciliation, audit records, deployment-backend selection, and health
+aggregation.
 
 Initial lifecycle:
 
@@ -82,68 +88,87 @@ Every mutating request receives an idempotency key and durable operation record.
 Restarting Buzz Server must resume reconciliation without minting a second agent
 identity or duplicating a deployment.
 
-### Provider host
+### Durable local backend
 
-Discovers trusted executable providers, invokes `info`, validates their schemas,
-and invokes `deploy` with bounded time/output and redacted logging. Installation
-of providers is an administrator-only trust decision because the current Buzz
+The MVP models Buzz Desktop Local semantics in a Server-native durable backend.
+It resolves shared launch, runtime, model-configuration, and credential semantics
+into an internal launch specification, then reconciles that specification through
+the headless process supervisor. It reuses or extracts Tauri-free shared types and pure
+configuration logic where practical, but does not import Desktop/Tauri or inherit
+Desktop's GUI, OS-keyring, app-path, or local-child-process ownership adapters.
+
+The launch specification, process receipts, supervisor operations, and
+reconciliation are internal Buzz Server contracts rather than a new public
+provider protocol.
+Identity generation and owner signing remain control-plane responsibilities, not
+backend or supervisor responsibilities.
+
+### Future external providers
+
+External `buzz-backend-*` discovery and provider v1 `info`/`deploy` compatibility
+follow the local MVP. Container execution, a Compose supervisor driver, and a
+possible Docker Compose provider are also future extensions. Installing an
+external provider is an administrator trust decision because the current Buzz
 payload includes the agent private key and owner authorization.
 
-The existing Buzz provider protocol is deploy-oriented. Status, logs, enable,
-disable, and deletion are Buzz Server lifecycle operations. A future provider
-protocol extension must be versioned or capability-negotiated rather than silently
-changing the existing `info`/`deploy` contract.
+The existing provider protocol is deploy-oriented. Status, logs, enable, disable,
+and deletion remain Buzz Server lifecycle operations. A future provider protocol
+extension must be versioned or capability-negotiated rather than silently changing
+the existing `info`/`deploy` contract.
 
-### Bundled self-hosted provider
+### Local launch specification
 
-Consumes a fully authorized deployment and produces a `ServiceSpec` containing:
+The durable local backend produces a backend-neutral, local-shaped internal launch
+specification containing:
 
 - immutable agent ID and stable Nostr identity;
-- version-pinned harness/runtime package or image;
-- `buzz-acp` command plus ACP runtime command and arguments;
-- opaque secret references;
-- persistent workspace and runtime-state mounts;
-- resource, network, restart, and health policy.
+- version-pinned harness and runtime executables or packages;
+- executable and arguments for `buzz-acp` plus its ACP runtime;
+- controlled environment and opaque secret references;
+- working directory and persistent workspace/runtime-state paths;
+- process group, restart, resource, and health policy.
 
-Identity generation and owner signing remain control-plane responsibilities, not
-provider or supervisor responsibilities.
+Container image, mount, network, and orchestration fields are future backend or
+supervisor extensions rather than MVP launch-contract requirements.
 
-### Supervisor interface
+Model API provider configuration and credentials are runtime inputs represented by
+validated configuration and opaque secret references; they do not select the
+deployment backend.
+
+### Headless process supervisor
 
 The initial behavioral interface is:
 
 ```text
-apply(ServiceSpec) -> DeploymentReceipt
-inspect(DeploymentReceipt) -> ObservedState
-start(DeploymentReceipt)
-stop(DeploymentReceipt)
-delete(DeploymentReceipt, RetentionPolicy)
-logs(DeploymentReceipt, Cursor)
+apply(LocalLaunchSpec) -> ProcessReceipt
+inspect(ProcessReceipt) -> ObservedState
+start(ProcessReceipt)
+stop(ProcessReceipt)
+delete(ProcessReceipt, RetentionPolicy)
+logs(ProcessReceipt, Cursor)
 ```
 
-The main API daemon does not receive unrestricted Docker access. A thin,
-separately privileged helper implements only this supervisor contract; it is not
-a general orchestration service or arbitrary command runner. The signer remains
-separate from both processes.
+The supervisor spawns the child in its own process group, captures bounded and
+redacted logs, terminates the group on stop, and applies restart and health policy.
+The signer remains a separate process and does not become a general command
+runner.
 
-The Compose driver renders configuration from registry state. Generated Compose
-files are output, never the source of truth. Secrets must not be embedded in the
-Compose YAML. Stable names derive from immutable internal agent IDs.
-
-Future supervisor drivers may include Docker Engine, systemd, Swarm, Kubernetes,
-and VM/job services. The interface should model capabilities rather than promise
-that every driver supports identical behavior.
+Future supervisor drivers may include Docker Compose, Docker Engine, systemd,
+Kubernetes, and VM/job services. The interface should model capabilities rather
+than promise that every driver supports identical behavior. Generated container
+or orchestration configuration remains output, never the source of truth, and
+must not embed secrets.
 
 ### Runtime catalog
 
 Buzz Server should ultimately share or generate its runtime catalog from Buzz's
 canonical definitions. “Supports Desktop runtimes” means compatible command,
-argument, configuration, and packaging semantics; it does not imply every image
+argument, configuration, and packaging semantics; it does not imply one artifact
 contains every runtime.
 
-The Compose MVP supports the existing Codex deployment first. Runtime images and
-adapters must be version-pinned. Additional runtimes follow after the catalog
-sharing strategy is decided.
+The local-process MVP supports the existing Codex deployment first. Harness and
+runtime executables, packages, and adapters must be version-pinned. Additional
+runtimes follow after the catalog sharing strategy is decided.
 
 ### API
 
@@ -162,7 +187,6 @@ PATCH  /v1/agents/{id}
 POST   /v1/agents/{id}/enable
 POST   /v1/agents/{id}/disable
 DELETE /v1/agents/{id}
-GET    /v1/providers
 GET    /v1/runtimes
 GET    /v1/operations/{id}
 POST   /v1/agent-drafts
@@ -187,23 +211,21 @@ General topology:
 
 ```text
 Relay: any reachable host
-Execution host: Buzz Server, signer, supervisor helper, and Compose-managed agents
+Execution host: Buzz Server, signer, and supervised local agent processes
 ```
 
 For self-hosters, installing Buzz Server alongside the relay is conceptually simplest, but co-location is optional and never changes the protocol boundary. Buzz Server and the signer should run as
-separate hardened system services. The relay project and agent Compose project
-remain separate. Co-location is only a topology choice. Multiple communities may run concurrently, and each agent receives only its
-community's relay URL and authorization. Compose project/service names, secret paths,
-workspace paths, runtime state, and networks are isolated per agent and
-connection.
+separate hardened system services. Co-location is only a topology choice. Multiple
+communities may run concurrently, and each agent receives only its community's
+relay URL and authorization. Process groups, secret paths, working directories,
+workspace paths, and runtime state are isolated per agent and connection.
 
 ## Readiness and deletion
 
-`running` requires more than a running container: the expected agent public key,
+`running` requires more than a live child process: the expected agent public key,
 valid owner authorization, successful connection to the configured relay, a
 healthy `buzz-acp` process, and a successful harness-level probe must all agree.
 
 Delete stops the agent immediately and enters recoverable retention. Secrets and
 workspace are purged only after the configured retention policy expires. The
 default retention period is 30 days, configurable per installation. A daily idempotent purge job retries failures, and an administrator may request immediate purge.
-

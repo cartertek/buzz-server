@@ -10,7 +10,8 @@ a client laptop to remain online.
 
 - depend directly on pinned `buzz-sdk` and identify the first production call sites for `buzz-core` and `buzz-ws-client`;
 - inventory Tauri-free managed-agent logic suitable for an upstream shared crate;
-- document the provider v1 request/response contract at the pinned Buzz commit;
+- document the provider v1 request/response contract at the pinned Buzz commit as
+  future external-provider compatibility evidence, not a Phase 1 prerequisite;
 - prove Desktop/Server NIP-OA parity with shared fixtures;
 - define only the durable signing lifecycle Server adds around shared NIP-OA;
 - specify Unix-socket and remote TLS API authentication/authorization profiles;
@@ -30,12 +31,11 @@ Exit satisfied at Buzz revision `7ff5fc31895efe6265a379d01637c8ee301872e5`; see 
 - durable operation state machine and reconciliation loop;
 - server-native agent key generation;
 - separate disposable-key signer service;
-- bundled self-hosted provider;
-- discover trusted `buzz-backend-*` executables and implement provider v1
-  `info`/`deploy` compatibility;
-- Compose supervisor driver;
-- thin privileged supervisor helper with no arbitrary command surface;
-- version-pinned Codex ACP runtime image matching the current deployment;
+- durable Server-native local backend modeled on Buzz Desktop's built-in
+  `Local` path;
+- reuse or extract Tauri-free launch, configuration, runtime, and shared type
+  semantics without importing the Desktop/Tauri application;
+- version-pinned Codex ACP runtime package matching the current deployment;
 - create, inspect, update, disable, enable, and recoverable delete;
 - relay connection, owner authorization, and harness readiness verification;
 - structured audit log with secret redaction;
@@ -53,9 +53,12 @@ identity or service creation.
 - additional Desktop-compatible ACP runtimes;
 - resource/network hardening, upgrades, rollback, monitoring, and alerts.
 
-## Phase 3 — provider hardening and protocol evolution
+## Phase 3 — external providers and protocol evolution
 
+- discover trusted `buzz-backend-*` executables and implement provider v1
+  `info`/`deploy` compatibility;
 - accept already-signed Desktop-compatible deployments;
+- evaluate a Docker Compose provider as an optional deployment path;
 - sandbox provider subprocesses;
 - define versioned lifecycle capability negotiation without breaking v1.
 
@@ -85,4 +88,3 @@ cargo build --release
 
 Use fake relays/signers and disposable identities in automated tests. Never place
 the production owner identity in development or CI.
-

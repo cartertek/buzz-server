@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted; Compose-specific clause partially superseded by
+[ADR 0012](0012-built-in-local-backend-first.md)
 
 ## Decision
 
@@ -17,9 +18,18 @@ Buzz Server follows Desktop protocol behavior but replaces the interactive inter
 
 This is intentionally a fixed MVP authority model, not a general RBAC system.
 
-### Provider and supervisor
+### Local backend and supervisor
 
-The supervisor owns running-service lifecycle. Full start, stop, inspect, logs, update, and delete are available when Server controls or has an explicit interface to that supervisor. Provider v1 `info` and `deploy` may accept provider-specific deployment configuration, but do not standardize later lifecycle calls. Unsupported operations return an explicit capability error; a future extension must be versioned.
+The MVP local backend owns desired lifecycle state and uses a least-privilege
+headless process supervisor for launch, stop, inspect, logs, update, and delete.
+The supervisor accepts typed, validated process and lifecycle requests, not
+arbitrary shell commands. Durable launch receipts identify processes without
+containing secrets.
+
+Future provider v1 `info` and `deploy` calls may accept provider-specific
+deployment configuration, but do not standardize later lifecycle calls.
+Unsupported operations return an explicit capability error; a future extension
+must be versioned.
 
 ### Crash recovery
 
@@ -27,20 +37,26 @@ The supervisor owns running-service lifecycle. Full start, stop, inspect, logs, 
 | --- | --- |
 | Before durable identity | Retry. |
 | After identity, before authorization | Reuse the persisted key and continue. |
-| After authorization, before supervisor apply | Reuse authorization and stable deployment name. |
-| After apply, before receipt persistence | Inspect and adopt the stable deployment. |
+| After authorization, before process launch | Reuse authorization and stable launch identity. |
+| After launch, before receipt persistence | Inspect and adopt the stable process. |
 | During update or deletion | Reconcile toward durable desired state. |
 
-Identity and deployment names are created once and reused across retries.
+Identity and launch identities are created once and reused across retries.
 
 ### Secret lifecycle
 
 - The owner key is encrypted and decryptable only by the constrained signer; rotation requires reauthorization.
-- Agent keys and runtime credentials are encrypted and released only to the deployment path and target agent as needed.
-- Secrets never enter Compose YAML, logs, or audit records.
+- Agent keys and runtime credentials are encrypted and released only to the
+  target process as needed through an explicit, minimal launch context.
+- Secrets never enter command arguments, ambient inherited environments, launch
+  receipts, logs, or audit records.
 - Backups remain encrypted; restore verifies derived agent pubkeys before starting services.
 - Credential rotation preserves identity; agent-key replacement creates a new identity.
 - Recoverable deletion stops compute; purge removes keys, credentials, and workspace but retains a non-secret tombstone and audit outcome.
+
+The original Compose-specific secret clause is retained for future
+implementations: a Compose provider must also keep secrets out of generated YAML
+and project metadata.
 
 ## Consequences
 
