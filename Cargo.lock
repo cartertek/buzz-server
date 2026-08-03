@@ -135,7 +135,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "buzz-core"
 version = "0.1.0"
-source = "git+https://github.com/block/buzz.git?rev=7ff5fc31895efe6265a379d01637c8ee301872e5#7ff5fc31895efe6265a379d01637c8ee301872e5"
+source = "git+https://github.com/block/buzz.git?rev=a5dbdf5e61e4c512acd99c219c79c154ddb57295#a5dbdf5e61e4c512acd99c219c79c154ddb57295"
 dependencies = [
  "base64",
  "chrono",
@@ -157,7 +157,7 @@ dependencies = [
 [[package]]
 name = "buzz-sdk"
 version = "0.1.0"
-source = "git+https://github.com/block/buzz.git?rev=7ff5fc31895efe6265a379d01637c8ee301872e5#7ff5fc31895efe6265a379d01637c8ee301872e5"
+source = "git+https://github.com/block/buzz.git?rev=a5dbdf5e61e4c512acd99c219c79c154ddb57295#a5dbdf5e61e4c512acd99c219c79c154ddb57295"
 dependencies = [
  "buzz-core",
  "nostr",

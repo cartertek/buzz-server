@@ -1,0 +1,17 @@
+name: Buzz upstream compatibility
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  check-pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare reviewed pin with Buzz main
+        run: scripts/check-buzz-upstream.sh

@@ -8,7 +8,7 @@ description = "Headless Buzz client for operating always-on agents"
 publish = false
 
 [dependencies]
-buzz-sdk = { git = "https://github.com/block/buzz.git", rev = "7ff5fc31895efe6265a379d01637c8ee301872e5", version = "0.1.0" }
+buzz-sdk = { git = "https://github.com/block/buzz.git", rev = "a5dbdf5e61e4c512acd99c219c79c154ddb57295", version = "0.1.0" }
 
 [lints.rust]
 unsafe_code = "forbid"
