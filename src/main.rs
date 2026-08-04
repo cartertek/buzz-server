@@ -595,6 +595,37 @@ async fn main() -> Result<(), DaemonError> {
         let outcome = reconciler.reconcile_desired(&agent, Some(&launch))?;
         eprintln!("local reconciliation: {outcome:?}");
     }
+    for agent in store.list_agents(None)? {
+        if agent.id == config.agent.id {
+            continue;
+        }
+        let kind = match agent.desired_state {
+            buzz_server::DesiredAgentState::Enabled => buzz_server::OperationKind::EnableAgent,
+            buzz_server::DesiredAgentState::Disabled => buzz_server::OperationKind::DisableAgent,
+            buzz_server::DesiredAgentState::Deleted => buzz_server::OperationKind::DeleteAgent,
+        };
+        let startup = buzz_server::api::OperationResource {
+            id: buzz_server::OperationId::new(),
+            kind,
+            status: buzz_server::OperationStatus::Running,
+            agent_id: Some(agent.id),
+            error_code: None,
+            correlation_id: format!("startup:{}", agent.id),
+            created_at: unix_seconds_i64(),
+            updated_at: unix_seconds_i64(),
+        };
+        reconcile_dynamic_lifecycle_operation(
+            &lifecycle_application,
+            store.as_ref(),
+            &startup,
+            &config,
+            &owner_keys,
+            &custody,
+            &supervisor,
+            child_identity,
+            false,
+        )?;
+    }
 
     let signer_server = SignerIpcServer::new(&config.signer_socket, Arc::new(constrained_signer));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -691,7 +722,9 @@ async fn main() -> Result<(), DaemonError> {
                     child_identity,
                 )?;
             }
-            _ = process_tick.tick() => {},
+            _ = process_tick.tick() => {
+                observe_dynamic_agents(store.as_ref(), &supervisor, &config)?;
+            },
             _ = retention_tick.tick() => {
                 enqueue_expired_purges(&lifecycle_application)?;
             },
@@ -908,6 +941,7 @@ fn reconcile_lifecycle_operation<E: LifecycleEffects>(
             custody,
             supervisor,
             child_identity,
+            true,
         );
     }
     let agent = store
@@ -1017,6 +1051,7 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
     custody: &FilesystemAgentIdentityCustody,
     supervisor: &LocalProcessAdapter,
     child_identity: (u32, u32),
+    finish_operation: bool,
 ) -> Result<(), DaemonError> {
     let agent_id = operation.agent_id.ok_or(StorageError::NotFound)?;
     let agent = store.get_agent(agent_id)?.ok_or(StorageError::NotFound)?;
@@ -1138,7 +1173,13 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
             error_code = Some(buzz_server::ErrorCode::Internal);
         }
     }
-    application.complete_operation(operation.id, status, error_code)?;
+    if finish_operation {
+        application.complete_operation(operation.id, status, error_code)?;
+    } else if status == buzz_server::OperationStatus::Failed {
+        return Err(DaemonError::Task(format!(
+            "startup reconciliation failed for dynamic agent {agent_id}: {error_code:?}"
+        )));
+    }
     Ok(())
 }
 
@@ -1233,6 +1274,26 @@ fn sync_supervisor_logs(
                 redacted_message: message,
             },
         )?;
+    }
+    Ok(())
+}
+
+fn observe_dynamic_agents(
+    store: &SqliteStore,
+    supervisor: &LocalProcessAdapter,
+    config: &DaemonConfig,
+) -> Result<(), DaemonError> {
+    for agent in store.list_agents(None)? {
+        if agent.id == config.agent.id {
+            continue;
+        }
+        let layout = dynamic_agent_layout(config, agent.id)?;
+        let receipts = ReceiptFile::new(layout.receipt);
+        if let Some(receipt) = receipts.get_receipt(agent.id)? {
+            let observed = supervisor.inspect(&receipt)?;
+            receipts.put_receipt(&observed)?;
+            sync_supervisor_logs(store, supervisor, agent.id, &layout.launch_id)?;
+        }
     }
     Ok(())
 }
