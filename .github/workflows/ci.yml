@@ -19,4 +19,5 @@ jobs:
       - run: cargo test --all-targets --locked
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - run: cargo build --release --locked
+      - run: scripts/check-provider-upstream.sh
       - run: scripts/check-buzz-upstream.sh

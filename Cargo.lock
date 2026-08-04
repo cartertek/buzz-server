@@ -301,7 +301,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "buzz-core"
 version = "0.1.0"
-source = "git+https://github.com/block/buzz.git?rev=56003ebf98c22367fb6357f295494e26efbd8ae6#56003ebf98c22367fb6357f295494e26efbd8ae6"
+source = "git+https://github.com/block/buzz.git?rev=0afeac8a7c173fd3ede8a22e27919e63161bf07c#0afeac8a7c173fd3ede8a22e27919e63161bf07c"
 dependencies = [
  "base64",
  "chrono",
@@ -323,7 +323,7 @@ dependencies = [
 [[package]]
 name = "buzz-sdk"
 version = "0.1.0"
-source = "git+https://github.com/block/buzz.git?rev=56003ebf98c22367fb6357f295494e26efbd8ae6#56003ebf98c22367fb6357f295494e26efbd8ae6"
+source = "git+https://github.com/block/buzz.git?rev=0afeac8a7c173fd3ede8a22e27919e63161bf07c#0afeac8a7c173fd3ede8a22e27919e63161bf07c"
 dependencies = [
  "buzz-core",
  "nostr",
@@ -361,7 +361,7 @@ dependencies = [
 [[package]]
 name = "buzz-ws-client"
 version = "0.1.0"
-source = "git+https://github.com/block/buzz.git?rev=56003ebf98c22367fb6357f295494e26efbd8ae6#56003ebf98c22367fb6357f295494e26efbd8ae6"
+source = "git+https://github.com/block/buzz.git?rev=0afeac8a7c173fd3ede8a22e27919e63161bf07c#0afeac8a7c173fd3ede8a22e27919e63161bf07c"
 dependencies = [
  "futures-util",
  "nostr",

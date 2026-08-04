@@ -51,6 +51,12 @@ authority. “Headless Buzz Desktop” is a long-term direction, not the v0 cont
 
 The earlier inventory was made at Buzz commit `b1b283cd4c7f926e12eeee8ae1f38c7471922b16`. Phase 0 refreshed it against commit `7ff5fc31895efe6265a379d01637c8ee301872e5`, which supplied the NIP-OA and provider-wire fixtures. The dependency pin was reviewed again at `a5dbdf5e61e4c512acd99c219c79c154ddb57295`; the intervening change affects only the mobile relay client, so the shared Rust crates and recorded fixtures are unchanged.
 
+Milestone 4 refreshed the exact dependency pin to
+`0afeac8a7c173fd3ede8a22e27919e63161bf07c`. The commits since the preceding
+pin affect only Desktop profile/sidebar UI and managed-agent restart-diff
+presentation/state; shared Rust crates and the Kubernetes provider
+contract/fixtures are unchanged.
+
 ## Compatibility decisions
 
 1. Implement the MVP as a durable Server-native local backend modeled on Buzz

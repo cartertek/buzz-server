@@ -1,6 +1,7 @@
 //! Version-1 external provider negotiation and deployment boundary.
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
@@ -18,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use crate::provider_discovery::{hex_digest, sha256_reader, ProviderCandidate};
 
 pub const PROVIDER_PROTOCOL_VERSION: u32 = 1;
+pub const PROVIDER_LIFECYCLE_PROTOCOL_VERSION: u32 = 1;
+const PROVIDER_INPUT_CAP: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -28,6 +31,16 @@ pub struct ProviderInfo {
     pub protocol_version: u32,
     pub description: String,
     pub config_schema: serde_json::Value,
+    #[serde(default)]
+    pub capabilities: ProviderCapabilities,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCapabilities {
+    pub lifecycle_protocol_version: Option<u32>,
+    #[serde(default)]
+    pub lifecycle_actions: BTreeSet<ProviderLifecycleAction>,
 }
 
 impl ProviderInfo {
@@ -45,11 +58,26 @@ impl ProviderInfo {
                 actual: self.protocol_version,
             });
         }
+        if let Some(actual) = self.capabilities.lifecycle_protocol_version {
+            if actual != PROVIDER_LIFECYCLE_PROTOCOL_VERSION {
+                return Err(ProviderError::UnsupportedLifecycleProtocol { actual });
+            }
+        } else if !self.capabilities.lifecycle_actions.is_empty() {
+            return Err(ProviderError::InvalidInfo);
+        }
+        if self
+            .capabilities
+            .lifecycle_actions
+            .contains(&ProviderLifecycleAction::Deploy)
+        {
+            return Err(ProviderError::InvalidInfo);
+        }
         Ok(())
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderLifecycleAction {
     Deploy,
     Inspect,
@@ -85,6 +113,8 @@ pub enum ProviderError {
     Timeout,
     #[error("provider output exceeded its byte limit")]
     OutputLimit,
+    #[error("provider request exceeded its byte limit")]
+    InputLimit,
     #[error("provider response was not valid JSON")]
     InvalidJson,
     #[error("provider info response is incomplete or invalid")]
@@ -95,6 +125,8 @@ pub enum ProviderError {
     TrustBinding,
     #[error("unsupported provider protocol version {actual}")]
     UnsupportedProtocol { actual: u32 },
+    #[error("unsupported provider lifecycle protocol version {actual}")]
+    UnsupportedLifecycleProtocol { actual: u32 },
     #[error("provider returned an error: {0}")]
     Provider(String),
     #[error("deploy response is missing agent_id")]
@@ -105,6 +137,10 @@ pub enum ProviderError {
     UnsupportedSchema(String),
     #[error("provider config does not satisfy negotiated schema: {0}")]
     InvalidConfig(String),
+    #[error("provider lifecycle action {0:?} is not supported by protocol v1")]
+    UnsupportedLifecycle(ProviderLifecycleAction),
+    #[error("provider environment variable {0} is secret-shaped")]
+    SecretEnvironment(String),
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +150,9 @@ pub struct ProviderHostConfig {
     pub deploy_timeout: Duration,
     pub stdout_cap: usize,
     pub stderr_cap: usize,
+    /// Explicit non-secret environment passed to provider subprocesses.
+    /// The server's ambient environment is never inherited.
+    pub environment: BTreeMap<String, String>,
 }
 
 pub struct ProviderHost {
@@ -133,6 +172,9 @@ impl ProviderHost {
                 "invalid provider host config",
             )
             .into());
+        }
+        if let Some(key) = config.environment.keys().find(|key| secret_shaped_key(key)) {
+            return Err(ProviderError::SecretEnvironment(key.clone()));
         }
         fs::create_dir_all(&config.staging_directory)?;
         Ok(Self { config })
@@ -159,6 +201,7 @@ impl ProviderHost {
             self.config.info_timeout,
             self.config.stdout_cap,
             self.config.stderr_cap,
+            &self.config.environment,
         )?;
         let info: ProviderInfo =
             serde_json::from_value(response).map_err(|_| ProviderError::InvalidInfo)?;
@@ -178,6 +221,7 @@ impl ProviderHost {
             deploy_timeout: self.config.deploy_timeout,
             stdout_cap: self.config.stdout_cap,
             stderr_cap: self.config.stderr_cap,
+            environment: self.config.environment.clone(),
         })
     }
 }
@@ -190,21 +234,63 @@ pub struct NegotiatedProvider {
     deploy_timeout: Duration,
     stdout_cap: usize,
     stderr_cap: usize,
+    environment: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProviderDescriptor {
+    pub id: String,
+    pub version: String,
+    pub protocol_version: u32,
+    pub description: String,
+    pub config_schema: serde_json::Value,
+    pub capabilities: ProviderCapabilities,
+    pub staged_sha256: String,
 }
 
 impl NegotiatedProvider {
+    /// Public, secret-free provider metadata suitable for the private API.
+    #[must_use]
+    pub fn descriptor(&self) -> ProviderDescriptor {
+        ProviderDescriptor {
+            id: self.id.clone(),
+            version: self.info.version.clone(),
+            protocol_version: self.info.protocol_version,
+            description: self.info.description.clone(),
+            config_schema: self.info.config_schema.clone(),
+            capabilities: self.info.capabilities.clone(),
+            staged_sha256: self.staged_sha256.clone(),
+        }
+    }
+
     /// The closure is intentionally invoked only after trust and protocol
     /// negotiation have succeeded on the exact immutable staged bytes.
     pub fn deploy<F>(&self, build_payload: F) -> Result<String, ProviderError>
     where
         F: FnOnce() -> Result<(serde_json::Value, serde_json::Value), ProviderError>,
     {
+        self.deploy_idempotent(&uuid::Uuid::now_v7().to_string(), build_payload)
+    }
+
+    /// Uses a durable caller-supplied request ID so a reconciling provider can
+    /// converge retries on the same external deployment.
+    pub fn deploy_idempotent<F>(
+        &self,
+        request_id: &str,
+        build_payload: F,
+    ) -> Result<String, ProviderError>
+    where
+        F: FnOnce() -> Result<(serde_json::Value, serde_json::Value), ProviderError>,
+    {
+        if request_id.is_empty() || request_id.len() > 200 {
+            return Err(ProviderError::Payload);
+        }
         let (agent, provider_config) = build_payload().map_err(|_| ProviderError::Payload)?;
         validate_provider_config(&provider_config)?;
         validate_config_against_schema(&self.info.config_schema, &provider_config)?;
         let request = serde_json::json!({
             "op": "deploy",
-            "request_id": uuid::Uuid::now_v7().to_string(),
+            "request_id": request_id,
             "agent": agent,
             "provider_config": provider_config,
         });
@@ -214,6 +300,7 @@ impl NegotiatedProvider {
             self.deploy_timeout,
             self.stdout_cap,
             self.stderr_cap,
+            &self.environment,
         )?;
         response
             .get("agent_id")
@@ -221,6 +308,18 @@ impl NegotiatedProvider {
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
             .ok_or(ProviderError::MissingAgentId)
+    }
+
+    /// Protocol v1 is deploy-only. Lifecycle remains a server operation until
+    /// a future provider advertises a versioned capability for it.
+    pub fn lifecycle(&self, action: ProviderLifecycleAction) -> Result<(), ProviderError> {
+        if action == ProviderLifecycleAction::Deploy
+            || self.info.capabilities.lifecycle_actions.contains(&action)
+        {
+            Ok(())
+        } else {
+            Err(ProviderError::UnsupportedLifecycle(action))
+        }
     }
 }
 
@@ -487,11 +586,20 @@ fn invoke(
     timeout: Duration,
     stdout_cap: usize,
     stderr_cap: usize,
+    environment: &BTreeMap<String, String>,
 ) -> Result<serde_json::Value, ProviderError> {
     let request_bytes = serde_json::to_vec(request).map_err(|_| ProviderError::InvalidJson)?;
+    if request_bytes.len() > PROVIDER_INPUT_CAP {
+        return Err(ProviderError::InputLimit);
+    }
     let secrets = collect_strings(request);
     let mut command = Command::new(binary);
     command
+        .env_clear()
+        .envs(environment)
+        .current_dir(binary.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "provider path has no parent")
+        })?)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -596,17 +704,43 @@ fn terminate_provider(child: &mut std::process::Child) {
 
 fn collect_strings(value: &serde_json::Value) -> Vec<String> {
     let mut values = Vec::new();
+    fn collect_value(value: &serde_json::Value, values: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(value) if !value.is_empty() => values.push(value.clone()),
+            serde_json::Value::Array(items) => {
+                items.iter().for_each(|value| collect_value(value, values));
+            }
+            serde_json::Value::Object(object) => {
+                object
+                    .values()
+                    .for_each(|value| collect_value(value, values));
+            }
+            _ => {}
+        }
+    }
     fn visit(value: &serde_json::Value, values: &mut Vec<String>) {
         match value {
-            serde_json::Value::String(value) if value.len() >= 4 => values.push(value.clone()),
             serde_json::Value::Array(items) => items.iter().for_each(|value| visit(value, values)),
             serde_json::Value::Object(object) => {
-                object.values().for_each(|value| visit(value, values))
+                for (key, value) in object {
+                    if secret_shaped_key(key)
+                        || matches!(
+                            key.as_str(),
+                            "auth_tag" | "system_prompt" | "env" | "env_vars" | "policy_env"
+                        )
+                    {
+                        collect_value(value, values);
+                    } else {
+                        visit(value, values);
+                    }
+                }
             }
             _ => {}
         }
     }
     visit(value, &mut values);
+    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    values.dedup();
     values
 }
 
@@ -652,6 +786,7 @@ esac
             deploy_timeout: Duration::from_secs(10),
             stdout_cap: 64 * 1024,
             stderr_cap: 4096,
+            environment: BTreeMap::new(),
         })
         .unwrap()
     }
@@ -716,6 +851,27 @@ esac
         ] {
             assert_eq!(lifecycle_support(action), LifecycleSupport::Unsupported);
         }
+    }
+
+    #[test]
+    fn lifecycle_capabilities_are_independently_versioned() {
+        let base = serde_json::json!({
+            "ok": true,
+            "name": "fake",
+            "version": "1.0.0",
+            "protocol_version": 1,
+            "description": "fake provider",
+            "config_schema": {},
+            "capabilities": {
+                "lifecycle_protocol_version": 2,
+                "lifecycle_actions": ["inspect"]
+            }
+        });
+        let info: ProviderInfo = serde_json::from_value(base).unwrap();
+        assert!(matches!(
+            info.validate(),
+            Err(ProviderError::UnsupportedLifecycleProtocol { actual: 2 })
+        ));
     }
 
     #[test]
