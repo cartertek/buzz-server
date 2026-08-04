@@ -44,7 +44,7 @@ jobs:
     container: public.ecr.aws/amazonlinux/amazonlinux@sha256:601289f29d1b67fc542a451beda8ac6ca542d40289c99f71faa3ba37fe0d133a
     steps:
       - name: Install glibc 2.34 build prerequisites
-        run: dnf install -y gcc gcc-c++ git tar gzip curl findutils binutils
+        run: dnf install -y gcc gcc-c++ git tar gzip findutils binutils
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Install pinned Rust toolchain
         env:
