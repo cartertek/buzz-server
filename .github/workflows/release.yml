@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    tags: ["server-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt,clippy
+      - run: rustup override set 1.88.0
+      - name: Validate immutable tag matches Cargo version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          cargo_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+          test "$TAG" = "server-v$cargo_version"
+      - run: cargo fmt --check
+      - run: cargo test --all-targets --locked
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - run: cargo build --release --locked
+      - run: scripts/check-buzz-upstream.sh
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: rustup toolchain install 1.88.0 --profile minimal --target '${{ matrix.target }}'
+      - run: rustup override set 1.88.0
+      - run: cargo build --release --locked --target '${{ matrix.target }}'
+      - name: Package immutable release
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -eu
+          package="buzz-server-${VERSION}-${TARGET}"
+          mkdir -p "dist/${package}/config" "dist/${package}/deploy"
+          install -m 0755 "target/${TARGET}/release/buzz-server" "dist/${package}/buzz-server"
+          install -m 0644 config/buzz-server.dev.example.json config/buzz-server.schema.json "dist/${package}/config/"
+          install -m 0644 deploy/buzz-server.service deploy/README.md "dist/${package}/deploy/"
+          install -m 0755 deploy/install-release.sh deploy/buzz-serverctl deploy/provision-runtimes.sh "dist/${package}/deploy/"
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C dist -cf - "${package}" | gzip -n > "dist/${package}.tar.gz"
+          (cd dist && sha256sum "${package}.tar.gz" > "${package}.tar.gz.sha256")
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Verify complete release set
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            test -f "dist/buzz-server-${TAG}-${target}.tar.gz"
+            test -f "dist/buzz-server-${TAG}-${target}.tar.gz.sha256"
+          done
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 4
+          (cd dist && sha256sum -c ./*.tar.gz.sha256)
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-path: dist/*.tar.gz
+      - name: Attach assets to immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag='${{ github.ref_name }}'
+          verify_remote() {
+            rm -rf remote-assets
+            mkdir remote-assets
+            gh release download "$tag" --dir remote-assets
+            test "$(find remote-assets -maxdepth 1 -type f | wc -l)" -eq 4
+            for local_asset in dist/*; do
+              remote_asset="remote-assets/$(basename "$local_asset")"
+              test -f "$remote_asset"
+              cmp "$local_asset" "$remote_asset"
+            done
+          }
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # Release assets are immutable, including while a release is a draft.
+            # An interrupted first publication must be investigated rather than
+            # repaired by replacing or appending assets on a rerun.
+            verify_remote
+            draft=$(gh release view "$tag" --json isDraft --jq .isDraft)
+            if [ "$draft" != true ]; then
+              echo "published release already contains the exact immutable assets"
+              exit 0
+            fi
+            echo "draft release already contains the exact immutable assets"
+          else
+            gh release create "$tag" --draft --verify-tag --generate-notes --title "$tag"
+            # If another publisher won a race, the upload fails without replacing
+            # any asset and the next run performs an exact comparison.
+            gh release upload "$tag" dist/*
+            verify_remote
+          fi
+          gh release edit "$tag" --draft=false

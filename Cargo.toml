@@ -11,10 +11,17 @@ publish = false
 buzz-core = { git = "https://github.com/block/buzz.git", rev = "ede8d22dd5b336f146e0a6d760fd9dff78a42613" }
 buzz-sdk = { git = "https://github.com/block/buzz.git", rev = "ede8d22dd5b336f146e0a6d760fd9dff78a42613", version = "0.1.0" }
 buzz-ws-client = { git = "https://github.com/block/buzz.git", rev = "ede8d22dd5b336f146e0a6d760fd9dff78a42613" }
+axum = "0.8"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+base64 = "0.22"
+nostr = { version = "0.44", features = ["nip44", "nip98"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+sha2 = "0.10"
 rusqlite = { version = "0.37", features = ["bundled"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 thiserror = "2.0.17"
+tokio = { version = "1.53", features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
 url = { version = "2.5.7", features = ["serde"] }
 uuid = { version = "1.19.0", features = ["serde", "v7"] }
 
@@ -22,5 +29,6 @@ uuid = { version = "1.19.0", features = ["serde", "v7"] }
 unsafe_code = "forbid"
 
 [dev-dependencies]
-nostr = { version = "0.44", features = ["nip44", "nip98"] }
 tempfile = "3.23"
+rcgen = "0.14"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
