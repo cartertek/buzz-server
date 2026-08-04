@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://buzz.example/schemas/buzz-server-development-config.json",
+  "title": "Buzz Server development daemon configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "state_database", "receipt_file", "signer_socket", "log_directory",
+    "working_directory", "workspace_path", "runtime_path", "agent_secret_env",
+    "owner_secret_file", "runtime_user", "expected_agent_pubkey", "signer_conditions",
+    "community", "agent", "runtime_catalog", "harness", "restart", "health"
+  ],
+  "properties": {
+    "state_database": { "type": "string", "pattern": "^/var/lib/buzz-server(?:/|$)" },
+    "receipt_file": { "type": "string", "pattern": "^/var/lib/buzz-server(?:/|$)" },
+    "signer_socket": { "type": "string", "pattern": "^/run/buzz-server(?:/|$)" },
+    "log_directory": { "type": "string", "pattern": "^/var/log/buzz-server(?:/|$)" },
+    "working_directory": { "type": "string", "pattern": "^/var/lib/buzz-server(?:/|$)" },
+    "workspace_path": { "type": "string", "pattern": "^/var/lib/buzz-server(?:/|$)" },
+    "runtime_path": { "type": "string", "pattern": "^/var/lib/buzz-server(?:/|$)" },
+    "agent_secret_env": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" },
+    "owner_secret_file": { "const": "/run/credentials/buzz-server.service/owner-secret" },
+    "runtime_user": { "const": "buzz-agent" },
+    "expected_agent_pubkey": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "signer_conditions": { "type": "string" },
+    "community": { "type": "object" },
+    "agent": { "type": "object" },
+    "runtime_catalog": { "type": "object" },
+    "harness": { "type": "object" },
+    "harness_arguments": { "type": "array", "items": { "type": "string" } },
+    "restart": { "type": "object" },
+    "health": { "type": "object" }
+  }
+}

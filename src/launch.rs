@@ -13,6 +13,11 @@ use crate::{
 
 const MAX_ARGUMENTS: usize = 256;
 const MAX_ENVIRONMENT: usize = 256;
+pub const HARNESS_AGENT_COMMAND_ENV: &str = "BUZZ_ACP_AGENT_COMMAND";
+pub const HARNESS_AGENT_ARGS_ENV: &str = "BUZZ_ACP_AGENT_ARGS";
+pub const HARNESS_PRIVATE_KEY_ENV: &str = "BUZZ_PRIVATE_KEY";
+pub const HARNESS_RELAY_URL_ENV: &str = "BUZZ_RELAY_URL";
+pub const HARNESS_AUTH_TAG_ENV: &str = "BUZZ_AUTH_TAG";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -169,6 +174,18 @@ impl LaunchSpec {
         runtime: &RuntimeCatalogEntry,
         context: LocalLaunchContext,
     ) -> Result<Self, LaunchResolutionError> {
+        if agent
+            .runtime
+            .environment
+            .keys()
+            .any(|key| reserved_harness_environment_key(key))
+        {
+            return Err(ValidationError::new(
+                "runtime.environment",
+                "must not override backend-owned Buzz ACP environment",
+            )
+            .into());
+        }
         let (package_id, sha256) = match &runtime.artifact {
             RuntimeArtifact::LocalExecutable { sha256 } => (runtime.id.to_string(), sha256.clone()),
             RuntimeArtifact::Package {
@@ -177,6 +194,18 @@ impl LaunchSpec {
                 version: _,
             } => (format!("{manager}:{name}"), None),
         };
+        let resolved_preflight = runtime.preflight.as_ref().map(|probe| PreflightProbe {
+            timeout_seconds: probe.timeout_seconds,
+            command: context.harness.path.clone(),
+            arguments: vec![
+                "models".into(),
+                "--json".into(),
+                "--agent-command".into(),
+                runtime.command.clone(),
+                "--agent-args".into(),
+                runtime.arguments.join(","),
+            ],
+        });
         let mut secret_environment = BTreeMap::new();
         for required in &runtime.required_secrets {
             if agent
@@ -211,7 +240,7 @@ impl LaunchSpec {
                     sha256,
                 },
                 arguments: runtime.arguments.clone(),
-                preflight: runtime.preflight.clone(),
+                preflight: resolved_preflight,
             },
             environment: agent.runtime.environment.clone(),
             secret_environment,
@@ -282,7 +311,35 @@ impl LaunchSpec {
             secret.validate()?;
         }
         self.restart.validate()?;
-        self.health.validate()
+        self.health.validate()?;
+        self.harness_runtime_environment()?;
+        Ok(())
+    }
+
+    /// Verified Buzz ACP runtime-selection environment applied by the process
+    /// supervisor after configured non-secret values.
+    pub fn harness_runtime_environment(&self) -> Result<BTreeMap<String, String>, ValidationError> {
+        if self
+            .runtime
+            .arguments
+            .iter()
+            .any(|argument| argument.contains(','))
+        {
+            return Err(ValidationError::new(
+                "runtime.arguments",
+                "Buzz ACP comma-separated agent arguments must not contain commas",
+            ));
+        }
+        Ok(BTreeMap::from([
+            (
+                HARNESS_AGENT_COMMAND_ENV.to_owned(),
+                self.runtime.executable.path.clone(),
+            ),
+            (
+                HARNESS_AGENT_ARGS_ENV.to_owned(),
+                self.runtime.arguments.join(","),
+            ),
+        ]))
     }
 
     /// Determines whether a durable receipt describes this exact desired launch.
@@ -551,6 +608,12 @@ pub struct ProcessReceipt {
     pub desired: LaunchIdentity,
     pub pid: u32,
     pub started_at_unix_ms: u64,
+    /// Linux `/proc/<pid>/stat` start-time ticks prevent PID-reuse adoption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_start_ticks: Option<u64>,
+    /// Original argv[0] observed at spawn, checked again before re-adoption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_path: Option<String>,
     pub observed_state: ObservedProcessState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
@@ -563,6 +626,14 @@ impl ProcessReceipt {
         self.desired.validate()?;
         if self.pid == 0 {
             return Err(ValidationError::new("pid", "must be non-zero"));
+        }
+        if self.process_start_ticks == Some(0)
+            || self.command_path.as_deref().is_some_and(str::is_empty)
+        {
+            return Err(ValidationError::new(
+                "process_identity",
+                "contains an invalid live-process identity",
+            ));
         }
         if self.exit_code.is_some() && !self.observed_state.is_terminal() {
             return Err(ValidationError::new(
@@ -620,6 +691,17 @@ fn valid_environment_key(key: &str) -> bool {
     let mut characters = key.chars();
     matches!(characters.next(), Some('A'..='Z' | '_'))
         && characters.all(|character| matches!(character, 'A'..='Z' | '0'..='9' | '_'))
+}
+
+fn reserved_harness_environment_key(key: &str) -> bool {
+    matches!(
+        key,
+        HARNESS_AGENT_COMMAND_ENV
+            | HARNESS_AGENT_ARGS_ENV
+            | HARNESS_PRIVATE_KEY_ENV
+            | HARNESS_RELAY_URL_ENV
+            | HARNESS_AUTH_TAG_ENV
+    )
 }
 
 #[cfg(test)]
@@ -683,6 +765,8 @@ mod tests {
             desired: spec.identity(),
             pid: 42,
             started_at_unix_ms: 1_700_000_000_000,
+            process_start_ticks: Some(1),
+            command_path: Some(spec.harness.path.clone()),
             observed_state: ObservedProcessState::Healthy,
             exit_code: None,
         }
@@ -696,6 +780,18 @@ mod tests {
         assert_eq!(value["role"], "acp_bridge");
         assert_eq!(value["health"]["kind"], "process");
         assert_eq!(serde_json::from_value::<LaunchSpec>(value).unwrap(), spec);
+    }
+
+    #[test]
+    fn harness_runtime_selection_is_backend_owned_and_exact() {
+        let mut launch = spec();
+        launch.runtime.arguments = vec!["acp".into(), "--stdio".into()];
+        let environment = launch.harness_runtime_environment().unwrap();
+        assert_eq!(
+            environment[HARNESS_AGENT_COMMAND_ENV],
+            "/opt/buzz/bin/codex-acp"
+        );
+        assert_eq!(environment[HARNESS_AGENT_ARGS_ENV], "acp,--stdio");
     }
 
     #[test]
@@ -765,7 +861,11 @@ mod tests {
             },
             command: "/opt/buzz/bin/codex-acp".into(),
             arguments: vec!["--stdio".into()],
-            preflight: None,
+            preflight: Some(PreflightProbe {
+                timeout_seconds: 15,
+                command: "/ignored/catalog/probe".into(),
+                arguments: vec!["ignored".into()],
+            }),
             required_secrets: vec![SecretReference {
                 environment_key: "OPENAI_API_KEY".into(),
                 secret_name: "agents/codex/openai".into(),
@@ -797,6 +897,21 @@ mod tests {
         assert_eq!(resolved.runtime.executable.version, "1.2.3");
         assert_eq!(resolved.runtime.arguments, ["--stdio"]);
         assert_eq!(
+            resolved.runtime.preflight.as_ref().unwrap().arguments,
+            [
+                "models",
+                "--json",
+                "--agent-command",
+                "/opt/buzz/bin/codex-acp",
+                "--agent-args",
+                "--stdio"
+            ]
+        );
+        assert_eq!(
+            resolved.runtime.preflight.as_ref().unwrap().command,
+            "/opt/buzz/bin/buzz-acp"
+        );
+        assert_eq!(
             resolved.secret_environment["OPENAI_API_KEY"].key,
             "agents/codex/openai"
         );
@@ -824,6 +939,31 @@ mod tests {
                 },
             ),
             Err(LaunchResolutionError::SecretShadow(key)) if key == "OPENAI_API_KEY"
+        ));
+
+        let mut overriding_agent = agent.clone();
+        overriding_agent.runtime.environment.insert(
+            HARNESS_RELAY_URL_ENV.into(),
+            "wss://attacker.invalid".into(),
+        );
+        assert!(matches!(
+            LaunchSpec::resolve_local(
+                &overriding_agent,
+                &catalog,
+                LocalLaunchContext {
+                    launch_id: resolved.launch_id.clone(),
+                    harness: resolved.harness.clone(),
+                    harness_arguments: resolved.harness_arguments.clone(),
+                    working_directory: resolved.working_directory.clone(),
+                    workspace_path: resolved.workspace_path.clone(),
+                    runtime_path: resolved.runtime_path.clone(),
+                    process_group_id: resolved.process_group_id.clone(),
+                    restart: resolved.restart.clone(),
+                    health: resolved.health.clone(),
+                },
+            ),
+            Err(LaunchResolutionError::Validation(error))
+                if error.field == "runtime.environment"
         ));
 
         let mut local_catalog = catalog;

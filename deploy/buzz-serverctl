@@ -1,0 +1,52 @@
+#!/bin/sh
+set -eu
+
+command=${1:-}
+case "$command" in
+  health)
+    systemctl is-active --quiet buzz-server.service
+    test -S /run/buzz-server/signer.sock
+    test -f /run/buzz-server/ready
+    test -f /var/lib/buzz-server/state.sqlite3
+    echo healthy
+    ;;
+  start) systemctl start buzz-server.service ;;
+  restart) systemctl restart buzz-server.service ;;
+  stop) systemctl stop buzz-server.service ;;
+  status) systemctl status --no-pager buzz-server.service ;;
+  redeploy)
+    [ "$#" -ge 3 ] && [ "$#" -le 4 ] || { echo "usage: buzz-serverctl redeploy VERSION TARGET [OWNER/REPOSITORY]" >&2; exit 64; }
+    exec /usr/libexec/buzz-server/install-release.sh "$2" "$3" "${4:-cartertek/buzz-server}"
+    ;;
+  rollback)
+    [ "$#" -eq 2 ] || { echo "usage: buzz-serverctl rollback VERSION" >&2; exit 64; }
+    case "$2" in *[!A-Za-z0-9._-]*|'') echo "invalid version" >&2; exit 64;; esac
+    target="/opt/buzz-server/releases/$2"
+    test -x "$target/buzz-server"
+    previous=$(readlink -f /opt/buzz-server/current)
+    test -x "$previous/buzz-server"
+    ln -sfn "$target" /opt/buzz-server/current.next
+    mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
+    systemctl daemon-reload
+    systemctl restart buzz-server.service
+    healthy=false
+    attempts=0
+    while [ "$attempts" -lt 35 ]; do
+      if "$target/share/deploy/buzz-serverctl" health >/dev/null 2>&1; then healthy=true; break; fi
+      attempts=$((attempts + 1))
+      sleep 1
+    done
+    if [ "$healthy" != true ]; then
+      ln -sfn "$previous" /opt/buzz-server/current.next
+      mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
+      systemctl daemon-reload
+      systemctl restart buzz-server.service
+      echo "rollback target failed health checks; previous release restored" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "usage: buzz-serverctl {health|start|restart|stop|status|redeploy|rollback}" >&2
+    exit 64
+    ;;
+esac

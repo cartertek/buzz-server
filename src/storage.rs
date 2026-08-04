@@ -14,7 +14,10 @@ use crate::{
     OperationStatus,
 };
 
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_initial.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_initial.sql")),
+    (2, include_str!("../migrations/0002_lifecycle.sql")),
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -45,6 +48,7 @@ pub struct DurableOperation {
     pub error_code: Option<ErrorCode>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub correlation_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -89,6 +93,18 @@ pub struct IdempotencyRecord {
     pub request_hash: String,
     pub operation_id: OperationId,
     pub created_at: i64,
+}
+
+pub enum AgentCommandMutation<'a> {
+    Create(&'a AgentSpec),
+    Update {
+        id: AgentId,
+        changes: &'a crate::api::UpdateAgentInput,
+    },
+    SetState {
+        id: AgentId,
+        desired_state: crate::DesiredAgentState,
+    },
 }
 
 /// Persistence boundary for community configuration state.
@@ -216,17 +232,138 @@ impl SqliteStore {
             .transpose()
     }
 
+    pub fn list_agents(
+        &self,
+        community_config_id: Option<CommunityConfigId>,
+    ) -> Result<Vec<AgentSpec>, StorageError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT document FROM agent_specs WHERE (?1 IS NULL OR community_config_id=?1) ORDER BY id",
+        )?;
+        let community = community_config_id.map(|id| id.to_string());
+        let rows = statement.query_map([community], |row| row.get::<_, String>(0))?;
+        rows.map(|row| {
+            let document = row?;
+            serde_json::from_str(&document).map_err(StorageError::from)
+        })
+        .collect()
+    }
+
+    pub fn purge_agent(&self, id: AgentId) -> Result<(), StorageError> {
+        let changed = self
+            .connection()?
+            .execute("DELETE FROM agent_specs WHERE id=?1", [id.to_string()])?;
+        if changed == 0 {
+            return Err(StorageError::NotFound);
+        }
+        Ok(())
+    }
+
+    pub fn put_draft(
+        &self,
+        draft: &crate::api::DraftResource,
+        now: i64,
+    ) -> Result<(), StorageError> {
+        let document = serde_json::to_string(draft)?;
+        self.connection()?.execute(
+            "INSERT INTO agent_drafts(id, owner_key, document, created_at, updated_at) VALUES(?1, ?2, ?3, ?4, ?4) ON CONFLICT(id) DO UPDATE SET owner_key=excluded.owner_key, document=excluded.document, updated_at=excluded.updated_at",
+            params![draft.id, serde_json::to_string(&draft.owner)?, document, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_draft(&self, id: &str) -> Result<Option<crate::api::DraftResource>, StorageError> {
+        let document: Option<String> = self
+            .connection()?
+            .query_row(
+                "SELECT document FROM agent_drafts WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        document
+            .map(|value| serde_json::from_str(&value).map_err(StorageError::from))
+            .transpose()
+    }
+
+    pub fn delete_draft(&self, id: &str) -> Result<(), StorageError> {
+        self.connection()?
+            .execute("DELETE FROM agent_drafts WHERE id=?1", [id])?;
+        Ok(())
+    }
+
+    pub fn append_redacted_log(
+        &self,
+        agent_id: AgentId,
+        entry: &crate::api::RedactedLogEntry,
+    ) -> Result<(), StorageError> {
+        if contains_secret_marker(&entry.redacted_message) {
+            return Err(StorageError::InvalidData(
+                "log entry contains a credential-like marker".into(),
+            ));
+        }
+        self.connection()?.execute(
+            "INSERT INTO agent_logs(agent_id, cursor, occurred_at, stream, redacted_message) VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![agent_id.to_string(), entry.cursor, entry.occurred_at, entry.stream, entry.redacted_message],
+        ).map_err(map_constraint)?;
+        Ok(())
+    }
+
+    pub fn agent_logs(
+        &self,
+        agent_id: AgentId,
+        after_cursor: Option<&str>,
+        limit: u16,
+    ) -> Result<Vec<crate::api::RedactedLogEntry>, StorageError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare("SELECT cursor, occurred_at, stream, redacted_message FROM agent_logs WHERE agent_id=?1 AND (?2 IS NULL OR sequence > COALESCE((SELECT sequence FROM agent_logs WHERE agent_id=?1 AND cursor=?2), 0)) ORDER BY sequence LIMIT ?3")?;
+        let rows =
+            statement.query_map(params![agent_id.to_string(), after_cursor, limit], |row| {
+                Ok(crate::api::RedactedLogEntry {
+                    cursor: row.get(0)?,
+                    occurred_at: row.get(1)?,
+                    stream: row.get(2)?,
+                    redacted_message: row.get(3)?,
+                })
+            })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StorageError::from)
+    }
+
+    pub fn claim_nip98_replay(
+        &self,
+        event_id: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> Result<bool, StorageError> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute("DELETE FROM nip98_replay WHERE expires_at < ?1", [now])?;
+        let inserted = transaction.execute(
+            "INSERT OR IGNORE INTO nip98_replay(event_id, expires_at) VALUES(?1, ?2)",
+            params![event_id, expires_at],
+        )?;
+        transaction.commit()?;
+        Ok(inserted == 1)
+    }
+
     pub fn create_operation(&self, operation: &DurableOperation) -> Result<(), StorageError> {
         self.connection()?.execute(
-            "INSERT INTO operations(id, kind, status, agent_id, error_code, created_at, updated_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![operation.id.to_string(), json_name(operation.kind)?, json_name(operation.status)?, operation.agent_id.map(|id| id.to_string()), operation.error_code.map(json_name).transpose()?, operation.created_at, operation.updated_at],
+            "INSERT INTO operations(id, kind, status, agent_id, error_code, created_at, updated_at, correlation_id) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![operation.id.to_string(), json_name(operation.kind)?, json_name(operation.status)?, operation.agent_id.map(|id| id.to_string()), operation.error_code.map(json_name).transpose()?, operation.created_at, operation.updated_at, operation.correlation_id],
         ).map_err(map_constraint)?;
+        Ok(())
+    }
+
+    pub fn delete_operation(&self, id: OperationId) -> Result<(), StorageError> {
+        self.connection()?
+            .execute("DELETE FROM operations WHERE id=?1", [id.to_string()])?;
         Ok(())
     }
 
     pub fn get_operation(&self, id: OperationId) -> Result<Option<DurableOperation>, StorageError> {
         self.connection()?.query_row(
-            "SELECT id, kind, status, agent_id, error_code, created_at, updated_at FROM operations WHERE id=?1",
+            "SELECT id, kind, status, agent_id, error_code, created_at, updated_at, correlation_id FROM operations WHERE id=?1",
             [id.to_string()], decode_operation,
         ).optional().map_err(StorageError::from)
     }
@@ -320,11 +457,11 @@ impl SqliteStore {
                 community_config_id: community_config_id
                     .map(|value| parse_id(&value))
                     .transpose()
-                    .map_err(&invalid)?,
+                    .map_err(invalid)?,
                 operation_id: operation_id
                     .map(|value| parse_id(&value))
                     .transpose()
-                    .map_err(&invalid)?,
+                    .map_err(invalid)?,
                 correlation_id: row.get(6)?,
                 idempotency_key: row.get(7)?,
                 action: row.get(8)?,
@@ -362,6 +499,210 @@ impl SqliteStore {
         transaction.execute("INSERT INTO idempotency_keys(scope, key, request_hash, operation_id, created_at) VALUES(?1, ?2, ?3, ?4, ?5)", params![record.scope, record.key, record.request_hash, record.operation_id.to_string(), record.created_at]).map_err(map_constraint)?;
         transaction.commit()?;
         Ok(record.operation_id)
+    }
+
+    /// Atomically commits agent intent, its operation, scoped idempotency, and audit record.
+    pub fn apply_agent_command(
+        &self,
+        operation: &DurableOperation,
+        idempotency: &IdempotencyRecord,
+        mutation: AgentCommandMutation<'_>,
+        promoted_draft_id: Option<&str>,
+        audit: NewAuditRecord<'_>,
+    ) -> Result<(DurableOperation, bool), StorageError> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT request_hash, operation_id FROM idempotency_keys WHERE scope=?1 AND key=?2",
+                params![idempotency.scope, idempotency.key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((hash, operation_id)) = existing {
+            if hash != idempotency.request_hash {
+                return Err(StorageError::Conflict(
+                    "idempotency key was reused with a different request".into(),
+                ));
+            }
+            let existing = transaction.query_row(
+                "SELECT id, kind, status, agent_id, error_code, created_at, updated_at, correlation_id FROM operations WHERE id=?1",
+                [operation_id],
+                decode_operation,
+            )?;
+            return Ok((existing, true));
+        }
+        match mutation {
+            AgentCommandMutation::Create(agent) => {
+                if operation.kind != OperationKind::CreateAgent
+                    || operation.agent_id != Some(agent.id)
+                {
+                    return Err(StorageError::InvalidData(
+                        "create mutation does not match operation".into(),
+                    ));
+                }
+                agent
+                    .validate()
+                    .map_err(|error| StorageError::InvalidData(error.to_string()))?;
+                transaction.execute(
+                    "INSERT INTO agent_specs(id, community_config_id, document, updated_at) VALUES(?1, ?2, ?3, ?4)",
+                    params![agent.id.to_string(), agent.community_config_id.to_string(), serde_json::to_string(agent)?, operation.created_at],
+                ).map_err(map_constraint)?;
+            }
+            AgentCommandMutation::Update { id, changes } => {
+                if operation.kind != OperationKind::UpdateAgent || operation.agent_id != Some(id) {
+                    return Err(StorageError::InvalidData(
+                        "update mutation does not match operation".into(),
+                    ));
+                }
+                let mut agent = load_agent_transaction(&transaction, id)?;
+                if let Some(value) = &changes.display_name {
+                    agent.display_name.clone_from(value);
+                }
+                if let Some(value) = &changes.system_prompt {
+                    agent.system_prompt.clone_from(value);
+                }
+                if let Some(value) = &changes.runtime_id {
+                    agent.runtime.runtime_id.clone_from(value);
+                }
+                agent
+                    .validate()
+                    .map_err(|error| StorageError::InvalidData(error.to_string()))?;
+                update_agent_transaction(&transaction, &agent, operation.created_at)?;
+            }
+            AgentCommandMutation::SetState { id, desired_state } => {
+                let expected = match operation.kind {
+                    OperationKind::EnableAgent => crate::DesiredAgentState::Enabled,
+                    OperationKind::DisableAgent => crate::DesiredAgentState::Disabled,
+                    OperationKind::DeleteAgent | OperationKind::PurgeAgent => {
+                        crate::DesiredAgentState::Deleted
+                    }
+                    _ => {
+                        return Err(StorageError::InvalidData(
+                            "state mutation does not match operation".into(),
+                        ))
+                    }
+                };
+                if operation.agent_id != Some(id) || desired_state != expected {
+                    return Err(StorageError::InvalidData(
+                        "state mutation does not match operation".into(),
+                    ));
+                }
+                let mut agent = load_agent_transaction(&transaction, id)?;
+                agent.desired_state = desired_state;
+                update_agent_transaction(&transaction, &agent, operation.created_at)?;
+            }
+        }
+        transaction.execute(
+            "INSERT INTO operations(id, kind, status, agent_id, error_code, created_at, updated_at, correlation_id) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![operation.id.to_string(), json_name(operation.kind)?, json_name(operation.status)?, operation.agent_id.map(|id| id.to_string()), operation.error_code.map(json_name).transpose()?, operation.created_at, operation.updated_at, operation.correlation_id],
+        ).map_err(map_constraint)?;
+        transaction.execute(
+            "INSERT INTO idempotency_keys(scope, key, request_hash, operation_id, created_at) VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![idempotency.scope, idempotency.key, idempotency.request_hash, operation.id.to_string(), idempotency.created_at],
+        ).map_err(map_constraint)?;
+        if let Some(draft_id) = promoted_draft_id {
+            let changed = transaction.execute(
+                "UPDATE agent_drafts SET promoted_operation_id=?2, updated_at=?3 WHERE id=?1 AND promoted_operation_id IS NULL",
+                params![draft_id, operation.id.to_string(), operation.created_at],
+            )?;
+            if changed != 1 {
+                return Err(StorageError::Conflict(
+                    "draft does not exist or was already promoted".into(),
+                ));
+            }
+        }
+        insert_audit(&transaction, audit)?;
+        transaction.commit()?;
+        Ok((operation.clone(), false))
+    }
+
+    pub fn apply_draft_command(
+        &self,
+        draft: &crate::api::DraftResource,
+        principal_scope: &str,
+        key: &str,
+        request_hash: &str,
+        now: i64,
+        audit: NewAuditRecord<'_>,
+    ) -> Result<(crate::api::DraftResource, bool), StorageError> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT request_hash, draft_id FROM draft_idempotency WHERE principal_scope=?1 AND key=?2",
+                params![principal_scope, key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((hash, draft_id)) = existing {
+            if hash != request_hash {
+                return Err(StorageError::Conflict(
+                    "idempotency key was reused with a different request".into(),
+                ));
+            }
+            let document: String = transaction.query_row(
+                "SELECT document FROM agent_drafts WHERE id=?1",
+                [draft_id],
+                |row| row.get(0),
+            )?;
+            return Ok((serde_json::from_str(&document)?, true));
+        }
+        transaction.execute(
+            "INSERT INTO agent_drafts(id, owner_key, document, created_at, updated_at) VALUES(?1, ?2, ?3, ?4, ?4)",
+            params![draft.id, serde_json::to_string(&draft.owner)?, serde_json::to_string(draft)?, now],
+        )?;
+        transaction.execute(
+            "INSERT INTO draft_idempotency(principal_scope, key, request_hash, draft_id, created_at) VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![principal_scope, key, request_hash, draft.id, now],
+        )?;
+        insert_audit(&transaction, audit)?;
+        transaction.commit()?;
+        Ok((draft.clone(), false))
+    }
+
+    /// Physically removes a deleted agent only after its purge operation is durable and terminal.
+    pub fn finalize_purge(
+        &self,
+        agent_id: AgentId,
+        operation_id: OperationId,
+    ) -> Result<bool, StorageError> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let status: Option<String> = transaction
+            .query_row(
+                "SELECT status FROM operations WHERE id=?1 AND agent_id=?2 AND kind='purge_agent'",
+                params![operation_id.to_string(), agent_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(status) = status else {
+            return Ok(false);
+        };
+        let status: OperationStatus = parse_json_name(&status)?;
+        if status != OperationStatus::Succeeded {
+            return Ok(false);
+        }
+        let document: Option<String> = transaction
+            .query_row(
+                "SELECT document FROM agent_specs WHERE id=?1",
+                [agent_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(document) = document else {
+            return Ok(true);
+        };
+        let agent: AgentSpec = serde_json::from_str(&document)?;
+        if agent.desired_state != crate::DesiredAgentState::Deleted {
+            return Ok(false);
+        }
+        transaction.execute(
+            "DELETE FROM agent_specs WHERE id=?1",
+            [agent_id.to_string()],
+        )?;
+        transaction.commit()?;
+        Ok(true)
     }
 }
 
@@ -450,6 +791,58 @@ fn run_migrations(connection: &mut Connection) -> Result<(), StorageError> {
     Ok(())
 }
 
+fn load_agent_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    id: AgentId,
+) -> Result<AgentSpec, StorageError> {
+    let document: Option<String> = transaction
+        .query_row(
+            "SELECT document FROM agent_specs WHERE id=?1",
+            [id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    document
+        .ok_or(StorageError::NotFound)
+        .and_then(|value| serde_json::from_str(&value).map_err(StorageError::from))
+}
+
+fn update_agent_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    agent: &AgentSpec,
+    now: i64,
+) -> Result<(), StorageError> {
+    let changed = transaction.execute(
+        "UPDATE agent_specs SET community_config_id=?2, document=?3, updated_at=?4 WHERE id=?1",
+        params![
+            agent.id.to_string(),
+            agent.community_config_id.to_string(),
+            serde_json::to_string(agent)?,
+            now
+        ],
+    )?;
+    if changed != 1 {
+        return Err(StorageError::NotFound);
+    }
+    Ok(())
+}
+
+fn insert_audit(
+    transaction: &rusqlite::Transaction<'_>,
+    record: NewAuditRecord<'_>,
+) -> Result<(), StorageError> {
+    if record.redacted_detail.is_some_and(contains_secret_marker) {
+        return Err(StorageError::InvalidData(
+            "audit detail contains a credential-like marker".into(),
+        ));
+    }
+    transaction.execute(
+        "INSERT INTO audit_records(occurred_at, actor_principal, authentication_method, community_config_id, operation_id, correlation_id, idempotency_key, action, subject_type, subject_id, outcome, detail) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![record.occurred_at, record.actor_principal, record.authentication_method, record.community_config_id.map(|id| id.to_string()), record.operation_id.map(|id| id.to_string()), record.correlation_id, record.idempotency_key, record.action, record.subject_type, record.subject_id, record.outcome, record.redacted_detail],
+    )?;
+    Ok(())
+}
+
 fn map_constraint(error: rusqlite::Error) -> StorageError {
     match error {
         rusqlite::Error::SqliteFailure(ref inner, _)
@@ -493,19 +886,20 @@ fn decode_operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<DurableOperatio
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
     };
     Ok(DurableOperation {
-        id: parse_id(&id).map_err(&invalid)?,
-        kind: parse_json_name(&kind).map_err(&invalid)?,
-        status: parse_json_name(&status).map_err(&invalid)?,
+        id: parse_id(&id).map_err(invalid)?,
+        kind: parse_json_name(&kind).map_err(invalid)?,
+        status: parse_json_name(&status).map_err(invalid)?,
         agent_id: agent_id
             .map(|v| parse_id(&v))
             .transpose()
-            .map_err(&invalid)?,
+            .map_err(invalid)?,
         error_code: error_code
             .map(|v| parse_json_name(&v))
             .transpose()
-            .map_err(&invalid)?,
+            .map_err(invalid)?,
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
+        correlation_id: row.get(7)?,
     })
 }
 
@@ -565,6 +959,7 @@ mod tests {
             let store = SqliteStore::open(&path).unwrap();
             store.put_community(&config, 10).unwrap();
             store.put_agent(&spec, 11).unwrap();
+            assert!(store.claim_nip98_replay("event-1", 100, 10).unwrap());
         }
         let store = SqliteStore::open(&path).unwrap();
         assert_eq!(store.get_community(config.id).unwrap(), Some(config));
@@ -583,7 +978,9 @@ mod tests {
             .unwrap();
         assert_eq!(journal_mode, "wal");
         assert_eq!(foreign_keys, 1);
-        assert_eq!(count, 1);
+        assert_eq!(count, MIGRATIONS.len() as i64);
+        drop(connection);
+        assert!(!store.claim_nip98_replay("event-1", 100, 11).unwrap());
     }
 
     #[test]
@@ -597,6 +994,7 @@ mod tests {
             error_code: None,
             created_at: 1,
             updated_at: 1,
+            correlation_id: "correlation-1".into(),
         };
         store.create_operation(&operation).unwrap();
         store
@@ -708,5 +1106,159 @@ mod tests {
         let store = SqliteStore::open_in_memory().unwrap();
         let config = community();
         assert_eq!(save_and_load_community(&store, &config), config);
+    }
+
+    #[test]
+    fn atomic_agent_command_replays_without_duplicate_intent_operation_or_audit() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = community();
+        store.put_community(&config, 1).unwrap();
+        let spec = agent(config.id);
+        let operation = DurableOperation {
+            id: OperationId::new(),
+            kind: OperationKind::CreateAgent,
+            status: OperationStatus::Pending,
+            agent_id: Some(spec.id),
+            error_code: None,
+            created_at: 2,
+            updated_at: 2,
+            correlation_id: "correlation-atomic".into(),
+        };
+        let idempotency = IdempotencyRecord {
+            scope: "unix_uid:1000:create_agent".into(),
+            key: "request-atomic".into(),
+            request_hash: "sha256:request".into(),
+            operation_id: operation.id,
+            created_at: 2,
+        };
+        let subject = spec.id.to_string();
+        let audit = || NewAuditRecord {
+            occurred_at: 2,
+            actor_principal: "unix_uid:1000",
+            authentication_method: "unix_peer",
+            community_config_id: Some(config.id),
+            operation_id: Some(operation.id),
+            correlation_id: "correlation-atomic",
+            idempotency_key: Some("request-atomic"),
+            action: "agent.create",
+            subject_type: "agent",
+            subject_id: Some(&subject),
+            outcome: "accepted",
+            redacted_detail: None,
+        };
+        let (created, replayed) = store
+            .apply_agent_command(
+                &operation,
+                &idempotency,
+                AgentCommandMutation::Create(&spec),
+                None,
+                audit(),
+            )
+            .unwrap();
+        assert_eq!(created.correlation_id, "correlation-atomic");
+        assert!(!replayed);
+        let (_, replayed) = store
+            .apply_agent_command(
+                &operation,
+                &idempotency,
+                AgentCommandMutation::Create(&spec),
+                None,
+                audit(),
+            )
+            .unwrap();
+        assert!(replayed);
+        assert_eq!(store.audit_for_subject("agent", &subject).unwrap().len(), 1);
+        let connection = store.connection().unwrap();
+        let operations: i64 = connection
+            .query_row("SELECT COUNT(*) FROM operations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(operations, 1);
+    }
+
+    #[test]
+    fn atomic_commands_reject_duplicate_create_and_missing_update() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = community();
+        store.put_community(&config, 1).unwrap();
+        let spec = agent(config.id);
+        store.put_agent(&spec, 1).unwrap();
+        let operation = DurableOperation {
+            id: OperationId::new(),
+            kind: OperationKind::CreateAgent,
+            status: OperationStatus::Pending,
+            agent_id: Some(spec.id),
+            error_code: None,
+            created_at: 2,
+            updated_at: 2,
+            correlation_id: "duplicate".into(),
+        };
+        let idempotency = IdempotencyRecord {
+            scope: "principal:create".into(),
+            key: "duplicate".into(),
+            request_hash: "hash".into(),
+            operation_id: operation.id,
+            created_at: 2,
+        };
+        let subject = spec.id.to_string();
+        let audit = NewAuditRecord {
+            occurred_at: 2,
+            actor_principal: "principal",
+            authentication_method: "unix_peer",
+            community_config_id: Some(config.id),
+            operation_id: Some(operation.id),
+            correlation_id: "duplicate",
+            idempotency_key: Some("duplicate"),
+            action: "agent.create",
+            subject_type: "agent",
+            subject_id: Some(&subject),
+            outcome: "accepted",
+            redacted_detail: None,
+        };
+        assert!(matches!(
+            store.apply_agent_command(
+                &operation,
+                &idempotency,
+                AgentCommandMutation::Create(&spec),
+                None,
+                audit.clone()
+            ),
+            Err(StorageError::Conflict(_))
+        ));
+
+        let missing = AgentId::new();
+        let operation = DurableOperation {
+            id: OperationId::new(),
+            kind: OperationKind::UpdateAgent,
+            agent_id: Some(missing),
+            correlation_id: "missing".into(),
+            ..operation
+        };
+        let changes = crate::api::UpdateAgentInput {
+            display_name: Some("Changed".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            store.apply_agent_command(
+                &operation,
+                &IdempotencyRecord {
+                    scope: "principal:update".into(),
+                    key: "missing".into(),
+                    operation_id: operation.id,
+                    ..idempotency
+                },
+                AgentCommandMutation::Update {
+                    id: missing,
+                    changes: &changes
+                },
+                None,
+                NewAuditRecord {
+                    operation_id: Some(operation.id),
+                    subject_id: None,
+                    action: "agent.update",
+                    ..audit
+                }
+            ),
+            Err(StorageError::NotFound)
+        ));
     }
 }
