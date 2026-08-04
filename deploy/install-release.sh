@@ -91,7 +91,8 @@ install -d -o root -g root -m 0755 /opt/buzz-server /opt/buzz-server/releases
   exit 73
 }
 install -d -o root -g buzz-server -m 0750 /etc/buzz-server
-install -d -o buzz-server -g buzz-server -m 0700 /var/lib/buzz-server /var/log/buzz-server
+install -d -o buzz-server -g buzz-server -m 0755 /var/lib/buzz-server
+install -d -o buzz-server -g buzz-server -m 0700 /var/log/buzz-server
 install -d -o root -g root -m 0755 /usr/libexec/buzz-server
 release_staging=$(mktemp -d "/opt/buzz-server/releases/.${version}-${target}.staging.XXXXXX")
 install -o root -g root -m 0555 "$source_directory/buzz-server" "$release_staging/buzz-server"
