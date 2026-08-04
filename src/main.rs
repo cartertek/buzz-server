@@ -13,6 +13,11 @@ use std::{
 
 use buzz_core::{Keys, PublicKey};
 use buzz_server::{
+    api::LifecycleApplication,
+    application::{LifecycleEffects, SqliteLifecycleApplication},
+    auth::{
+        AuthenticatedPrincipal, Authority, Nip98AuthorityPolicy, Principal, UnixAuthorityPolicy,
+    },
     community_session::{CommunityAuthorizationVerifier, CommunitySession},
     launch::{ExecutableIdentity, HealthPolicy, RestartMode, RestartPolicy, SecretRef},
     reconcile::{ProcessReceiptRepository, Reconciler},
@@ -25,8 +30,12 @@ use buzz_server::{
     supervisor::{
         LocalLogPolicy, LocalProcessAdapter, ProcessSupervisor, SecretResolver, SupervisorError,
     },
-    AgentSpec, CommunityConfig, LaunchSpec, LocalLaunchContext, ProcessReceipt, RuntimeCatalog,
-    SqliteStore, StorageError,
+    transport::{
+        LifecycleJsonRouter, SqliteReplayGuard, TlsLifecycleServer, TlsNip98Authenticator,
+        UnixLifecycleServer,
+    },
+    AgentSpec, CommunityConfig, DurableOperation, LaunchSpec, LocalLaunchContext, ProcessReceipt,
+    RuntimeCatalog, SqliteStore, StorageError,
 };
 use nostr::Tag;
 use serde::Deserialize;
@@ -58,6 +67,43 @@ struct DaemonConfig {
     harness_arguments: Vec<String>,
     restart: RestartPolicy,
     health: HealthPolicy,
+    #[serde(default)]
+    lifecycle_api: LifecycleApiConfig,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct LifecycleApiConfig {
+    unix_socket: PathBuf,
+    administrator_uids: Vec<u32>,
+    draft_submitter_uids: Vec<u32>,
+    retention_seconds: i64,
+    tls: Option<TlsApiConfig>,
+}
+
+impl Default for LifecycleApiConfig {
+    fn default() -> Self {
+        Self {
+            unix_socket: "/run/buzz-server/lifecycle.sock".into(),
+            administrator_uids: vec![0],
+            draft_submitter_uids: Vec::new(),
+            retention_seconds: buzz_server::application::DEFAULT_RETENTION_SECONDS,
+            tls: None,
+        }
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TlsApiConfig {
+    address: std::net::SocketAddr,
+    certificate_pem: PathBuf,
+    private_key_pem: PathBuf,
+    canonical_origin: String,
+    administrator_pubkeys: Vec<String>,
+    #[serde(default)]
+    draft_submitter_pubkeys: Vec<String>,
+    freshness_seconds: u64,
 }
 
 impl DaemonConfig {
@@ -91,10 +137,33 @@ impl DaemonConfig {
             &self.working_directory,
             &self.workspace_path,
             &self.runtime_path,
+            &self.lifecycle_api.unix_socket,
         ] {
             if !path.is_absolute() {
                 return Err(DaemonError::InvalidConfig(
                     "all daemon paths must be absolute".into(),
+                ));
+            }
+        }
+        if self.lifecycle_api.retention_seconds < 0 {
+            return Err(DaemonError::InvalidConfig(
+                "lifecycle_api.retention_seconds must not be negative".into(),
+            ));
+        }
+        if self.lifecycle_api.administrator_uids.is_empty() {
+            return Err(DaemonError::InvalidConfig(
+                "lifecycle_api requires at least one administrator UID".into(),
+            ));
+        }
+        if let Some(tls) = &self.lifecycle_api.tls {
+            if tls.canonical_origin.trim().is_empty()
+                || tls.administrator_pubkeys.is_empty()
+                || tls.freshness_seconds == 0
+                || !tls.certificate_pem.is_absolute()
+                || !tls.private_key_pem.is_absolute()
+            {
+                return Err(DaemonError::InvalidConfig(
+                    "lifecycle_api TLS configuration is incomplete".into(),
                 ));
             }
         }
@@ -159,10 +228,33 @@ impl DaemonConfig {
                 )));
             }
         }
+        if self.workspace_path == Path::new("/var/lib/buzz-server")
+            || self.runtime_path == Path::new("/var/lib/buzz-server")
+            || self.workspace_path == self.runtime_path
+        {
+            return Err(DaemonError::InvalidConfig(
+                "workspace_path and runtime_path must be distinct agent-specific subdirectories"
+                    .into(),
+            ));
+        }
         PublicKey::from_hex(&self.expected_agent_pubkey).map_err(|_| {
             DaemonError::InvalidConfig("expected_agent_pubkey must be lowercase Nostr hex".into())
         })?;
         Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct LifecycleWake(tokio::sync::mpsc::UnboundedSender<buzz_server::OperationId>);
+
+impl LifecycleEffects for LifecycleWake {
+    fn operation_ready(
+        &self,
+        operation: &DurableOperation,
+    ) -> Result<(), buzz_server::api::ApplicationError> {
+        self.0
+            .send(operation.id)
+            .map_err(|_| buzz_server::api::ApplicationError::Internal)
     }
 }
 
@@ -319,6 +411,7 @@ async fn main() -> Result<(), DaemonError> {
         config.state_database.parent(),
         config.receipt_file.parent(),
         config.signer_socket.parent(),
+        config.lifecycle_api.unix_socket.parent(),
         Some(config.log_directory.as_path()),
         Some(config.workspace_path.as_path()),
         Some(config.runtime_path.as_path()),
@@ -430,9 +523,11 @@ async fn main() -> Result<(), DaemonError> {
         .validate()
         .map_err(buzz_server::LaunchResolutionError::Validation)?;
 
-    let store = SqliteStore::open(&config.state_database)?;
+    let store = Arc::new(SqliteStore::open(&config.state_database)?);
     store.put_community(&config.community, now as i64)?;
-    store.put_agent(&config.agent, now as i64)?;
+    if store.get_agent(config.agent.id)?.is_none() && !store.is_agent_purged(config.agent.id)? {
+        store.put_agent(&config.agent, now as i64)?;
+    }
     let supervisor = LocalProcessAdapter::new(
         LocalLogPolicy {
             directory: config.log_directory.clone(),
@@ -446,12 +541,60 @@ async fn main() -> Result<(), DaemonError> {
     let secrets = EnvironmentSecrets {
         authorization: authorization.clone(),
     };
-    let reconciler = Reconciler::new(&store, &receipts, &supervisor, &secrets);
-    let outcome = reconciler.reconcile_desired(&config.agent, Some(&launch))?;
-    eprintln!("local reconciliation: {outcome:?}");
+    let reconciler = Reconciler::new(store.as_ref(), &receipts, &supervisor, &secrets);
+    if let Some(agent) = store.get_agent(config.agent.id)? {
+        let outcome = reconciler.reconcile_desired(&agent, Some(&launch))?;
+        eprintln!("local reconciliation: {outcome:?}");
+    }
 
     let signer_server = SignerIpcServer::new(&config.signer_socket, Arc::new(constrained_signer));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (operation_tx, mut operation_rx) = tokio::sync::mpsc::unbounded_channel();
+    let lifecycle_application = SqliteLifecycleApplication::new(
+        Arc::clone(&store),
+        Arc::new(LifecycleWake(operation_tx.clone())),
+        unix_seconds_i64,
+    )
+    .with_retention_seconds(config.lifecycle_api.retention_seconds);
+    for operation in store.nonterminal_operations()? {
+        operation_tx
+            .send(operation.id)
+            .map_err(|_| DaemonError::Task("lifecycle worker is unavailable".into()))?;
+    }
+    let unix_lifecycle = UnixLifecycleServer::new(
+        &config.lifecycle_api.unix_socket,
+        UnixAuthorityPolicy {
+            administrator_uids: config.lifecycle_api.administrator_uids.clone(),
+            draft_submitter_uids: config.lifecycle_api.draft_submitter_uids.clone(),
+        },
+        Arc::new(LifecycleJsonRouter::new(lifecycle_application.clone())),
+    );
+    let mut unix_lifecycle_task = tokio::spawn({
+        let lifecycle_shutdown = shutdown_rx.clone();
+        async move { unix_lifecycle.run(lifecycle_shutdown).await }
+    });
+    let mut tls_lifecycle_task = config.lifecycle_api.tls.clone().map(|tls| {
+        let lifecycle_shutdown = shutdown_rx.clone();
+        let server = TlsLifecycleServer {
+            address: tls.address,
+            certificate_pem: tls.certificate_pem,
+            private_key_pem: tls.private_key_pem,
+            canonical_origin: tls.canonical_origin,
+            authenticator: TlsNip98Authenticator {
+                authority: Nip98AuthorityPolicy {
+                    administrator_pubkeys: tls.administrator_pubkeys,
+                    draft_submitter_pubkeys: tls.draft_submitter_pubkeys,
+                    freshness_seconds: tls.freshness_seconds,
+                },
+                replay: SqliteReplayGuard {
+                    store: Arc::clone(&store),
+                    now: unix_seconds_unchecked,
+                },
+            },
+            handler: Arc::new(LifecycleJsonRouter::new(lifecycle_application.clone())),
+        };
+        tokio::spawn(async move { server.run(lifecycle_shutdown).await })
+    });
     let mut signer_task = tokio::spawn({
         let signer_shutdown = shutdown_rx.clone();
         async move { signer_server.run(signer_shutdown).await }
@@ -476,6 +619,8 @@ async fn main() -> Result<(), DaemonError> {
     tokio::pin!(relay_task);
     let mut process_tick = tokio::time::interval(Duration::from_secs(1));
     process_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut retention_tick = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
+    retention_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut restart_attempts = 0_u32;
     let mut next_restart = Instant::now();
 
@@ -483,15 +628,32 @@ async fn main() -> Result<(), DaemonError> {
     enum Completion<T, S> {
         Relay(T),
         Signer(S),
+        Lifecycle(Result<(), buzz_server::transport::TransportError>),
         Signal,
     }
     let completion = loop {
         tokio::select! {
             result = &mut relay_task => break Completion::Relay(result),
             result = &mut signer_task => break Completion::Signer(result),
+            result = &mut unix_lifecycle_task => break Completion::Lifecycle(result.map_err(|error| buzz_server::transport::TransportError::Task(error.to_string()))?),
+            result = async { tls_lifecycle_task.as_mut().expect("guarded").await }, if tls_lifecycle_task.is_some() => break Completion::Lifecycle(result.map_err(|error| buzz_server::transport::TransportError::Task(error.to_string()))?),
             signal = tokio::signal::ctrl_c() => { signal?; break Completion::Signal },
             _ = terminate.recv() => break Completion::Signal,
+            Some(operation_id) = operation_rx.recv() => {
+                reconcile_lifecycle_operation(
+                    &lifecycle_application,
+                    &reconciler,
+                    &store,
+                    operation_id,
+                    config.agent.id,
+                    &mut launch,
+                    &config,
+                )?;
+            }
             _ = process_tick.tick() => {},
+            _ = retention_tick.tick() => {
+                enqueue_expired_purges(&lifecycle_application)?;
+            },
         }
         let mut process_ready = false;
         let durable = receipts.get_receipt(config.agent.id)?;
@@ -510,20 +672,34 @@ async fn main() -> Result<(), DaemonError> {
             }
         }
         readiness.set_process_ready(process_ready);
-        let should_restart = match observed.as_ref() {
-            Some(receipt) if receipt.observed_state.is_terminal() => match config.restart.mode {
-                RestartMode::Never => false,
-                RestartMode::OnFailure => receipt.exit_code != Some(0),
-                RestartMode::Always => true,
-            },
-            None => true,
-            Some(_) => false,
-        };
+        let desired_agent = store.get_agent(config.agent.id)?;
+        if desired_agent.is_some() {
+            sync_supervisor_logs(&store, &supervisor, config.agent.id, &launch.launch_id)?;
+        }
+        let should_restart = desired_agent
+            .as_ref()
+            .is_some_and(|agent| agent.desired_state == buzz_server::DesiredAgentState::Enabled)
+            && match observed.as_ref() {
+                Some(receipt) if receipt.observed_state.is_terminal() => {
+                    match config.restart.mode {
+                        RestartMode::Never => false,
+                        RestartMode::OnFailure => receipt.exit_code != Some(0),
+                        RestartMode::Always => true,
+                    }
+                }
+                None => true,
+                Some(_) => false,
+            };
         if should_restart
             && restart_attempts < config.restart.max_attempts
             && Instant::now() >= next_restart
         {
-            let outcome = reconciler.reconcile_desired(&config.agent, Some(&launch))?;
+            let outcome = reconciler.reconcile_desired(
+                desired_agent
+                    .as_ref()
+                    .expect("restart requires desired agent"),
+                Some(&launch),
+            )?;
             restart_attempts = restart_attempts.saturating_add(1);
             let shift = restart_attempts.saturating_sub(1).min(31);
             let delay = config
@@ -555,12 +731,23 @@ async fn main() -> Result<(), DaemonError> {
             result.map_err(|error| DaemonError::Task(error.to_string()))??;
             relay_task.await?;
         }
+        Completion::Lifecycle(result) => {
+            result?;
+            relay_task.await?;
+            signer_task
+                .await
+                .map_err(|error| DaemonError::Task(error.to_string()))??;
+        }
         Completion::Signal => {
             relay_task.await?;
             signer_task
                 .await
                 .map_err(|error| DaemonError::Task(error.to_string()))??;
         }
+    }
+    unix_lifecycle_task.abort();
+    if let Some(task) = tls_lifecycle_task {
+        task.abort();
     }
     Ok(())
 }
@@ -637,6 +824,205 @@ fn unix_seconds() -> Result<u64, DaemonError> {
         .as_secs())
 }
 
+fn unix_seconds_i64() -> i64 {
+    i64::try_from(unix_seconds_unchecked()).unwrap_or(i64::MAX)
+}
+
+fn unix_seconds_unchecked() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn reconcile_lifecycle_operation<E: LifecycleEffects>(
+    application: &SqliteLifecycleApplication<E>,
+    reconciler: &Reconciler<'_, SqliteStore, ReceiptFile, LocalProcessAdapter>,
+    store: &SqliteStore,
+    operation_id: buzz_server::OperationId,
+    configured_agent_id: buzz_server::AgentId,
+    launch: &mut LaunchSpec,
+    config: &DaemonConfig,
+) -> Result<(), DaemonError> {
+    let operation = application.get_operation(operation_id)?;
+    if operation.status == buzz_server::OperationStatus::Pending {
+        application.start_operation(operation_id)?;
+    }
+    let durable = application.get_operation(operation_id)?;
+    if durable.status != buzz_server::OperationStatus::Running {
+        return Ok(());
+    }
+    if durable.agent_id != Some(configured_agent_id) {
+        application.complete_operation(
+            operation_id,
+            buzz_server::OperationStatus::Failed,
+            Some(buzz_server::ErrorCode::Unsupported),
+        )?;
+        return Ok(());
+    }
+    let agent = store
+        .get_agent(configured_agent_id)?
+        .ok_or(StorageError::NotFound)?;
+    let mut next_launch = LaunchSpec::resolve_local(
+        &agent,
+        &config.runtime_catalog,
+        LocalLaunchContext {
+            launch_id: launch.launch_id.clone(),
+            harness: config.harness.clone(),
+            harness_arguments: config.harness_arguments.clone(),
+            working_directory: launch.working_directory.clone(),
+            workspace_path: launch.workspace_path.clone(),
+            runtime_path: launch.runtime_path.clone(),
+            process_group_id: launch.process_group_id.clone(),
+            restart: config.restart.clone(),
+            health: config.health.clone(),
+        },
+    )?;
+    for key in [
+        buzz_server::launch::HARNESS_RELAY_URL_ENV,
+        buzz_server::launch::HARNESS_PRIVATE_KEY_ENV,
+        buzz_server::launch::HARNESS_AUTH_TAG_ENV,
+    ] {
+        if let Some(value) = launch.environment.get(key) {
+            next_launch.environment.insert(key.into(), value.clone());
+        }
+        if let Some(value) = launch.secret_environment.get(key) {
+            next_launch
+                .secret_environment
+                .insert(key.into(), value.clone());
+        }
+    }
+    next_launch
+        .validate()
+        .map_err(buzz_server::LaunchResolutionError::Validation)?;
+    *launch = next_launch;
+    let stored = reconciler.reconcile(
+        configured_agent_id,
+        &store_operation(&durable),
+        Some(launch),
+    );
+    let (mut status, mut error_code) = match stored {
+        Ok(
+            buzz_server::reconcile::ReconcileOutcome::FailedPreflight
+            | buzz_server::reconcile::ReconcileOutcome::NoPresence,
+        ) => (
+            buzz_server::OperationStatus::Failed,
+            Some(buzz_server::ErrorCode::Internal),
+        ),
+        Ok(_) => (buzz_server::OperationStatus::Succeeded, None),
+        Err(error) => {
+            eprintln!("lifecycle reconciliation failed: {error}");
+            (
+                buzz_server::OperationStatus::Failed,
+                Some(buzz_server::ErrorCode::Internal),
+            )
+        }
+    };
+    if status == buzz_server::OperationStatus::Succeeded
+        && durable.kind == buzz_server::OperationKind::PurgeAgent
+    {
+        if let Err(error) = purge_agent_files(config, &launch.launch_id) {
+            eprintln!("purge cleanup failed: {error}");
+            status = buzz_server::OperationStatus::Failed;
+            error_code = Some(buzz_server::ErrorCode::Internal);
+        }
+    }
+    application.complete_operation(operation_id, status, error_code)?;
+    Ok(())
+}
+
+fn purge_agent_files(config: &DaemonConfig, launch_id: &str) -> Result<(), std::io::Error> {
+    for path in [&config.workspace_path, &config.runtime_path] {
+        match fs::remove_dir_all(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    for suffix in ["stdout.log", "stderr.log"] {
+        let path = config.log_directory.join(format!("{launch_id}.{suffix}"));
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn enqueue_expired_purges<E: LifecycleEffects>(
+    application: &SqliteLifecycleApplication<E>,
+) -> Result<(), DaemonError> {
+    let actor = AuthenticatedPrincipal {
+        principal: Principal::UnixPeer {
+            uid: 0,
+            gid: 0,
+            pid: None,
+        },
+        authority: Authority::Administrator,
+    };
+    for agent_id in application.expired_retained_agents()? {
+        let deadline = application
+            .get_agent(agent_id)?
+            .purge_after
+            .unwrap_or_default();
+        application.purge_agent(
+            &actor,
+            &buzz_server::api::AgentCommandRequest {
+                metadata: buzz_server::api::CommandMetadata {
+                    idempotency_key: format!("retention:{agent_id}:{deadline}"),
+                    correlation_id: format!("retention:{agent_id}"),
+                },
+                agent_id,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn sync_supervisor_logs(
+    store: &SqliteStore,
+    supervisor: &LocalProcessAdapter,
+    agent_id: buzz_server::AgentId,
+    launch_id: &str,
+) -> Result<(), DaemonError> {
+    for (stream, stderr) in [("stdout", false), ("stderr", true)] {
+        let message = match supervisor.read_log_tail(launch_id, stderr) {
+            Ok(message) => message,
+            Err(SupervisorError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if message.is_empty() {
+            continue;
+        }
+        let cursor = format!("{stream}:sha256:{:x}", Sha256::digest(message.as_bytes()));
+        store.append_redacted_log(
+            agent_id,
+            &buzz_server::api::RedactedLogEntry {
+                cursor,
+                occurred_at: unix_seconds_i64(),
+                stream: stream.into(),
+                redacted_message: message,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn store_operation(resource: &buzz_server::api::OperationResource) -> DurableOperation {
+    DurableOperation {
+        id: resource.id,
+        kind: resource.kind,
+        status: resource.status,
+        agent_id: resource.agent_id,
+        error_code: resource.error_code,
+        created_at: resource.created_at,
+        updated_at: resource.updated_at,
+        correlation_id: resource.correlation_id.clone(),
+    }
+}
+
 fn unix_millis() -> Result<u64, DaemonError> {
     u64::try_from(
         SystemTime::now()
@@ -687,6 +1073,10 @@ enum DaemonError {
     Supervisor(#[from] SupervisorError),
     #[error(transparent)]
     Reconcile(#[from] buzz_server::reconcile::ReconcileError),
+    #[error(transparent)]
+    Application(#[from] buzz_server::api::ApplicationError),
+    #[error(transparent)]
+    Transport(#[from] buzz_server::transport::TransportError),
     #[error(transparent)]
     Community(#[from] buzz_server::community_session::CommunitySessionError),
     #[error(transparent)]

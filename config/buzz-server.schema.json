@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://buzz.example/schemas/buzz-server-development-config.json",
-  "title": "Buzz Server development daemon configuration",
+  "$id": "https://buzz.example/schemas/buzz-server-config.json",
+  "title": "Buzz Server configuration",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -29,6 +29,17 @@
     "harness": { "type": "object" },
     "harness_arguments": { "type": "array", "items": { "type": "string" } },
     "restart": { "type": "object" },
-    "health": { "type": "object" }
+    "health": { "type": "object" },
+    "lifecycle_api": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unix_socket": { "type": "string", "pattern": "^/run/buzz-server(?:/|$)" },
+        "administrator_uids": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0 } },
+        "draft_submitter_uids": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+        "retention_seconds": { "type": "integer", "minimum": 0 },
+        "tls": { "type": ["object", "null"] }
+      }
+    }
   }
 }

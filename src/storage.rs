@@ -17,6 +17,7 @@ use crate::{
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_initial.sql")),
     (2, include_str!("../migrations/0002_lifecycle.sql")),
+    (3, include_str!("../migrations/0003_retention.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -104,7 +105,14 @@ pub enum AgentCommandMutation<'a> {
     SetState {
         id: AgentId,
         desired_state: crate::DesiredAgentState,
+        retention_deadline: Option<i64>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AgentRetention {
+    pub deleted_at: i64,
+    pub purge_after: i64,
 }
 
 /// Persistence boundary for community configuration state.
@@ -232,6 +240,46 @@ impl SqliteStore {
             .transpose()
     }
 
+    pub fn agent_retention(&self, id: AgentId) -> Result<Option<AgentRetention>, StorageError> {
+        self.connection()?
+            .query_row(
+                "SELECT deleted_at, purge_after FROM agent_retention WHERE agent_id=?1",
+                [id.to_string()],
+                |row| {
+                    Ok(AgentRetention {
+                        deleted_at: row.get(0)?,
+                        purge_after: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(StorageError::from)
+    }
+
+    pub fn expired_retained_agents(&self, now: i64) -> Result<Vec<AgentId>, StorageError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT agent_id FROM agent_retention WHERE purge_after <= ?1 ORDER BY purge_after, agent_id",
+        )?;
+        let rows = statement.query_map([now], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|value| parse_id(&value))
+            .collect()
+    }
+
+    pub fn is_agent_purged(&self, id: AgentId) -> Result<bool, StorageError> {
+        self.connection()?
+            .query_row(
+                "SELECT 1 FROM purged_agent_tombstones WHERE agent_id=?1",
+                [id.to_string()],
+                |_| Ok(()),
+            )
+            .optional()
+            .map(|value| value.is_some())
+            .map_err(StorageError::from)
+    }
+
     pub fn list_agents(
         &self,
         community_config_id: Option<CommunityConfigId>,
@@ -303,7 +351,7 @@ impl SqliteStore {
             ));
         }
         self.connection()?.execute(
-            "INSERT INTO agent_logs(agent_id, cursor, occurred_at, stream, redacted_message) VALUES(?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR IGNORE INTO agent_logs(agent_id, cursor, occurred_at, stream, redacted_message) VALUES(?1, ?2, ?3, ?4, ?5)",
             params![agent_id.to_string(), entry.cursor, entry.occurred_at, entry.stream, entry.redacted_message],
         ).map_err(map_constraint)?;
         Ok(())
@@ -366,6 +414,16 @@ impl SqliteStore {
             "SELECT id, kind, status, agent_id, error_code, created_at, updated_at, correlation_id FROM operations WHERE id=?1",
             [id.to_string()], decode_operation,
         ).optional().map_err(StorageError::from)
+    }
+
+    pub fn nonterminal_operations(&self) -> Result<Vec<DurableOperation>, StorageError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, kind, status, agent_id, error_code, created_at, updated_at, correlation_id FROM operations WHERE status IN ('pending', 'running') ORDER BY created_at, id",
+        )?;
+        let rows = statement.query_map([], decode_operation)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StorageError::from)
     }
 
     pub fn transition_operation(
@@ -570,7 +628,11 @@ impl SqliteStore {
                     .map_err(|error| StorageError::InvalidData(error.to_string()))?;
                 update_agent_transaction(&transaction, &agent, operation.created_at)?;
             }
-            AgentCommandMutation::SetState { id, desired_state } => {
+            AgentCommandMutation::SetState {
+                id,
+                desired_state,
+                retention_deadline,
+            } => {
                 let expected = match operation.kind {
                     OperationKind::EnableAgent => crate::DesiredAgentState::Enabled,
                     OperationKind::DisableAgent => crate::DesiredAgentState::Disabled,
@@ -591,6 +653,17 @@ impl SqliteStore {
                 let mut agent = load_agent_transaction(&transaction, id)?;
                 agent.desired_state = desired_state;
                 update_agent_transaction(&transaction, &agent, operation.created_at)?;
+                if operation.kind == OperationKind::DeleteAgent {
+                    let purge_after = retention_deadline.ok_or_else(|| {
+                        StorageError::InvalidData(
+                            "recoverable delete requires a retention deadline".into(),
+                        )
+                    })?;
+                    transaction.execute(
+                        "INSERT INTO agent_retention(agent_id, deleted_at, purge_after) VALUES(?1, ?2, ?3) ON CONFLICT(agent_id) DO UPDATE SET deleted_at=excluded.deleted_at, purge_after=excluded.purge_after",
+                        params![id.to_string(), operation.created_at, purge_after],
+                    )?;
+                }
             }
         }
         transaction.execute(
@@ -669,14 +742,14 @@ impl SqliteStore {
     ) -> Result<bool, StorageError> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let status: Option<String> = transaction
+        let operation: Option<(String, i64)> = transaction
             .query_row(
-                "SELECT status FROM operations WHERE id=?1 AND agent_id=?2 AND kind='purge_agent'",
+                "SELECT status, updated_at FROM operations WHERE id=?1 AND agent_id=?2 AND kind='purge_agent'",
                 params![operation_id.to_string(), agent_id.to_string()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        let Some(status) = status else {
+        let Some((status, purged_at)) = operation else {
             return Ok(false);
         };
         let status: OperationStatus = parse_json_name(&status)?;
@@ -697,6 +770,10 @@ impl SqliteStore {
         if agent.desired_state != crate::DesiredAgentState::Deleted {
             return Ok(false);
         }
+        transaction.execute(
+            "INSERT OR IGNORE INTO purged_agent_tombstones(agent_id, purged_at, purge_operation_id) VALUES(?1, ?2, ?3)",
+            params![agent_id.to_string(), purged_at, operation_id.to_string()],
+        )?;
         transaction.execute(
             "DELETE FROM agent_specs WHERE id=?1",
             [agent_id.to_string()],

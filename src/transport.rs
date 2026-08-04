@@ -493,6 +493,7 @@ mod tests {
                 system_prompt: input.system_prompt.clone(),
                 runtime_id: input.runtime_id.clone(),
                 desired_state: crate::DesiredAgentState::Enabled,
+                purge_after: None,
             });
             Ok(OperationResource {
                 id: crate::OperationId::new(),
@@ -500,6 +501,9 @@ mod tests {
                 status: crate::OperationStatus::Pending,
                 agent_id: Some(id),
                 correlation_id: metadata.correlation_id.clone(),
+                error_code: None,
+                created_at: 1,
+                updated_at: 1,
             })
         }
         fn get_agent(&self, id: crate::AgentId) -> Result<AgentResource, ApplicationError> {
