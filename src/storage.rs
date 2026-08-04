@@ -457,11 +457,11 @@ impl SqliteStore {
                 community_config_id: community_config_id
                     .map(|value| parse_id(&value))
                     .transpose()
-                    .map_err(&invalid)?,
+                    .map_err(invalid)?,
                 operation_id: operation_id
                     .map(|value| parse_id(&value))
                     .transpose()
-                    .map_err(&invalid)?,
+                    .map_err(invalid)?,
                 correlation_id: row.get(6)?,
                 idempotency_key: row.get(7)?,
                 action: row.get(8)?,
@@ -886,17 +886,17 @@ fn decode_operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<DurableOperatio
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
     };
     Ok(DurableOperation {
-        id: parse_id(&id).map_err(&invalid)?,
-        kind: parse_json_name(&kind).map_err(&invalid)?,
-        status: parse_json_name(&status).map_err(&invalid)?,
+        id: parse_id(&id).map_err(invalid)?,
+        kind: parse_json_name(&kind).map_err(invalid)?,
+        status: parse_json_name(&status).map_err(invalid)?,
         agent_id: agent_id
             .map(|v| parse_id(&v))
             .transpose()
-            .map_err(&invalid)?,
+            .map_err(invalid)?,
         error_code: error_code
             .map(|v| parse_json_name(&v))
             .transpose()
-            .map_err(&invalid)?,
+            .map_err(invalid)?,
         created_at: row.get(5)?,
         updated_at: row.get(6)?,
         correlation_id: row.get(7)?,
