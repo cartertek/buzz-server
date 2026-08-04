@@ -2,6 +2,11 @@
 
 ## Milestone 1: shared foundations
 
+Status: complete. The domain types, SQLite WAL repositories and migrations,
+attributed audit/idempotency records, direct pinned Buzz dependencies, Local
+runtime catalog, and `buzz-acp` launch/receipt contracts pass the milestone
+restart, compatibility, freshness, and full-package gates.
+
 - Introduce library modules for IDs, `CommunityConfig`, agent specifications, operation states, and stable API errors.
 - Add SQLite WAL storage, numbered migrations, repository interfaces, audit records, and idempotency keys.
 - Add direct `buzz-core` and `buzz-ws-client` dependencies at the same reviewed Buzz revision.

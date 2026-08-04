@@ -8,8 +8,12 @@ description = "Headless Buzz client for operating always-on agents"
 publish = false
 
 [dependencies]
-buzz-sdk = { git = "https://github.com/block/buzz.git", rev = "a5dbdf5e61e4c512acd99c219c79c154ddb57295", version = "0.1.0" }
+buzz-core = { git = "https://github.com/block/buzz.git", rev = "ede8d22dd5b336f146e0a6d760fd9dff78a42613" }
+buzz-sdk = { git = "https://github.com/block/buzz.git", rev = "ede8d22dd5b336f146e0a6d760fd9dff78a42613", version = "0.1.0" }
+buzz-ws-client = { git = "https://github.com/block/buzz.git", rev = "ede8d22dd5b336f146e0a6d760fd9dff78a42613" }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+rusqlite = { version = "0.37", features = ["bundled"] }
 thiserror = "2.0.17"
 url = { version = "2.5.7", features = ["serde"] }
 uuid = { version = "1.19.0", features = ["serde", "v7"] }
@@ -19,4 +23,4 @@ unsafe_code = "forbid"
 
 [dev-dependencies]
 nostr = { version = "0.44", features = ["nip44", "nip98"] }
-serde_json = "1.0.151"
+tempfile = "3.23"

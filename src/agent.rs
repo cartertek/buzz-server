@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{community::validate_nonempty, AgentId, CommunityConfigId, ValidationError};
+use crate::{community::validate_nonempty, AgentId, CommunityConfigId, RuntimeId, ValidationError};
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -17,18 +17,15 @@ pub enum DesiredAgentState {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RuntimeSpec {
-    pub runtime_id: String,
-    pub executable: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub arguments: Vec<String>,
+    /// Selects one immutable catalog entry. Executable identity and default
+    /// arguments are resolved from the catalog, never copied into agent intent.
+    pub runtime_id: RuntimeId,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, String>,
 }
 
 impl RuntimeSpec {
     pub fn validate(&self) -> Result<(), ValidationError> {
-        validate_nonempty("runtime.runtime_id", &self.runtime_id, 80)?;
-        validate_nonempty("runtime.executable", &self.executable, 1024)?;
         if self
             .environment
             .keys()
@@ -79,9 +76,7 @@ mod tests {
             display_name: "Build agent".to_owned(),
             system_prompt: "Build and verify the requested change.".to_owned(),
             runtime: RuntimeSpec {
-                runtime_id: "codex".to_owned(),
-                executable: "/opt/buzz/bin/codex-acp".to_owned(),
-                arguments: vec!["--model".to_owned(), "gpt-5".to_owned()],
+                runtime_id: "codex-acp".parse().unwrap(),
                 environment: BTreeMap::from([("CODEX_HOME".to_owned(), "/state".to_owned())]),
             },
             desired_state: DesiredAgentState::Enabled,
