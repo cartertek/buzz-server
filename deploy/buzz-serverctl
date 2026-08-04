@@ -23,15 +23,21 @@ case "$command" in
     case "$2" in *[!A-Za-z0-9._-]*|'') echo "invalid version" >&2; exit 64;; esac
     target="/opt/buzz-server/releases/$2"
     test -x "$target/buzz-server"
+    test -f "$target/share/deploy/buzz-server.service"
+    test -x "$target/share/deploy/buzz-serverctl"
     previous=$(readlink -f /opt/buzz-server/current)
     test -x "$previous/buzz-server"
+    unit_backup=$(mktemp)
+    trap 'rm -f "$unit_backup"' EXIT HUP INT TERM
+    cp -L /etc/systemd/system/buzz-server.service "$unit_backup"
     ln -sfn "$target" /opt/buzz-server/current.next
     mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
+    install -o root -g root -m 0444 "$target/share/deploy/buzz-server.service" /etc/systemd/system/buzz-server.service
     systemctl daemon-reload
     systemctl restart buzz-server.service
     healthy=false
     attempts=0
-    while [ "$attempts" -lt 35 ]; do
+    while [ "$attempts" -lt 90 ]; do
       if "$target/share/deploy/buzz-serverctl" health >/dev/null 2>&1; then healthy=true; break; fi
       attempts=$((attempts + 1))
       sleep 1
@@ -39,6 +45,7 @@ case "$command" in
     if [ "$healthy" != true ]; then
       ln -sfn "$previous" /opt/buzz-server/current.next
       mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
+      install -o root -g root -m 0444 "$unit_backup" /etc/systemd/system/buzz-server.service
       systemctl daemon-reload
       systemctl restart buzz-server.service
       echo "rollback target failed health checks; previous release restored" >&2

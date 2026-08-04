@@ -156,11 +156,17 @@ runtime_assets_valid || { echo "pinned runtime asset validation failed" >&2; exi
     echo "pinned runtime packages failed the isolated buzz-agent preflight" >&2
     exit 66
   }
+unit_backup="$temporary/buzz-server.service.previous"
+unit_existed=false
+if [ -e /etc/systemd/system/buzz-server.service ] || [ -L /etc/systemd/system/buzz-server.service ]; then
+  cp -L /etc/systemd/system/buzz-server.service "$unit_backup"
+  unit_existed=true
+fi
 mv -T "$release_staging" "$release"
 release_staging=
 ln -sfn "$release" /opt/buzz-server/current.next
 mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
-ln -sfn /opt/buzz-server/current/share/deploy/buzz-server.service /etc/systemd/system/buzz-server.service
+install -o root -g root -m 0444 "$release/share/deploy/buzz-server.service" /etc/systemd/system/buzz-server.service
 ln -sfn /opt/buzz-server/current/share/deploy/install-release.sh /usr/libexec/buzz-server/install-release.sh
 ln -sfn /opt/buzz-server/current/share/deploy/buzz-serverctl /usr/local/sbin/buzz-serverctl
 systemctl daemon-reload
@@ -168,7 +174,7 @@ systemctl enable buzz-server.service
 wait_for_health() {
   healthy=false
   attempts=0
-  while [ "$attempts" -lt 35 ]; do
+  while [ "$attempts" -lt 90 ]; do
     if /usr/local/sbin/buzz-serverctl health >/dev/null 2>&1; then
       return 0
     fi
@@ -181,6 +187,11 @@ if ! systemctl restart buzz-server.service || ! wait_for_health; then
   if [ -n "$previous" ] && [ -x "$previous/buzz-server" ]; then
     ln -sfn "$previous" /opt/buzz-server/current.next
     mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
+    if [ "$unit_existed" = true ]; then
+      install -o root -g root -m 0444 "$unit_backup" /etc/systemd/system/buzz-server.service
+    else
+      rm -f /etc/systemd/system/buzz-server.service
+    fi
     systemctl daemon-reload
     systemctl restart buzz-server.service && wait_for_health || {
       echo "deployment and automatic rollback both failed health checks" >&2

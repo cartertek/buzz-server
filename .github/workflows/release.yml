@@ -3,6 +3,8 @@ name: Release
 on:
   push:
     tags: ["server-v*"]
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,6 +17,7 @@ jobs:
       - run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt,clippy
       - run: rustup override set 1.88.0
       - name: Validate immutable tag matches Cargo version
+        if: startsWith(github.ref, 'refs/tags/server-v')
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -38,15 +41,34 @@ jobs:
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
+    container: public.ecr.aws/amazonlinux/amazonlinux@sha256:601289f29d1b67fc542a451beda8ac6ca542d40289c99f71faa3ba37fe0d133a
     steps:
+      - name: Install glibc 2.34 build prerequisites
+        run: dnf install -y gcc gcc-c++ git tar gzip findutils binutils
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - run: rustup toolchain install 1.88.0 --profile minimal --target '${{ matrix.target }}'
-      - run: rustup override set 1.88.0
+      - name: Install pinned Rust toolchain
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs |
+            sh -s -- -y --profile minimal --default-toolchain 1.88.0 --target "$TARGET"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - run: cargo build --release --locked --target '${{ matrix.target }}'
+      - name: Enforce deployment-host glibc compatibility
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -eu
+          binary="target/${TARGET}/release/buzz-server"
+          if readelf --version-info "$binary" | grep -Eq 'Name: GLIBC_2\.(3[5-9]|[4-9][0-9])'; then
+            echo "release requires a glibc version newer than the supported 2.34 baseline" >&2
+            readelf --version-info "$binary" | grep 'Name: GLIBC_' >&2
+            exit 1
+          fi
       - name: Package immutable release
         env:
           TARGET: ${{ matrix.target }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ startsWith(github.ref, 'refs/tags/server-v') && github.ref_name || 'server-v0.0.0-pr' }}
         run: |
           set -eu
           package="buzz-server-${VERSION}-${TARGET}"
@@ -67,6 +89,7 @@ jobs:
 
   publish:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/server-v')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
