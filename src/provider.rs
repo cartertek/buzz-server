@@ -497,7 +497,7 @@ fn invoke(
         .stderr(Stdio::piped());
     #[cfg(unix)]
     command.process_group(0);
-    let mut child = command.spawn()?;
+    let mut child = spawn_provider(&mut command)?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(&request_bytes)?;
         stdin.write_all(b"\n")?;
@@ -537,6 +537,23 @@ fn invoke(
         return Err(ProviderError::Provider(redact(message, &secrets)));
     }
     Ok(response)
+}
+
+fn spawn_provider(command: &mut Command) -> io::Result<std::process::Child> {
+    const MAX_EXECUTABLE_BUSY_RETRIES: usize = 5;
+    for attempt in 0..=MAX_EXECUTABLE_BUSY_RETRIES {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error)
+                if error.kind() == io::ErrorKind::ExecutableFileBusy
+                    && attempt < MAX_EXECUTABLE_BUSY_RETRIES =>
+            {
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("bounded provider spawn loop always returns")
 }
 
 fn spawn_bounded_reader<R>(
