@@ -9,11 +9,11 @@ fi
 version=$1
 target=$2
 repository=${3:-cartertek/buzz-server}
-case "$version" in server-v[0-9]* ) ;; *) echo "version must be an immutable server-v* tag" >&2; exit 64;; esac
+case "$version" in v[0-9]* ) ;; *) echo "version must be an immutable v* tag" >&2; exit 64;; esac
 case "$version" in *[!A-Za-z0-9._-]* ) echo "version contains unsafe characters" >&2; exit 64;; esac
 case "$target" in x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;; *) echo "unsupported target" >&2; exit 64;; esac
 case "$repository" in *[!A-Za-z0-9._/-]*|*/*/*|'') echo "invalid repository" >&2; exit 64;; esac
-cargo_version=${version#server-v}
+cargo_version=${version#v}
 [ -n "$cargo_version" ] || { echo "tag has no Cargo version" >&2; exit 64; }
 
 asset="buzz-server-${version}-${target}.tar.gz"

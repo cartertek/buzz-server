@@ -1,6 +1,6 @@
 # Buzz Server host deployment
 
-CI gates every pull request and `master` push. Pushing an immutable `server-v*`
+CI gates every pull request and `master` push. Pushing an immutable `v*`
 tag builds x86-64 and ARM64 Linux tarballs, verifies all build jobs, and only
 then attaches the tarballs and SHA-256 files to a GitHub Release. The `current`
 symlink is the only mutable host release pointer. Release tarballs are the first
@@ -8,7 +8,7 @@ deployment format; a GHCR image can be added later without changing this gate.
 Each release is assembled in a same-filesystem staging directory, made
 root-owned and non-writable, and renamed into place atomically. Reinstalling an
 existing version is rejected rather than mutating its directory.
-Protect `master` with the CI check, restrict creation/deletion of `server-v*`
+Protect `master` with the CI check, restrict creation/deletion of `v*`
 tags, and grant the release workflow `contents:write` only. Release reruns refuse
 to replace assets on an existing GitHub Release.
 
@@ -19,7 +19,7 @@ sudo install -D -m 0644 deploy/buzz-server.service /etc/systemd/system/buzz-serv
 sudo install -d -o root -g buzz-server -m 0750 /etc/buzz-server
 sudo install -o root -g buzz-server -m 0640 config/buzz-server.dev.example.json /etc/buzz-server/config.json
 sudo install -o root -g buzz-server -m 0640 /dev/null /etc/buzz-server/secrets.env
-sudo /usr/libexec/buzz-server/install-release.sh server-v1.0.0 x86_64-unknown-linux-gnu OWNER/REPOSITORY
+sudo /usr/libexec/buzz-server/install-release.sh v1.0.0 x86_64-unknown-linux-gnu OWNER/REPOSITORY
 sudo buzz-serverctl health
 ```
 
@@ -52,7 +52,7 @@ no secret belongs in `config.json`, the service unit, or a release directory.
 Rollback retains state and selects a previously installed immutable binary:
 
 ```sh
-sudo buzz-serverctl rollback server-v1.0.0-x86_64-unknown-linux-gnu
+sudo buzz-serverctl rollback v1.0.0-x86_64-unknown-linux-gnu
 ```
 
 The installer enables the service for boot and restarts it after switching the
