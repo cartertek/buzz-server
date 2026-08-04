@@ -436,6 +436,15 @@ async fn main() -> Result<(), DaemonError> {
             fs::set_permissions(signer_directory, fs::Permissions::from_mode(0o700))?;
         }
     }
+    if let Some(lifecycle_directory) = config.lifecycle_api.unix_socket.parent() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // The socket authenticates every caller with SO_PEERCRED. Non-root configured draft
+            // submitters need directory traversal, but no caller may modify directory entries.
+            fs::set_permissions(lifecycle_directory, fs::Permissions::from_mode(0o711))?;
+        }
+    }
     clear_readiness_file(&ready_path)?;
 
     let mut launch = LaunchSpec::resolve_local(
@@ -542,13 +551,6 @@ async fn main() -> Result<(), DaemonError> {
         authorization: authorization.clone(),
     };
     let reconciler = Reconciler::new(store.as_ref(), &receipts, &supervisor, &secrets);
-    if let Some(agent) = store.get_agent(config.agent.id)? {
-        let outcome = reconciler.reconcile_desired(&agent, Some(&launch))?;
-        eprintln!("local reconciliation: {outcome:?}");
-    }
-
-    let signer_server = SignerIpcServer::new(&config.signer_socket, Arc::new(constrained_signer));
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (operation_tx, mut operation_rx) = tokio::sync::mpsc::unbounded_channel();
     let lifecycle_application = SqliteLifecycleApplication::new(
         Arc::clone(&store),
@@ -556,11 +558,26 @@ async fn main() -> Result<(), DaemonError> {
         unix_seconds_i64,
     )
     .with_retention_seconds(config.lifecycle_api.retention_seconds);
+    // Resume durable commands before applying steady-state desired intent. Otherwise an old
+    // disable/delete can be temporarily undone by startup reconciliation.
     for operation in store.nonterminal_operations()? {
-        operation_tx
-            .send(operation.id)
-            .map_err(|_| DaemonError::Task("lifecycle worker is unavailable".into()))?;
+        reconcile_lifecycle_operation(
+            &lifecycle_application,
+            &reconciler,
+            store.as_ref(),
+            operation.id,
+            config.agent.id,
+            &mut launch,
+            &config,
+        )?;
     }
+    if let Some(agent) = store.get_agent(config.agent.id)? {
+        let outcome = reconciler.reconcile_desired(&agent, Some(&launch))?;
+        eprintln!("local reconciliation: {outcome:?}");
+    }
+
+    let signer_server = SignerIpcServer::new(&config.signer_socket, Arc::new(constrained_signer));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let unix_lifecycle = UnixLifecycleServer::new(
         &config.lifecycle_api.unix_socket,
         UnixAuthorityPolicy {
@@ -965,12 +982,13 @@ fn enqueue_expired_purges<E: LifecycleEffects>(
             .get_agent(agent_id)?
             .purge_after
             .unwrap_or_default();
+        let attempt = unix_seconds_i64();
         application.purge_agent(
             &actor,
             &buzz_server::api::AgentCommandRequest {
                 metadata: buzz_server::api::CommandMetadata {
-                    idempotency_key: format!("retention:{agent_id}:{deadline}"),
-                    correlation_id: format!("retention:{agent_id}"),
+                    idempotency_key: format!("retention:{agent_id}:{deadline}:{attempt}"),
+                    correlation_id: format!("retention:{agent_id}:{attempt}"),
                 },
                 agent_id,
             },

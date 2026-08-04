@@ -173,7 +173,9 @@ impl<H: AuthenticatedRequestHandler> UnixLifecycleServer<H> {
     pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> Result<(), TransportError> {
         prepare_socket(&self.socket_path)?;
         let listener = UnixListener::bind(&self.socket_path)?;
-        std::fs::set_permissions(&self.socket_path, std::fs::Permissions::from_mode(0o600))?;
+        // Authorization is derived from SO_PEERCRED, not filesystem ownership. The socket must be
+        // connectable by configured non-root draft submitters while its parent remains non-writable.
+        std::fs::set_permissions(&self.socket_path, std::fs::Permissions::from_mode(0o666))?;
         let _guard = SocketGuard(self.socket_path.clone());
         let mut connections = JoinSet::new();
         loop {
@@ -408,7 +410,7 @@ async fn write_frame(stream: &mut UnixStream, response: &[u8]) -> Result<(), Tra
 fn prepare_socket(path: &Path) -> Result<(), TransportError> {
     let parent = path.parent().ok_or(TransportError::MissingParent)?;
     let metadata = std::fs::metadata(parent)?;
-    if !metadata.is_dir() || metadata.permissions().mode() & 0o077 != 0 {
+    if !metadata.is_dir() || metadata.permissions().mode() & 0o022 != 0 {
         return Err(TransportError::InsecureParent);
     }
     match std::fs::symlink_metadata(path) {
@@ -434,7 +436,7 @@ impl Drop for SocketGuard {
 pub enum TransportError {
     #[error("socket path has no parent")]
     MissingParent,
-    #[error("socket parent must be owner-only")]
+    #[error("socket parent must not be group- or world-writable")]
     InsecureParent,
     #[error("socket path is occupied")]
     PathOccupied,
@@ -627,7 +629,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unix_server_uses_kernel_peer_credentials_and_owner_only_socket() {
+    async fn unix_server_uses_kernel_peer_credentials_and_connectable_socket() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let uid = std::fs::metadata(directory.path()).unwrap().uid();
@@ -651,7 +653,7 @@ mod tests {
         }
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
+            0o666
         );
         let mut client = UnixStream::connect(&path).await.unwrap();
         client.write_u32(4).await.unwrap();

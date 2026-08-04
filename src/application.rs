@@ -97,7 +97,7 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
         };
         let subject = agent_id.to_string();
         let principal = audit_actor(actor);
-        let (operation, replayed) = self.store.apply_agent_command(
+        let (operation, _replayed) = self.store.apply_agent_command(
             &operation,
             &idempotency,
             mutation,
@@ -117,7 +117,10 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
                 redacted_detail: None,
             },
         )?;
-        if !replayed {
+        if matches!(
+            operation.status,
+            OperationStatus::Pending | OperationStatus::Running
+        ) {
             self.effects.operation_ready(&operation)?;
         }
         Ok(operation_resource(&operation))
@@ -144,7 +147,8 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
         self.audit_reconciliation(&operation, "operation.running", "accepted")
     }
 
-    /// Persists a terminal reconciliation result and only then performs successful purge cleanup.
+    /// Persists a terminal reconciliation result. Successful purge completion, audit, tombstone,
+    /// and removal are one SQLite transaction so a restart cannot observe a terminal zombie.
     pub fn complete_operation(
         &self,
         id: OperationId,
@@ -164,6 +168,35 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
             .store
             .get_operation(id)?
             .ok_or(ApplicationError::NotFound)?;
+        if status == OperationStatus::Succeeded && operation.kind == OperationKind::PurgeAgent {
+            let agent_id = operation.agent_id.ok_or(ApplicationError::Conflict)?;
+            let community = self
+                .store
+                .get_agent(agent_id)?
+                .ok_or(ApplicationError::NotFound)?
+                .community_config_id;
+            let subject = agent_id.to_string();
+            self.store.complete_purge(
+                agent_id,
+                id,
+                (self.now)(),
+                NewAuditRecord {
+                    occurred_at: (self.now)(),
+                    actor_principal: "system:reconciler",
+                    authentication_method: "internal",
+                    community_config_id: Some(community),
+                    operation_id: Some(id),
+                    correlation_id: &operation.correlation_id,
+                    idempotency_key: None,
+                    action: "operation.complete",
+                    subject_type: "agent",
+                    subject_id: Some(&subject),
+                    outcome: "succeeded",
+                    redacted_detail: None,
+                },
+            )?;
+            return Ok(());
+        }
         self.store
             .transition_operation(id, status, error_code, (self.now)())?;
         self.audit_reconciliation(
@@ -175,13 +208,6 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
                 "failed"
             },
         )?;
-        if status == OperationStatus::Succeeded && operation.kind == OperationKind::PurgeAgent {
-            if let Some(agent_id) = operation.agent_id {
-                if !self.store.finalize_purge(agent_id, id)? {
-                    return Err(ApplicationError::Conflict);
-                }
-            }
-        }
         Ok(())
     }
 
@@ -317,8 +343,8 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
         actor: &AuthenticatedPrincipal,
         request: &AgentCommandRequest,
     ) -> Result<OperationResource, ApplicationError> {
-        // Purge first records Deleted intent. Physical removal is only `finalize_purge` after the
-        // reconciler has stopped the process and transitioned this operation to Succeeded.
+        // Purge first records Deleted intent. Physical removal, terminal success, audit, and the
+        // tombstone are committed atomically only after reconciliation has stopped the process.
         self.deleted_command(actor, request, OperationKind::PurgeAgent)
     }
 
@@ -589,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn create_replays_after_restart_without_duplicate_agent_operation_or_audit() {
+    fn create_replay_requeues_without_duplicate_agent_operation_or_audit() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("lifecycle.sqlite3");
         let community = CommunityConfig::new(
@@ -627,7 +653,7 @@ mod tests {
             .create_agent(&actor(), &request.metadata, &request.agent)
             .unwrap();
         assert_eq!(replay.id, first_id);
-        assert_eq!(effects.0.load(Ordering::SeqCst), 0);
+        assert_eq!(effects.0.load(Ordering::SeqCst), 1);
         assert_eq!(store.list_agents(Some(community.id)).unwrap().len(), 1);
     }
 
@@ -669,7 +695,7 @@ mod tests {
             store.get_agent(agent_id).unwrap().unwrap().desired_state,
             DesiredAgentState::Deleted
         );
-        assert!(!store.finalize_purge(agent_id, purge.id).unwrap());
+        assert!(store.get_agent(agent_id).unwrap().is_some());
         service.start_operation(purge.id).unwrap();
         service
             .complete_operation(purge.id, OperationStatus::Succeeded, None)
@@ -862,6 +888,28 @@ mod tests {
         assert_eq!(retained.desired_state, DesiredAgentState::Deleted);
         assert_eq!(retained.purge_after, Some(150));
         assert!(service.expired_retained_agents().unwrap().is_empty());
+        assert_eq!(store.expired_retained_agents(150).unwrap(), vec![agent_id]);
+        service
+            .change_agent_state(
+                &actor(),
+                &ChangeAgentStateRequest {
+                    metadata: metadata("recover-enable"),
+                    agent_id,
+                    desired_state: DesiredAgentState::Enabled,
+                },
+            )
+            .unwrap();
+        assert_eq!(service.get_agent(agent_id).unwrap().purge_after, None);
+        assert!(store.expired_retained_agents(150).unwrap().is_empty());
+        service
+            .delete_agent(
+                &actor(),
+                &AgentCommandRequest {
+                    metadata: metadata("complete-delete-again"),
+                    agent_id,
+                },
+            )
+            .unwrap();
         assert_eq!(store.expired_retained_agents(150).unwrap(), vec![agent_id]);
 
         let audits = store

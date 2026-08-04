@@ -663,6 +663,11 @@ impl SqliteStore {
                         "INSERT INTO agent_retention(agent_id, deleted_at, purge_after) VALUES(?1, ?2, ?3) ON CONFLICT(agent_id) DO UPDATE SET deleted_at=excluded.deleted_at, purge_after=excluded.purge_after",
                         params![id.to_string(), operation.created_at, purge_after],
                     )?;
+                } else if operation.kind == OperationKind::EnableAgent {
+                    transaction.execute(
+                        "DELETE FROM agent_retention WHERE agent_id=?1",
+                        [id.to_string()],
+                    )?;
                 }
             }
         }
@@ -734,27 +739,29 @@ impl SqliteStore {
         Ok((draft.clone(), false))
     }
 
-    /// Physically removes a deleted agent only after its purge operation is durable and terminal.
-    pub fn finalize_purge(
+    /// Atomically records successful purge completion, its audit, the tombstone, and deletion.
+    pub fn complete_purge(
         &self,
         agent_id: AgentId,
         operation_id: OperationId,
-    ) -> Result<bool, StorageError> {
+        now: i64,
+        audit: NewAuditRecord<'_>,
+    ) -> Result<(), StorageError> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let operation: Option<(String, i64)> = transaction
+        let operation: Option<String> = transaction
             .query_row(
                 "SELECT status, updated_at FROM operations WHERE id=?1 AND agent_id=?2 AND kind='purge_agent'",
                 params![operation_id.to_string(), agent_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .optional()?;
-        let Some((status, purged_at)) = operation else {
-            return Ok(false);
-        };
+        let status = operation.ok_or(StorageError::NotFound)?;
         let status: OperationStatus = parse_json_name(&status)?;
-        if status != OperationStatus::Succeeded {
-            return Ok(false);
+        if !status.can_transition_to(OperationStatus::Succeeded) {
+            return Err(StorageError::Conflict(format!(
+                "invalid purge transition from {status:?} to Succeeded"
+            )));
         }
         let document: Option<String> = transaction
             .query_row(
@@ -763,23 +770,28 @@ impl SqliteStore {
                 |row| row.get(0),
             )
             .optional()?;
-        let Some(document) = document else {
-            return Ok(true);
-        };
+        let document = document.ok_or(StorageError::NotFound)?;
         let agent: AgentSpec = serde_json::from_str(&document)?;
         if agent.desired_state != crate::DesiredAgentState::Deleted {
-            return Ok(false);
+            return Err(StorageError::Conflict(
+                "purge target is not recoverably deleted".into(),
+            ));
         }
         transaction.execute(
+            "UPDATE operations SET status='succeeded', error_code=NULL, updated_at=?2 WHERE id=?1",
+            params![operation_id.to_string(), now],
+        )?;
+        insert_audit(&transaction, audit)?;
+        transaction.execute(
             "INSERT OR IGNORE INTO purged_agent_tombstones(agent_id, purged_at, purge_operation_id) VALUES(?1, ?2, ?3)",
-            params![agent_id.to_string(), purged_at, operation_id.to_string()],
+            params![agent_id.to_string(), now, operation_id.to_string()],
         )?;
         transaction.execute(
             "DELETE FROM agent_specs WHERE id=?1",
             [agent_id.to_string()],
         )?;
         transaction.commit()?;
-        Ok(true)
+        Ok(())
     }
 }
 
