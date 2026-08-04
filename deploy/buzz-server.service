@@ -24,10 +24,15 @@ RuntimeDirectory=buzz-server
 RuntimeDirectoryMode=0700
 LogsDirectory=buzz-server
 LogsDirectoryMode=0700
-ExecStartPre=+/usr/bin/install -d -o buzz-agent -g buzz-agent -m 0700 /var/lib/buzz-server/workspaces /var/lib/buzz-server/runtime
+ExecStartPre=+/usr/bin/install -d -o root -g buzz-agent -m 0710 /var/lib/buzz-server/workspaces /var/lib/buzz-server/runtime
+ExecStartPre=+/usr/bin/install -d -o buzz-agent -g buzz-agent -m 0700 /var/lib/buzz-server/workspaces/agent /var/lib/buzz-server/runtime/agent
+# StateDirectory is re-owned to the service account whenever systemd starts the
+# unit. Restore ownership of the two child-only trees, including persisted ACP
+# authentication below runtime/, before the daemon drops privileges.
+ExecStartPre=+/usr/bin/chown -R buzz-agent:buzz-agent /var/lib/buzz-server/workspaces/agent /var/lib/buzz-server/runtime/agent
 UMask=0077
 NoNewPrivileges=true
-CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_SETUID CAP_SETGID
 AmbientCapabilities=
 PrivateTmp=true
 ProtectSystem=strict

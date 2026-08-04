@@ -259,18 +259,17 @@ impl LocalProcessAdapter {
     fn receipt_owned(receipt: &ProcessReceipt) -> bool {
         #[cfg(target_os = "linux")]
         {
-            let path = PathBuf::from(format!("/proc/{}/environ", receipt.pid));
-            let Ok(bytes) = fs::read(path) else {
-                return false;
-            };
-            let expected = format!("{LAUNCH_MARKER}={}", receipt.launch_id);
-            let marker_matches = bytes
-                .split(|byte| *byte == 0)
-                .any(|entry| entry == expected.as_bytes());
-            marker_matches
+            // `/proc/<pid>/environ` is intentionally unreadable after the
+            // harness drops to another uid under the hardened systemd unit.
+            // Put the immutable launch marker in argv[0], which remains
+            // readable cross-uid, and bind it to the configured harness path.
+            let expected_command = format!(
+                "{}#{LAUNCH_MARKER}={}",
+                receipt.desired.harness.path, receipt.launch_id
+            );
+            receipt.command_path.as_deref() == Some(expected_command.as_str())
                 && receipt.process_start_ticks.is_some()
                 && Self::process_start_ticks(receipt.pid) == receipt.process_start_ticks
-                && receipt.command_path.as_deref().is_some()
                 && Self::process_command(receipt.pid).as_deref() == receipt.command_path.as_deref()
         }
         #[cfg(not(target_os = "linux"))]
@@ -410,6 +409,10 @@ impl ProcessSupervisor for LocalProcessAdapter {
             .stderr(Stdio::piped());
         #[cfg(unix)]
         {
+            command.arg0(format!(
+                "{}#{LAUNCH_MARKER}={}",
+                desired.harness.path, desired.launch_id
+            ));
             command.process_group(0);
             if let Some((uid, gid)) = self.child_identity {
                 command.uid(uid).gid(gid);

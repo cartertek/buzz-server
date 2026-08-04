@@ -305,6 +305,11 @@ impl RelayAdapterObserver for StatusObserver {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), DaemonError> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| {
+            DaemonError::InvalidConfig("TLS crypto provider is already configured".into())
+        })?;
     let config_path = parse_args()?;
     let config = DaemonConfig::load(&config_path)?;
     let now = unix_seconds()?;
@@ -365,6 +370,14 @@ async fn main() -> Result<(), DaemonError> {
     let owner_secret = read_secret_file(&config.owner_secret_file)?;
     let owner_keys = Keys::parse(&owner_secret).map_err(|_| DaemonError::InvalidOwnerSecret)?;
     drop(owner_secret);
+    let authorization_generation = secret_generation(&format!(
+        "owner={}|community={}|relay={}|agent={}|conditions={}",
+        owner_keys.public_key().to_hex(),
+        config.community.id,
+        config.community.relay_url,
+        config.expected_agent_pubkey,
+        config.signer_conditions,
+    ));
     let signer_policy = buzz_server::signer::SignerPolicy {
         community_config_id: config.community.id,
         relay_url: config.community.relay_url.clone(),
@@ -406,7 +419,11 @@ async fn main() -> Result<(), DaemonError> {
         buzz_server::launch::HARNESS_AUTH_TAG_ENV.into(),
         SecretRef {
             key: INTERNAL_AUTHORIZATION_REFERENCE.into(),
-            version: Some(secret_generation(&authorization)),
+            // The signed tag carries a fresh timestamp and signature on every
+            // daemon start. Its generation is the stable signer authority and
+            // policy, so an equivalent re-sign does not look like process
+            // identity drift and defeat restart adoption.
+            version: Some(authorization_generation),
         },
     );
     launch
