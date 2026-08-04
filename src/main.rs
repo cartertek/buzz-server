@@ -19,6 +19,7 @@ use buzz_server::{
         AuthenticatedPrincipal, Authority, Nip98AuthorityPolicy, Principal, UnixAuthorityPolicy,
     },
     community_session::{CommunityAuthorizationVerifier, CommunitySession},
+    custody::{AgentIdentityCustody, FilesystemAgentIdentityCustody},
     launch::{ExecutableIdentity, HealthPolicy, RestartMode, RestartPolicy, SecretRef},
     reconcile::{ProcessReceiptRepository, Reconciler},
     relay_adapter::{
@@ -259,15 +260,23 @@ impl LifecycleEffects for LifecycleWake {
 }
 
 const INTERNAL_AUTHORIZATION_REFERENCE: &str = "internal:signer-issued-authorization";
+const INTERNAL_AGENT_KEY_REFERENCE: &str = "internal:custodied-agent-private-key";
 
 struct EnvironmentSecrets {
     authorization: String,
+    agent_private_key: Option<String>,
 }
 
 impl SecretResolver for EnvironmentSecrets {
     fn resolve(&self, reference: &SecretRef) -> Result<String, SupervisorError> {
         if reference.key == INTERNAL_AUTHORIZATION_REFERENCE {
             return Ok(self.authorization.clone());
+        }
+        if reference.key == INTERNAL_AGENT_KEY_REFERENCE {
+            return self
+                .agent_private_key
+                .clone()
+                .ok_or(SupervisorError::SecretResolution);
         }
         if !valid_env_name(&reference.key) {
             return Err(SupervisorError::SecretResolution);
@@ -486,7 +495,7 @@ async fn main() -> Result<(), DaemonError> {
         agent_pubkey: config.expected_agent_pubkey.clone(),
         conditions: config.signer_conditions.clone(),
     };
-    let constrained_signer = DisposableSigner::from_owner_keys(owner_keys, signer_policy)?;
+    let constrained_signer = DisposableSigner::from_owner_keys(owner_keys.clone(), signer_policy)?;
     let authorization = constrained_signer
         .authorize_agent(&buzz_server::signer::AuthorizeAgentRequest {
             action: "authorize_agent".into(),
@@ -549,8 +558,15 @@ async fn main() -> Result<(), DaemonError> {
     let receipts = ReceiptFile::new(config.receipt_file.clone());
     let secrets = EnvironmentSecrets {
         authorization: authorization.clone(),
+        agent_private_key: None,
     };
     let reconciler = Reconciler::new(store.as_ref(), &receipts, &supervisor, &secrets);
+    let custody_root = config
+        .state_database
+        .parent()
+        .ok_or_else(|| DaemonError::InvalidConfig("state database has no parent".into()))?
+        .join("identities");
+    let custody = FilesystemAgentIdentityCustody::new(custody_root, 0);
     let (operation_tx, mut operation_rx) = tokio::sync::mpsc::unbounded_channel();
     let lifecycle_application = SqliteLifecycleApplication::new(
         Arc::clone(&store),
@@ -569,6 +585,10 @@ async fn main() -> Result<(), DaemonError> {
             config.agent.id,
             &mut launch,
             &config,
+            &owner_keys,
+            &custody,
+            &supervisor,
+            child_identity,
         )?;
     }
     if let Some(agent) = store.get_agent(config.agent.id)? {
@@ -665,6 +685,10 @@ async fn main() -> Result<(), DaemonError> {
                     config.agent.id,
                     &mut launch,
                     &config,
+                    &owner_keys,
+                    &custody,
+                    &supervisor,
+                    child_identity,
                 )?;
             }
             _ = process_tick.tick() => {},
@@ -851,6 +875,7 @@ fn unix_seconds_unchecked() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn reconcile_lifecycle_operation<E: LifecycleEffects>(
     application: &SqliteLifecycleApplication<E>,
     reconciler: &Reconciler<'_, SqliteStore, ReceiptFile, LocalProcessAdapter>,
@@ -859,6 +884,10 @@ fn reconcile_lifecycle_operation<E: LifecycleEffects>(
     configured_agent_id: buzz_server::AgentId,
     launch: &mut LaunchSpec,
     config: &DaemonConfig,
+    owner_keys: &Keys,
+    custody: &FilesystemAgentIdentityCustody,
+    supervisor: &LocalProcessAdapter,
+    child_identity: (u32, u32),
 ) -> Result<(), DaemonError> {
     let operation = application.get_operation(operation_id)?;
     if operation.status == buzz_server::OperationStatus::Pending {
@@ -868,13 +897,18 @@ fn reconcile_lifecycle_operation<E: LifecycleEffects>(
     if durable.status != buzz_server::OperationStatus::Running {
         return Ok(());
     }
-    if durable.agent_id != Some(configured_agent_id) {
-        application.complete_operation(
-            operation_id,
-            buzz_server::OperationStatus::Failed,
-            Some(buzz_server::ErrorCode::Unsupported),
-        )?;
-        return Ok(());
+    let target_agent_id = durable.agent_id.ok_or(StorageError::NotFound)?;
+    if target_agent_id != configured_agent_id {
+        return reconcile_dynamic_lifecycle_operation(
+            application,
+            store,
+            &durable,
+            config,
+            owner_keys,
+            custody,
+            supervisor,
+            child_identity,
+        );
     }
     let agent = store
         .get_agent(configured_agent_id)?
@@ -947,8 +981,183 @@ fn reconcile_lifecycle_operation<E: LifecycleEffects>(
     Ok(())
 }
 
+#[derive(Clone, Debug)]
+struct AgentFilesystemLayout {
+    receipt: PathBuf,
+    workspace: PathBuf,
+    runtime: PathBuf,
+    launch_id: String,
+}
+
+fn dynamic_agent_layout(
+    config: &DaemonConfig,
+    agent_id: buzz_server::AgentId,
+) -> Result<AgentFilesystemLayout, DaemonError> {
+    let state_root = config
+        .state_database
+        .parent()
+        .ok_or_else(|| DaemonError::InvalidConfig("state database has no parent".into()))?
+        .join("agents")
+        .join(agent_id.to_string());
+    Ok(AgentFilesystemLayout {
+        receipt: state_root.join("process-receipt.json"),
+        workspace: state_root.join("workspace"),
+        runtime: state_root.join("runtime"),
+        launch_id: format!("agent-{agent_id}"),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
+    application: &SqliteLifecycleApplication<E>,
+    store: &SqliteStore,
+    operation: &buzz_server::api::OperationResource,
+    config: &DaemonConfig,
+    owner_keys: &Keys,
+    custody: &FilesystemAgentIdentityCustody,
+    supervisor: &LocalProcessAdapter,
+    child_identity: (u32, u32),
+) -> Result<(), DaemonError> {
+    let agent_id = operation.agent_id.ok_or(StorageError::NotFound)?;
+    let agent = store.get_agent(agent_id)?.ok_or(StorageError::NotFound)?;
+    let community = store
+        .get_community(agent.community_config_id)?
+        .ok_or(StorageError::NotFound)?;
+    let layout = dynamic_agent_layout(config, agent_id)?;
+    for directory in [&layout.workspace, &layout.runtime] {
+        fs::create_dir_all(directory)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{chown, PermissionsExt};
+            chown(directory, Some(child_identity.0), Some(child_identity.1))?;
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    let identity = custody.provision(agent_id)?;
+    let agent_keys = custody.load(agent_id)?;
+    let signer = DisposableSigner::from_owner_keys(
+        owner_keys.clone(),
+        buzz_server::signer::SignerPolicy {
+            community_config_id: community.id,
+            relay_url: community.relay_url.clone(),
+            agent_pubkey: identity.public_key.clone(),
+            conditions: config.signer_conditions.clone(),
+        },
+    )?;
+    let authorization = signer
+        .authorize_agent(&buzz_server::signer::AuthorizeAgentRequest {
+            action: "authorize_agent".into(),
+            community_config_id: community.id,
+            relay_url: community.relay_url.clone(),
+            agent_pubkey: identity.public_key,
+            conditions: config.signer_conditions.clone(),
+        })?
+        .auth_tag;
+    let authorization_generation = secret_generation(&format!(
+        "owner={}|community={}|relay={}|agent={}|conditions={}",
+        owner_keys.public_key().to_hex(),
+        community.id,
+        community.relay_url,
+        agent_keys.public_key().to_hex(),
+        config.signer_conditions,
+    ));
+    let mut dynamic_launch = LaunchSpec::resolve_local(
+        &agent,
+        &config.runtime_catalog,
+        LocalLaunchContext {
+            launch_id: layout.launch_id.clone(),
+            harness: config.harness.clone(),
+            harness_arguments: config.harness_arguments.clone(),
+            working_directory: path_string(&config.working_directory)?,
+            workspace_path: path_string(&layout.workspace)?,
+            runtime_path: path_string(&layout.runtime)?,
+            process_group_id: layout.launch_id.clone(),
+            restart: config.restart.clone(),
+            health: config.health.clone(),
+        },
+    )?;
+    dynamic_launch.environment.insert(
+        buzz_server::launch::HARNESS_RELAY_URL_ENV.into(),
+        community.relay_url.to_string(),
+    );
+    dynamic_launch.secret_environment.insert(
+        buzz_server::launch::HARNESS_PRIVATE_KEY_ENV.into(),
+        SecretRef {
+            key: INTERNAL_AGENT_KEY_REFERENCE.into(),
+            version: Some(secret_generation(&agent_keys.secret_key().to_secret_hex())),
+        },
+    );
+    dynamic_launch.secret_environment.insert(
+        buzz_server::launch::HARNESS_AUTH_TAG_ENV.into(),
+        SecretRef {
+            key: INTERNAL_AUTHORIZATION_REFERENCE.into(),
+            version: Some(authorization_generation),
+        },
+    );
+    dynamic_launch
+        .validate()
+        .map_err(buzz_server::LaunchResolutionError::Validation)?;
+    let receipts = ReceiptFile::new(layout.receipt.clone());
+    let secrets = EnvironmentSecrets {
+        authorization,
+        agent_private_key: Some(agent_keys.secret_key().to_secret_hex()),
+    };
+    let reconciler = Reconciler::new(store, &receipts, supervisor, &secrets);
+    let stored_operation = store_operation(operation);
+    let outcome = reconciler.reconcile(agent_id, &stored_operation, Some(&dynamic_launch));
+    let (mut status, mut error_code) = match outcome {
+        Ok(
+            buzz_server::reconcile::ReconcileOutcome::FailedPreflight
+            | buzz_server::reconcile::ReconcileOutcome::NoPresence,
+        ) => (
+            buzz_server::OperationStatus::Failed,
+            Some(buzz_server::ErrorCode::Internal),
+        ),
+        Ok(_) => (buzz_server::OperationStatus::Succeeded, None),
+        Err(error) => {
+            eprintln!("dynamic lifecycle reconciliation failed: {error}");
+            (
+                buzz_server::OperationStatus::Failed,
+                Some(buzz_server::ErrorCode::Internal),
+            )
+        }
+    };
+    if status == buzz_server::OperationStatus::Succeeded
+        && operation.kind == buzz_server::OperationKind::PurgeAgent
+    {
+        if let Err(error) = purge_agent_paths(
+            &layout.workspace,
+            &layout.runtime,
+            &config.log_directory,
+            &layout.launch_id,
+        )
+        .and_then(|()| custody.purge(agent_id).map_err(std::io::Error::other))
+        {
+            eprintln!("dynamic purge cleanup failed: {error}");
+            status = buzz_server::OperationStatus::Failed;
+            error_code = Some(buzz_server::ErrorCode::Internal);
+        }
+    }
+    application.complete_operation(operation.id, status, error_code)?;
+    Ok(())
+}
+
 fn purge_agent_files(config: &DaemonConfig, launch_id: &str) -> Result<(), std::io::Error> {
-    for path in [&config.workspace_path, &config.runtime_path] {
+    purge_agent_paths(
+        &config.workspace_path,
+        &config.runtime_path,
+        &config.log_directory,
+        launch_id,
+    )
+}
+
+fn purge_agent_paths(
+    workspace: &Path,
+    runtime: &Path,
+    log_directory: &Path,
+    launch_id: &str,
+) -> Result<(), std::io::Error> {
+    for path in [workspace, runtime] {
         match fs::remove_dir_all(path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -956,7 +1165,7 @@ fn purge_agent_files(config: &DaemonConfig, launch_id: &str) -> Result<(), std::
         }
     }
     for suffix in ["stdout.log", "stderr.log"] {
-        let path = config.log_directory.join(format!("{launch_id}.{suffix}"));
+        let path = log_directory.join(format!("{launch_id}.{suffix}"));
         match fs::remove_file(path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -1104,6 +1313,8 @@ enum DaemonError {
     #[error(transparent)]
     SignerProtocol(#[from] buzz_server::signer::SignerError),
     #[error(transparent)]
+    Custody(#[from] buzz_server::custody::CustodyError),
+    #[error(transparent)]
     Join(#[from] tokio::task::JoinError),
 }
 
@@ -1121,6 +1332,32 @@ mod tests {
         let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
         value["unknown"] = serde_json::json!(true);
         assert!(serde_json::from_value::<DaemonConfig>(value).is_err());
+    }
+
+    #[test]
+    fn dynamic_agent_layout_is_stable_isolated_and_keeps_legacy_paths_untouched() {
+        let source = include_str!("../config/buzz-server.dev.example.json");
+        let config: DaemonConfig = serde_json::from_str(source).unwrap();
+        let first_id = buzz_server::AgentId::new();
+        let second_id = buzz_server::AgentId::new();
+        let first = dynamic_agent_layout(&config, first_id).unwrap();
+        let replay = dynamic_agent_layout(&config, first_id).unwrap();
+        let second = dynamic_agent_layout(&config, second_id).unwrap();
+
+        assert_eq!(first.receipt, replay.receipt);
+        assert_eq!(first.workspace, replay.workspace);
+        assert_ne!(first.receipt, second.receipt);
+        assert_ne!(first.workspace, second.workspace);
+        assert_ne!(first.runtime, config.runtime_path);
+        assert_ne!(first.receipt, config.receipt_file);
+        assert!(first.workspace.starts_with(
+            config
+                .state_database
+                .parent()
+                .unwrap()
+                .join("agents")
+                .join(first_id.to_string())
+        ));
     }
 
     #[test]
