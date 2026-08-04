@@ -35,19 +35,25 @@ case "$command" in
     install -o root -g root -m 0444 "$target/share/deploy/buzz-server.service" /etc/systemd/system/buzz-server.service
     systemctl daemon-reload
     systemctl restart buzz-server.service
-    healthy=false
-    attempts=0
-    while [ "$attempts" -lt 90 ]; do
-      if "$target/share/deploy/buzz-serverctl" health >/dev/null 2>&1; then healthy=true; break; fi
-      attempts=$((attempts + 1))
-      sleep 1
-    done
-    if [ "$healthy" != true ]; then
+    wait_for_health() {
+      controller=$1
+      attempts=0
+      while [ "$attempts" -lt 90 ]; do
+        if "$controller" health >/dev/null 2>&1; then return 0; fi
+        attempts=$((attempts + 1))
+        sleep 1
+      done
+      return 1
+    }
+    if ! wait_for_health "$target/share/deploy/buzz-serverctl"; then
       ln -sfn "$previous" /opt/buzz-server/current.next
       mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
       install -o root -g root -m 0444 "$unit_backup" /etc/systemd/system/buzz-server.service
       systemctl daemon-reload
-      systemctl restart buzz-server.service
+      if ! systemctl restart buzz-server.service || ! wait_for_health "$previous/share/deploy/buzz-serverctl"; then
+        echo "rollback target and previous release both failed health checks" >&2
+        exit 1
+      fi
       echo "rollback target failed health checks; previous release restored" >&2
       exit 1
     fi
