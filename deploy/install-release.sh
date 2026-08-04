@@ -34,6 +34,7 @@ package="buzz-server-${version}-${target}"
 expected_manifest=$(cat <<EOF
 $package/
 $package/buzz-server
+$package/buzz-agentctl
 $package/config/
 $package/config/buzz-server.dev.example.json
 $package/config/buzz-server.schema.json
@@ -65,6 +66,7 @@ tar --no-same-owner --no-same-permissions -C "$temporary" -xzf "$temporary/$asse
 
 source_directory="$temporary/$package"
 test -x "$source_directory/buzz-server"
+test -x "$source_directory/buzz-agentctl"
 release="/opt/buzz-server/releases/$version-$target"
 previous=$(readlink -f /opt/buzz-server/current 2>/dev/null || true)
 if ! getent group buzz-server >/dev/null 2>&1; then
@@ -96,6 +98,7 @@ install -d -o buzz-server -g buzz-server -m 0700 /var/log/buzz-server
 install -d -o root -g root -m 0755 /usr/libexec/buzz-server
 release_staging=$(mktemp -d "/opt/buzz-server/releases/.${version}-${target}.staging.XXXXXX")
 install -o root -g root -m 0555 "$source_directory/buzz-server" "$release_staging/buzz-server"
+install -o root -g root -m 0555 "$source_directory/buzz-agentctl" "$release_staging/buzz-agentctl"
 install -d -o root -g root -m 0555 "$release_staging/share"
 cp -R "$source_directory/config" "$source_directory/deploy" "$release_staging/share/"
 chown -R root:root "$release_staging"
@@ -169,6 +172,7 @@ mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
 install -o root -g root -m 0444 "$release/share/deploy/buzz-server.service" /etc/systemd/system/buzz-server.service
 ln -sfn /opt/buzz-server/current/share/deploy/install-release.sh /usr/libexec/buzz-server/install-release.sh
 ln -sfn /opt/buzz-server/current/share/deploy/buzz-serverctl /usr/local/sbin/buzz-serverctl
+ln -sfn /opt/buzz-server/current/buzz-agentctl /usr/local/bin/buzz-agentctl
 systemctl daemon-reload
 systemctl enable buzz-server.service
 wait_for_health() {

@@ -1,5 +1,5 @@
 [Unit]
-Description=Buzz Server development daemon
+Description=Buzz Server agent lifecycle service
 After=network-online.target
 Wants=network-online.target
 

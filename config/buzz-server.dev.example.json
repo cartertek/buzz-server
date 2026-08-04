@@ -73,5 +73,12 @@
   "health": {
     "kind": "process",
     "startup_grace_ms": 5000
+  },
+  "lifecycle_api": {
+    "unix_socket": "/run/buzz-server/lifecycle.sock",
+    "administrator_uids": [0],
+    "draft_submitter_uids": [],
+    "retention_seconds": 2592000,
+    "tls": null
   }
 }

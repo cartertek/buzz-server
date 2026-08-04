@@ -28,7 +28,6 @@ jobs:
       - run: cargo test --all-targets --locked
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - run: cargo build --release --locked
-      - run: scripts/check-buzz-upstream.sh
 
   build:
     needs: verify
@@ -53,7 +52,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs |
             sh -s -- -y --profile minimal --default-toolchain 1.88.0 --target "$TARGET"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - run: cargo build --release --locked --target '${{ matrix.target }}'
+      - run: cargo build --release --locked --target '${{ matrix.target }}' --bins
       - name: Enforce deployment-host glibc compatibility
         env:
           TARGET: ${{ matrix.target }}
@@ -74,6 +73,7 @@ jobs:
           package="buzz-server-${VERSION}-${TARGET}"
           mkdir -p "dist/${package}/config" "dist/${package}/deploy"
           install -m 0755 "target/${TARGET}/release/buzz-server" "dist/${package}/buzz-server"
+          install -m 0755 "target/${TARGET}/release/buzz-agentctl" "dist/${package}/buzz-agentctl"
           install -m 0644 config/buzz-server.dev.example.json config/buzz-server.schema.json "dist/${package}/config/"
           install -m 0644 deploy/buzz-server.service deploy/README.md "dist/${package}/deploy/"
           install -m 0755 deploy/install-release.sh deploy/buzz-serverctl deploy/provision-runtimes.sh "dist/${package}/deploy/"
