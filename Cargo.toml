@@ -8,9 +8,9 @@ description = "Headless Buzz client for operating always-on agents"
 publish = false
 
 [dependencies]
-buzz-core = { git = "https://github.com/block/buzz.git", rev = "0afeac8a7c173fd3ede8a22e27919e63161bf07c" }
-buzz-sdk = { git = "https://github.com/block/buzz.git", rev = "0afeac8a7c173fd3ede8a22e27919e63161bf07c", version = "0.1.0" }
-buzz-ws-client = { git = "https://github.com/block/buzz.git", rev = "0afeac8a7c173fd3ede8a22e27919e63161bf07c" }
+buzz-core = { git = "https://github.com/block/buzz.git", rev = "79c52166cfe6b6d36bdc7686f943595c74e2f578" }
+buzz-sdk = { git = "https://github.com/block/buzz.git", rev = "79c52166cfe6b6d36bdc7686f943595c74e2f578", version = "0.1.0" }
+buzz-ws-client = { git = "https://github.com/block/buzz.git", rev = "79c52166cfe6b6d36bdc7686f943595c74e2f578" }
 axum = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 base64 = "0.22"

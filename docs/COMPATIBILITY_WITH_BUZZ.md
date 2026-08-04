@@ -49,7 +49,7 @@ authority. “Headless Buzz Desktop” is a long-term direction, not the v0 cont
 - future provider-host functionality outside Desktop;
 - future bridges such as Discord.
 
-The earlier inventory was made at Buzz commit `b1b283cd4c7f926e12eeee8ae1f38c7471922b16`. Phase 0 refreshed it against commit `7ff5fc31895efe6265a379d01637c8ee301872e5`, which supplied the NIP-OA and provider-wire fixtures. The dependency pin was reviewed again at `a5dbdf5e61e4c512acd99c219c79c154ddb57295`; the intervening change affects only the mobile relay client, so the shared Rust crates and recorded fixtures are unchanged.
+The earlier inventory was made at Buzz commit `b1b283cd4c7f926e12eeee8ae1f38c7471922b16`. Phase 0 refreshed it against commit `7ff5fc31895efe6265a379d01637c8ee301872e5`, which supplied the NIP-OA and provider-wire fixtures. The dependency pin was reviewed again at `79c52166cfe6b6d36bdc7686f943595c74e2f578`. Changes since the previous reviewed pin affected `buzz-acp` pooling/prompts and Desktop managed-agent behavior, but not the shared `buzz-core`, `buzz-sdk`, or `buzz-ws-client` contracts consumed here; the compatibility fixtures remained green. A separate weekly workflow reports later upstream movement without making ordinary PR and release verification race against a moving branch.
 
 ## Compatibility decisions
 
