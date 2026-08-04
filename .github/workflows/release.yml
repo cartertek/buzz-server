@@ -95,6 +95,7 @@ jobs:
       - name: Attach assets to immutable GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -eu
           tag='${{ github.ref_name }}'
