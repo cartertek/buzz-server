@@ -84,7 +84,7 @@ fn encrypt_command(args: &[String]) -> Result<(), String> {
         encrypted_data_key: encrypted_data_key.to_owned(),
         nonce: STANDARD.encode(nonce_bytes),
         ciphertext: STANDARD.encode(ciphertext),
-        plaintext_sha256: format!("{:x}", Sha256::digest(plaintext.as_ref())),
+        plaintext_sha256: format!("{:x}", Sha256::digest(&plaintext[..])),
     };
     atomic_write(
         Path::new(output),
@@ -143,7 +143,7 @@ fn decrypt_command(args: &[String]) -> Result<(), String> {
             .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
             .map_err(|_| "decryption authentication failed")?,
     );
-    let digest = format!("{:x}", Sha256::digest(plaintext.as_ref()));
+    let digest = format!("{:x}", Sha256::digest(&plaintext[..]));
     if digest != envelope.plaintext_sha256 {
         return Err("plaintext digest mismatch".into());
     }
@@ -153,7 +153,7 @@ fn decrypt_command(args: &[String]) -> Result<(), String> {
 fn fingerprint_command(args: &[String]) -> Result<(), String> {
     let input = required(args, "--input")?;
     let bytes = Zeroizing::new(read_bounded(Path::new(input))?);
-    println!("sha256:{:x}", Sha256::digest(bytes.as_ref()));
+    println!("sha256:{:x}", Sha256::digest(&bytes[..]));
     Ok(())
 }
 
