@@ -18,9 +18,12 @@ After the Milestone 3 operation worker/schema lands, its provider adapter must:
    explicitly trusted provider ID/hash, negotiate `info`, and only then pass an
    already-signed Desktop-compatible payload closure to
    `ProviderDeploymentCoordinator::deploy_once`;
-5. use the durable operation ID as `request_id` and persist the returned
-   `ProviderDeploymentReceipt` atomically with operation completion;
-6. on restart, return the receipt without rebuilding secrets or redeploying;
+5. implement `ProviderDeploymentRepository::begin` as an atomic
+   insert-if-absent and `complete` as a compare-and-set from the exact in-flight
+   record; use the durable operation ID as `request_id`;
+6. on restart, return completed receipts without rebuilding secrets. For an
+   in-flight record, reconcile external state by stable request ID and provider
+   identity before completing it; never issue a blind second deploy;
 7. check negotiated lifecycle support before changing desired state. An
    unsupported action returns the stable API unsupported error and leaves
    agent intent, operation state, and audit history unchanged;
