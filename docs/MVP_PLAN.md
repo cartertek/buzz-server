@@ -6,6 +6,31 @@ Create, verify, update, disable, re-enable, and delete an always-on server-hoste
 Buzz agent from a name and day-to-day purpose, without requiring Buzz Desktop or
 a client laptop to remain online.
 
+
+## Current implementation status
+
+Milestones 1 through 4 are implemented. The repository currently includes:
+
+- durable desired and observed agent lifecycle state;
+- server-native agent identity generation and constrained NIP-OA authorization;
+- direct supervision of `buzz-acp` and version-pinned ACP runtimes;
+- restart-safe process receipts, adoption, reconciliation, and readiness;
+- multiple explicitly configured, isolated communities and relays;
+- authenticated Unix-socket and TLS/NIP-98 lifecycle API adapters;
+- the `buzz-agentctl` lifecycle CLI;
+- create, get/list, update, enable, disable, logs, recoverable delete, purge,
+  operation polling, drafts, and draft promotion;
+- trusted `buzz-backend-*` discovery, staged provider negotiation and deployment,
+  capability validation, and pinned Kubernetes-provider compatibility fixtures;
+- x86-64 and ARM64 release builds with a glibc 2.34 deployment baseline.
+
+The built-in operational deployment path is the durable local backend. External
+provider compatibility is implemented, while selecting a provider as an agent's
+durable lifecycle backend remains a later control-plane integration. Production
+hardening remains Milestone 5: encrypted owner custody and rotation, backup and
+restore exercises, stronger resource and network restrictions, artifact
+provenance and rollback exercises, and operational monitoring and alerts.
+
 ## Phase 0 — protocol and threat-model spike (completed)
 
 - depend directly on pinned `buzz-sdk` and identify the first production call sites for `buzz-core` and `buzz-ws-client`;

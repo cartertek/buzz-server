@@ -5,7 +5,8 @@ inside `LifecycleApplication::create_agent`. Create records intent before the
 signer has produced the deployment authorization; invoking a provider there
 would invert the required signer-before-provider ordering.
 
-After the Milestone 3 operation worker/schema lands, its provider adapter must:
+Provider protocol compatibility is complete. To make an external provider a
+selectable durable lifecycle backend, a future provider adapter must:
 
 1. add a durable backend selection to agent intent:
    `Local` or `Provider { id, config }`; provider config is validated against
