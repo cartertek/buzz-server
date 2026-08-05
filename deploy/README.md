@@ -1,5 +1,20 @@
 # Buzz Server host deployment
 
+Releases also install `buzz-agentctl`, a machine-readable lifecycle client for
+the owner-only Unix socket. For example:
+
+```sh
+buzz-agentctl list
+buzz-agentctl get --agent agent_...
+buzz-agentctl disable --agent agent_... --idempotency disable-1 --correlation maintenance-1
+buzz-agentctl operation --operation operation_...
+```
+
+Create, update, enable, disable, logs, recoverable delete, immediate purge, and
+draft commands use the same option-shaped interface. Product responses are
+emitted as one compact JSON object on stdout; transport and usage failures go
+to stderr.
+
 CI gates every pull request and `master` push. Pushing an immutable `v*`
 tag builds x86-64 and ARM64 Linux tarballs, verifies all build jobs, and only
 then attaches the tarballs and SHA-256 files to a GitHub Release. The `current`

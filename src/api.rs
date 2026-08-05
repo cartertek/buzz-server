@@ -91,6 +91,7 @@ pub struct AgentResource {
     pub system_prompt: String,
     pub runtime_id: RuntimeId,
     pub desired_state: DesiredAgentState,
+    pub purge_after: Option<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -107,6 +108,9 @@ pub struct OperationResource {
     pub status: OperationStatus,
     pub agent_id: Option<AgentId>,
     pub correlation_id: String,
+    pub error_code: Option<ErrorCode>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -267,6 +271,12 @@ impl<S: LifecycleApplication> LifecycleHandler<S> {
     ) -> Result<OperationResource, crate::ApiError> {
         authorize(actor, Capability::UpdateAgent, None).map_err(api_authorization)?;
         request.metadata.validate().map_err(api_validation)?;
+        if request.changes == UpdateAgentInput::default() {
+            return Err(api_validation(ValidationError::new(
+                "changes",
+                "must include at least one field",
+            )));
+        }
         self.application
             .update_agent(actor, request)
             .map_err(api_application)
@@ -477,6 +487,9 @@ mod tests {
                 status: OperationStatus::Pending,
                 agent_id: None,
                 correlation_id: metadata.correlation_id.clone(),
+                error_code: None,
+                created_at: 1,
+                updated_at: 1,
             }
         }
     }

@@ -1,6 +1,7 @@
 //! SQLite-backed lifecycle application service.
 
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 use crate::{
     api::{
@@ -12,18 +13,22 @@ use crate::{
     auth::{AuthenticatedPrincipal, Principal},
     storage::{AgentCommandMutation, DurableOperation, IdempotencyRecord, NewAuditRecord},
     AgentId, AgentSpec, DesiredAgentState, OperationId, OperationKind, OperationStatus,
-    RuntimeSpec, SqliteStore,
+    RuntimeSpec, SqliteStore, StorageError,
 };
+
+pub const DEFAULT_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 pub trait LifecycleEffects: Send + Sync {
     /// Wakes the reconciler after the complete durable command transaction commits.
     fn operation_ready(&self, operation: &DurableOperation) -> Result<(), ApplicationError>;
 }
 
-pub struct SqliteLifecycleApplication<'a, E> {
-    store: &'a SqliteStore,
-    effects: &'a E,
+#[derive(Clone)]
+pub struct SqliteLifecycleApplication<E> {
+    store: Arc<SqliteStore>,
+    effects: Arc<E>,
     now: fn() -> i64,
+    retention_seconds: i64,
 }
 
 struct ExecutionPlan<'a> {
@@ -34,14 +39,27 @@ struct ExecutionPlan<'a> {
     promoted_draft_id: Option<&'a str>,
 }
 
-impl<'a, E: LifecycleEffects> SqliteLifecycleApplication<'a, E> {
+impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
     #[must_use]
-    pub const fn new(store: &'a SqliteStore, effects: &'a E, now: fn() -> i64) -> Self {
+    pub fn new(store: Arc<SqliteStore>, effects: Arc<E>, now: fn() -> i64) -> Self {
         Self {
             store,
             effects,
             now,
+            retention_seconds: DEFAULT_RETENTION_SECONDS,
         }
+    }
+
+    #[must_use]
+    pub const fn with_retention_seconds(mut self, retention_seconds: i64) -> Self {
+        self.retention_seconds = retention_seconds;
+        self
+    }
+
+    pub fn expired_retained_agents(&self) -> Result<Vec<AgentId>, ApplicationError> {
+        self.store
+            .expired_retained_agents((self.now)())
+            .map_err(ApplicationError::from)
     }
 
     fn execute(
@@ -78,9 +96,8 @@ impl<'a, E: LifecycleEffects> SqliteLifecycleApplication<'a, E> {
             created_at: now,
         };
         let subject = agent_id.to_string();
-        let principal =
-            serde_json::to_string(&actor.principal).map_err(|_| ApplicationError::Internal)?;
-        let (operation, replayed) = self.store.apply_agent_command(
+        let principal = audit_actor(actor);
+        let (operation, _replayed) = self.store.apply_agent_command(
             &operation,
             &idempotency,
             mutation,
@@ -100,7 +117,10 @@ impl<'a, E: LifecycleEffects> SqliteLifecycleApplication<'a, E> {
                 redacted_detail: None,
             },
         )?;
-        if !replayed {
+        if matches!(
+            operation.status,
+            OperationStatus::Pending | OperationStatus::Running
+        ) {
             self.effects.operation_ready(&operation)?;
         }
         Ok(operation_resource(&operation))
@@ -127,7 +147,8 @@ impl<'a, E: LifecycleEffects> SqliteLifecycleApplication<'a, E> {
         self.audit_reconciliation(&operation, "operation.running", "accepted")
     }
 
-    /// Persists a terminal reconciliation result and only then performs successful purge cleanup.
+    /// Persists a terminal reconciliation result. Successful purge completion, audit, tombstone,
+    /// and removal are one SQLite transaction so a restart cannot observe a terminal zombie.
     pub fn complete_operation(
         &self,
         id: OperationId,
@@ -147,6 +168,35 @@ impl<'a, E: LifecycleEffects> SqliteLifecycleApplication<'a, E> {
             .store
             .get_operation(id)?
             .ok_or(ApplicationError::NotFound)?;
+        if status == OperationStatus::Succeeded && operation.kind == OperationKind::PurgeAgent {
+            let agent_id = operation.agent_id.ok_or(ApplicationError::Conflict)?;
+            let community = self
+                .store
+                .get_agent(agent_id)?
+                .ok_or(ApplicationError::NotFound)?
+                .community_config_id;
+            let subject = agent_id.to_string();
+            self.store.complete_purge(
+                agent_id,
+                id,
+                (self.now)(),
+                NewAuditRecord {
+                    occurred_at: (self.now)(),
+                    actor_principal: "system:reconciler",
+                    authentication_method: "internal",
+                    community_config_id: Some(community),
+                    operation_id: Some(id),
+                    correlation_id: &operation.correlation_id,
+                    idempotency_key: None,
+                    action: "operation.complete",
+                    subject_type: "agent",
+                    subject_id: Some(&subject),
+                    outcome: "succeeded",
+                    redacted_detail: None,
+                },
+            )?;
+            return Ok(());
+        }
         self.store
             .transition_operation(id, status, error_code, (self.now)())?;
         self.audit_reconciliation(
@@ -158,13 +208,6 @@ impl<'a, E: LifecycleEffects> SqliteLifecycleApplication<'a, E> {
                 "failed"
             },
         )?;
-        if status == OperationStatus::Succeeded && operation.kind == OperationKind::PurgeAgent {
-            if let Some(agent_id) = operation.agent_id {
-                if !self.store.finalize_purge(agent_id, id)? {
-                    return Err(ApplicationError::Conflict);
-                }
-            }
-        }
         Ok(())
     }
 
@@ -197,7 +240,7 @@ impl<'a, E: LifecycleEffects> SqliteLifecycleApplication<'a, E> {
     }
 }
 
-impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<'_, E> {
+impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E> {
     fn create_agent(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -280,6 +323,7 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<'_
                 mutation: AgentCommandMutation::SetState {
                     id: request.agent_id,
                     desired_state: request.desired_state,
+                    retention_deadline: None,
                 },
                 promoted_draft_id: None,
             },
@@ -299,16 +343,22 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<'_
         actor: &AuthenticatedPrincipal,
         request: &AgentCommandRequest,
     ) -> Result<OperationResource, ApplicationError> {
-        // Purge first records Deleted intent. Physical removal is only `finalize_purge` after the
-        // reconciler has stopped the process and transitioned this operation to Succeeded.
+        // Purge first records Deleted intent. Physical removal, terminal success, audit, and the
+        // tombstone are committed atomically only after reconciliation has stopped the process.
         self.deleted_command(actor, request, OperationKind::PurgeAgent)
     }
 
     fn get_agent(&self, id: AgentId) -> Result<AgentResource, ApplicationError> {
-        self.store
+        let agent = self
+            .store
             .get_agent(id)?
-            .map(agent_resource)
-            .ok_or(ApplicationError::NotFound)
+            .ok_or(ApplicationError::NotFound)?;
+        Ok(agent_resource(
+            agent,
+            self.store
+                .agent_retention(id)?
+                .map(|value| value.purge_after),
+        ))
     }
 
     fn list_agents(
@@ -319,14 +369,21 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<'_
             .store
             .list_agents(request.community_config_id)?
             .into_iter()
-            .map(agent_resource)
-            .collect())
+            .map(|agent| {
+                let purge_after = self
+                    .store
+                    .agent_retention(agent.id)?
+                    .map(|value| value.purge_after);
+                Ok(agent_resource(agent, purge_after))
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?)
     }
 
     fn agent_logs(
         &self,
         request: &AgentLogsRequest,
     ) -> Result<AgentLogsResource, ApplicationError> {
+        self.existing_community(request.agent_id)?;
         let entries = self.store.agent_logs(
             request.agent_id,
             request.after_cursor.as_deref(),
@@ -362,8 +419,7 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<'_
             agent: request.agent.clone(),
         };
         let principal_scope = principal_scope(actor);
-        let principal =
-            serde_json::to_string(&actor.principal).map_err(|_| ApplicationError::Internal)?;
+        let principal = audit_actor(actor);
         let (draft, _) = self.store.apply_draft_command(
             &draft,
             &principal_scope,
@@ -425,7 +481,7 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<'_
     }
 }
 
-impl<E: LifecycleEffects> SqliteLifecycleApplication<'_, E> {
+impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
     fn deleted_command(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -444,6 +500,8 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<'_, E> {
                 mutation: AgentCommandMutation::SetState {
                     id: request.agent_id,
                     desired_state: DesiredAgentState::Deleted,
+                    retention_deadline: (kind == OperationKind::DeleteAgent)
+                        .then(|| (self.now)().saturating_add(self.retention_seconds.max(0))),
                 },
                 promoted_draft_id: None,
             },
@@ -463,6 +521,16 @@ fn principal_scope(actor: &AuthenticatedPrincipal) -> String {
     }
 }
 
+fn audit_actor(actor: &AuthenticatedPrincipal) -> String {
+    match &actor.principal {
+        Principal::UnixPeer { uid, .. } => format!("unix_uid:{uid}"),
+        Principal::Nip98 { pubkey } => {
+            let digest = format!("{:x}", Sha256::digest(pubkey.as_bytes()));
+            format!("nostr_sha256:{}", &digest[..16])
+        }
+    }
+}
+
 const fn authentication_method(actor: &AuthenticatedPrincipal) -> &'static str {
     match &actor.principal {
         Principal::UnixPeer { .. } => "unix_peer",
@@ -470,7 +538,7 @@ const fn authentication_method(actor: &AuthenticatedPrincipal) -> &'static str {
     }
 }
 
-fn agent_resource(agent: AgentSpec) -> AgentResource {
+fn agent_resource(agent: AgentSpec, purge_after: Option<i64>) -> AgentResource {
     AgentResource {
         id: agent.id,
         community_config_id: agent.community_config_id,
@@ -478,6 +546,7 @@ fn agent_resource(agent: AgentSpec) -> AgentResource {
         system_prompt: agent.system_prompt,
         runtime_id: agent.runtime.runtime_id,
         desired_state: agent.desired_state,
+        purge_after,
     }
 }
 
@@ -488,6 +557,9 @@ fn operation_resource(operation: &DurableOperation) -> OperationResource {
         status: operation.status,
         agent_id: operation.agent_id,
         correlation_id: operation.correlation_id.clone(),
+        error_code: operation.error_code,
+        created_at: operation.created_at,
+        updated_at: operation.updated_at,
     }
 }
 
@@ -543,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn create_replays_after_restart_without_duplicate_agent_operation_or_audit() {
+    fn create_replay_requeues_without_duplicate_agent_operation_or_audit() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("lifecycle.sqlite3");
         let community = CommunityConfig::new(
@@ -562,38 +634,41 @@ mod tests {
         };
         let first_id;
         {
-            let store = SqliteStore::open(&path).unwrap();
+            let store = Arc::new(SqliteStore::open(&path).unwrap());
             store.put_community(&community, 1).unwrap();
-            let effects = Effects::default();
-            let service = SqliteLifecycleApplication::new(&store, &effects, || 10);
+            let effects = Arc::new(Effects::default());
+            let service =
+                SqliteLifecycleApplication::new(Arc::clone(&store), Arc::clone(&effects), || 10);
             let first = service
                 .create_agent(&actor(), &request.metadata, &request.agent)
                 .unwrap();
             first_id = first.id;
             assert_eq!(effects.0.load(Ordering::SeqCst), 1);
         }
-        let store = SqliteStore::open(&path).unwrap();
-        let effects = Effects::default();
-        let service = SqliteLifecycleApplication::new(&store, &effects, || 20);
+        let store = Arc::new(SqliteStore::open(&path).unwrap());
+        let effects = Arc::new(Effects::default());
+        let service =
+            SqliteLifecycleApplication::new(Arc::clone(&store), Arc::clone(&effects), || 20);
         let replay = service
             .create_agent(&actor(), &request.metadata, &request.agent)
             .unwrap();
         assert_eq!(replay.id, first_id);
-        assert_eq!(effects.0.load(Ordering::SeqCst), 0);
+        assert_eq!(effects.0.load(Ordering::SeqCst), 1);
         assert_eq!(store.list_agents(Some(community.id)).unwrap().len(), 1);
     }
 
     #[test]
     fn purge_is_deferred_until_reconciliation_succeeds() {
-        let store = SqliteStore::open_in_memory().unwrap();
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
         let community = CommunityConfig::new(
             "Engineering",
             Url::parse("wss://relay.example.test").unwrap(),
         )
         .unwrap();
         store.put_community(&community, 1).unwrap();
-        let effects = Effects::default();
-        let service = SqliteLifecycleApplication::new(&store, &effects, || 10);
+        let effects = Arc::new(Effects::default());
+        let service =
+            SqliteLifecycleApplication::new(Arc::clone(&store), Arc::clone(&effects), || 10);
         let created = service
             .create_agent(
                 &actor(),
@@ -620,12 +695,13 @@ mod tests {
             store.get_agent(agent_id).unwrap().unwrap().desired_state,
             DesiredAgentState::Deleted
         );
-        assert!(!store.finalize_purge(agent_id, purge.id).unwrap());
+        assert!(store.get_agent(agent_id).unwrap().is_some());
         service.start_operation(purge.id).unwrap();
         service
             .complete_operation(purge.id, OperationStatus::Succeeded, None)
             .unwrap();
         assert!(store.get_agent(agent_id).unwrap().is_none());
+        assert!(store.is_agent_purged(agent_id).unwrap());
         assert_eq!(
             store
                 .audit_for_subject("agent", &agent_id.to_string())
@@ -637,15 +713,16 @@ mod tests {
 
     #[test]
     fn draft_promotion_is_one_time_across_distinct_idempotency_keys() {
-        let store = SqliteStore::open_in_memory().unwrap();
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
         let community = CommunityConfig::new(
             "Engineering",
             Url::parse("wss://relay.example.test").unwrap(),
         )
         .unwrap();
         store.put_community(&community, 1).unwrap();
-        let effects = Effects::default();
-        let service = SqliteLifecycleApplication::new(&store, &effects, || 10);
+        let effects = Arc::new(Effects::default());
+        let service =
+            SqliteLifecycleApplication::new(Arc::clone(&store), Arc::clone(&effects), || 10);
         let draft = service
             .submit_draft(
                 &actor(),
@@ -688,5 +765,168 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn full_lifecycle_contract_persists_polling_logs_retention_and_redacted_audit() {
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let community = CommunityConfig::new(
+            "Engineering",
+            Url::parse("wss://relay.example.test").unwrap(),
+        )
+        .unwrap();
+        store.put_community(&community, 1).unwrap();
+        let effects = Arc::new(Effects::default());
+        let service =
+            SqliteLifecycleApplication::new(Arc::clone(&store), Arc::clone(&effects), || 100)
+                .with_retention_seconds(50);
+        let create = service
+            .create_agent(
+                &actor(),
+                &metadata("complete-create"),
+                &CreateAgentInput {
+                    community_config_id: community.id,
+                    display_name: "Builder".into(),
+                    system_prompt: "Build safely.".into(),
+                    runtime_id: "codex-acp".parse().unwrap(),
+                },
+            )
+            .unwrap();
+        let agent_id = create.agent_id.unwrap();
+        assert_eq!(service.get_operation(create.id).unwrap().created_at, 100);
+        service.start_operation(create.id).unwrap();
+        service
+            .complete_operation(create.id, OperationStatus::Succeeded, None)
+            .unwrap();
+
+        let update = service
+            .update_agent(
+                &actor(),
+                &UpdateAgentRequest {
+                    metadata: metadata("complete-update"),
+                    agent_id,
+                    changes: crate::api::UpdateAgentInput {
+                        display_name: Some("Builder 2".into()),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        assert_eq!(update.kind, OperationKind::UpdateAgent);
+        assert_eq!(
+            service.get_agent(agent_id).unwrap().display_name,
+            "Builder 2"
+        );
+        assert_eq!(
+            service
+                .list_agents(&ListAgentsRequest {
+                    community_config_id: Some(community.id)
+                })
+                .unwrap()
+                .len(),
+            1
+        );
+
+        store
+            .append_redacted_log(
+                agent_id,
+                &crate::api::RedactedLogEntry {
+                    cursor: "log-1".into(),
+                    occurred_at: 101,
+                    stream: "stderr".into(),
+                    redacted_message: "runtime ready".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            service
+                .agent_logs(&AgentLogsRequest {
+                    agent_id,
+                    after_cursor: None,
+                    limit: 10,
+                })
+                .unwrap()
+                .entries
+                .len(),
+            1
+        );
+
+        let disable = service
+            .change_agent_state(
+                &actor(),
+                &ChangeAgentStateRequest {
+                    metadata: metadata("complete-disable"),
+                    agent_id,
+                    desired_state: DesiredAgentState::Disabled,
+                },
+            )
+            .unwrap();
+        assert_eq!(disable.kind, OperationKind::DisableAgent);
+        let enable = service
+            .change_agent_state(
+                &actor(),
+                &ChangeAgentStateRequest {
+                    metadata: metadata("complete-enable"),
+                    agent_id,
+                    desired_state: DesiredAgentState::Enabled,
+                },
+            )
+            .unwrap();
+        assert_eq!(enable.kind, OperationKind::EnableAgent);
+
+        let delete = service
+            .delete_agent(
+                &actor(),
+                &AgentCommandRequest {
+                    metadata: metadata("complete-delete"),
+                    agent_id,
+                },
+            )
+            .unwrap();
+        assert_eq!(delete.kind, OperationKind::DeleteAgent);
+        let retained = service.get_agent(agent_id).unwrap();
+        assert_eq!(retained.desired_state, DesiredAgentState::Deleted);
+        assert_eq!(retained.purge_after, Some(150));
+        assert!(service.expired_retained_agents().unwrap().is_empty());
+        assert_eq!(store.expired_retained_agents(150).unwrap(), vec![agent_id]);
+        service
+            .change_agent_state(
+                &actor(),
+                &ChangeAgentStateRequest {
+                    metadata: metadata("recover-enable"),
+                    agent_id,
+                    desired_state: DesiredAgentState::Enabled,
+                },
+            )
+            .unwrap();
+        assert_eq!(service.get_agent(agent_id).unwrap().purge_after, None);
+        assert!(store.expired_retained_agents(150).unwrap().is_empty());
+        service
+            .delete_agent(
+                &actor(),
+                &AgentCommandRequest {
+                    metadata: metadata("complete-delete-again"),
+                    agent_id,
+                },
+            )
+            .unwrap();
+        assert_eq!(store.expired_retained_agents(150).unwrap(), vec![agent_id]);
+
+        let audits = store
+            .audit_for_subject("agent", &agent_id.to_string())
+            .unwrap();
+        assert!(audits.iter().all(|record| matches!(
+            record.actor_principal.as_str(),
+            "unix_uid:1000" | "system:reconciler"
+        )));
+        assert!(audits
+            .iter()
+            .any(|record| record.actor_principal == "unix_uid:1000"));
+        assert!(audits
+            .iter()
+            .any(|record| record.actor_principal == "system:reconciler"));
+        assert!(audits
+            .iter()
+            .all(|record| !record.actor_principal.contains("pid")));
     }
 }
