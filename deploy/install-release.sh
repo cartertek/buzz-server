@@ -142,22 +142,26 @@ if [ ! -e /etc/buzz-server/secrets.env ]; then
   install -o root -g buzz-server -m 0640 "$secrets_source" /etc/buzz-server/secrets.env
 fi
 owner_envelope=/etc/buzz-server/owner-secret.envelope.json
-if [ ! -e "$owner_envelope" ]; then
+owner_key_file=/etc/buzz-server/owner-secret
+owner_marker=/etc/buzz-server/owner-secret.keyring
+if [ ! -e "$owner_envelope" ] && [ ! -e "$owner_key_file" ] && [ ! -e "$owner_marker" ]; then
+  owner_source=${BUZZ_OWNER_SECRET_FILE:-}
   if [ -n "${BUZZ_OWNER_ENVELOPE_FILE:-}" ] && [ -f "$BUZZ_OWNER_ENVELOPE_FILE" ]; then
     install -o root -g root -m 0400 "$BUZZ_OWNER_ENVELOPE_FILE" "$owner_envelope"
   else
-    owner_source=${BUZZ_OWNER_SECRET_FILE:-}
-    if [ -z "$owner_source" ] && [ -f /etc/buzz-server/owner-secret ]; then
-      owner_source=/etc/buzz-server/owner-secret
-    fi
-    [ -n "$owner_source" ] && [ -f "$owner_source" ] && [ -n "${BUZZ_KMS_KEY_ID:-}" ] || {
-      echo "first install requires BUZZ_OWNER_ENVELOPE_FILE or BUZZ_OWNER_SECRET_FILE plus BUZZ_KMS_KEY_ID" >&2
+    [ -n "$owner_source" ] && [ -f "$owner_source" ] || {
+      echo "first install requires BUZZ_OWNER_ENVELOPE_FILE or BUZZ_OWNER_SECRET_FILE" >&2
       exit 66
     }
-    "$release_staging/buzz-secretsctl" encrypt --kms-key-id "$BUZZ_KMS_KEY_ID" --input "$owner_source" --output "$owner_envelope"
-    chown root:root "$owner_envelope"
-    chmod 0400 "$owner_envelope"
-    if [ "$owner_source" = /etc/buzz-server/owner-secret ]; then rm -f "$owner_source"; fi
+    if [ -n "${BUZZ_KMS_KEY_ID:-}" ]; then
+      "$release_staging/buzz-secretsctl" encrypt --kms-key-id "$BUZZ_KMS_KEY_ID" --input "$owner_source" --output "$owner_envelope"
+      chown root:root "$owner_envelope"
+      chmod 0400 "$owner_envelope"
+    else
+      "$release_staging/buzz-secretsctl" persist --input "$owner_source" --key-file "$owner_key_file" --marker "$owner_marker"
+      [ ! -e "$owner_key_file" ] || { chown root:root "$owner_key_file"; chmod 0400 "$owner_key_file"; }
+      [ ! -e "$owner_marker" ] || { chown root:root "$owner_marker"; chmod 0600 "$owner_marker"; }
+    fi
   fi
 fi
 runtime_assets_valid() {

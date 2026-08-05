@@ -40,6 +40,9 @@ fn run() -> Result<(), String> {
         Some("encrypt") => encrypt_command(&args[1..]),
         Some("decrypt") => decrypt_command(&args[1..]),
         Some("fingerprint") => fingerprint_command(&args[1..]),
+        Some("persist") => persist_command(&args[1..]),
+        Some("materialize") => materialize_command(&args[1..]),
+        Some("clear-local") => clear_local_command(&args[1..]),
         _ => Err(usage()),
     }
 }
@@ -157,6 +160,94 @@ fn fingerprint_command(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+const DEFAULT_KEYRING_SERVICE: &str = "buzz-server";
+const DEFAULT_KEYRING_NAME: &str = "owner-identity";
+
+fn persist_command(args: &[String]) -> Result<(), String> {
+    let input = Path::new(required(args, "--input")?);
+    let key_file = Path::new(required(args, "--key-file")?);
+    let marker = Path::new(required(args, "--marker")?);
+    let service = optional(args, "--service").unwrap_or(DEFAULT_KEYRING_SERVICE);
+    let name = optional(args, "--name").unwrap_or(DEFAULT_KEYRING_NAME);
+    let secret = Zeroizing::new(read_bounded(input)?);
+    let secret_text = std::str::from_utf8(&secret)
+        .map_err(|_| "owner secret is not UTF-8")?
+        .trim();
+    nostr::Keys::parse(secret_text).map_err(|_| "owner secret is not a valid Nostr secret")?;
+
+    if env::var_os("BUZZ_DISABLE_SYSTEM_KEYRING").is_none() {
+        if let Ok(entry) = keyring::Entry::new(service, name) {
+            if entry.set_password(secret_text).is_ok() {
+                match entry.get_password() {
+                    Ok(stored) if stored == secret_text => {
+                        atomic_write(marker, b"system-keyring\n", 0o600)?;
+                        let _ = fs::remove_file(key_file);
+                        println!("system-keyring");
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    atomic_write(key_file, secret_text.as_bytes(), 0o400)?;
+    let readback = read_bounded(key_file)?;
+    if readback != secret_text.as_bytes() {
+        return Err("owner key-file read-back verification failed".into());
+    }
+    let _ = fs::remove_file(marker);
+    println!("key-file");
+    Ok(())
+}
+
+fn materialize_command(args: &[String]) -> Result<(), String> {
+    let output = Path::new(required(args, "--output")?);
+    let key_file = Path::new(required(args, "--key-file")?);
+    let marker = Path::new(required(args, "--marker")?);
+    let service = optional(args, "--service").unwrap_or(DEFAULT_KEYRING_SERVICE);
+    let name = optional(args, "--name").unwrap_or(DEFAULT_KEYRING_NAME);
+
+    if env::var_os("BUZZ_DISABLE_SYSTEM_KEYRING").is_none() {
+        if let Ok(entry) = keyring::Entry::new(service, name) {
+            if let Ok(secret) = entry.get_password() {
+                nostr::Keys::parse(secret.trim())
+                    .map_err(|_| "system keyring contains an invalid owner secret")?;
+                atomic_write(output, secret.trim().as_bytes(), 0o400)?;
+                return Ok(());
+            }
+        }
+    }
+
+    if key_file.exists() {
+        let secret = Zeroizing::new(read_bounded(key_file)?);
+        let text = std::str::from_utf8(&secret)
+            .map_err(|_| "owner key file is not UTF-8")?
+            .trim();
+        nostr::Keys::parse(text).map_err(|_| "owner key file contains an invalid secret")?;
+        atomic_write(output, text.as_bytes(), 0o400)?;
+        return Ok(());
+    }
+
+    if marker.exists() {
+        return Err("owner identity is recorded in the system keyring, but the keyring is unavailable or the entry is missing; refusing to rotate identity".into());
+    }
+    Err("no persisted owner identity was found".into())
+}
+
+fn clear_local_command(args: &[String]) -> Result<(), String> {
+    let key_file = Path::new(required(args, "--key-file")?);
+    let marker = Path::new(required(args, "--marker")?);
+    let service = optional(args, "--service").unwrap_or(DEFAULT_KEYRING_SERVICE);
+    let name = optional(args, "--name").unwrap_or(DEFAULT_KEYRING_NAME);
+    if let Ok(entry) = keyring::Entry::new(service, name) {
+        let _ = entry.delete_credential();
+    }
+    let _ = fs::remove_file(key_file);
+    let _ = fs::remove_file(marker);
+    Ok(())
+}
+
 fn run_aws(command: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     let output = Command::new(command)
         .args(args)
@@ -234,5 +325,5 @@ fn optional<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
         .map(|pair| pair[1].as_str())
 }
 fn usage() -> String {
-    "usage: buzz-secretsctl encrypt --kms-key-id KEY --input FILE --output FILE [--aws-command PATH]\n       buzz-secretsctl decrypt --input FILE --output FILE [--aws-command PATH]\n       buzz-secretsctl fingerprint --input FILE".into()
+    "usage: buzz-secretsctl encrypt --kms-key-id KEY --input FILE --output FILE [--aws-command PATH]\n       buzz-secretsctl decrypt --input FILE --output FILE [--aws-command PATH]\n       buzz-secretsctl fingerprint --input FILE\n       buzz-secretsctl persist --input FILE --key-file FILE --marker FILE [--service NAME] [--name NAME]\n       buzz-secretsctl materialize --output FILE --key-file FILE --marker FILE [--service NAME] [--name NAME]\n       buzz-secretsctl clear-local --key-file FILE --marker FILE [--service NAME] [--name NAME]".into()
 }

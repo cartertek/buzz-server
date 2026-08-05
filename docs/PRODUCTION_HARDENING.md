@@ -4,21 +4,33 @@ Milestone 5 adds production host controls around the lifecycle implementation. I
 still assumes a single trusted Linux host and does not claim protection from a
 fully compromised root account.
 
-## KMS envelope custody
+## Tiered owner custody
 
-The owner key is stored at rest as `/etc/buzz-server/owner-secret.envelope.json`.
-`buzz-secretsctl` requests a 256-bit data key from AWS KMS, encrypts the secret
-with AES-256-GCM, and stores only the encrypted data key, nonce, authenticated
-ciphertext, KMS key ID, and plaintext digest. The plaintext data key is held in a
-zeroizing allocation and is never written to disk.
+Buzz Server follows Buzz Desktop's identity-storage ordering where practical.
+If `BUZZ_KMS_KEY_ID` or `BUZZ_OWNER_ENVELOPE_FILE` is configured, AWS KMS
+envelope custody takes precedence. `buzz-secretsctl` encrypts the owner secret
+with an AES-256-GCM data key generated and wrapped by KMS; startup decrypts it
+only into `/run/buzz-server/credentials/owner-secret`.
 
-At service start, `prepare-owner-credential.sh` asks KMS to decrypt the data key
-and writes the owner secret to `/run/buzz-server/credentials/owner-secret`, a
-root-only runtime directory. The file is removed after the service stops. Prefer
-an EC2 instance role that grants only `kms:Decrypt` on the selected key. Removing
-that permission is the signer kill switch.
+Without KMS configuration, installation tries the Linux Secret Service keyring
+using service `buzz-server` and entry `owner-identity`. It performs a direct
+read-back verification before treating the write as durable. If the keyring is
+unavailable, it atomically stores the same owner secret in
+`/etc/buzz-server/owner-secret`, owned by root with mode `0400`, and verifies the
+file contents after writing.
 
-Import an owner secret before installation:
+A successful keyring-only write creates `/etc/buzz-server/owner-secret.keyring`.
+If that marker exists but the keyring entry later cannot be loaded and no
+fallback file exists, startup fails closed rather than silently rotating the
+owner identity. This mirrors Buzz Desktop's lost/locked identity behavior.
+
+Desktop's implementation is currently a private Tauri module rather than an
+exported Buzz crate. Buzz Server therefore uses the same `keyring` crate and
+Linux backend, persistence ordering, read-back verification, and recovery
+invariants. A future upstream shared secret-store crate could replace this local
+implementation with literal code reuse.
+
+For a KMS-backed import:
 
 ```sh
 buzz-secretsctl encrypt \
@@ -27,10 +39,8 @@ buzz-secretsctl encrypt \
   --output ./owner-secret.envelope.json
 ```
 
-The release installer accepts `BUZZ_OWNER_ENVELOPE_FILE`. A plaintext migration
-is available only when `BUZZ_OWNER_SECRET_FILE` and `BUZZ_KMS_KEY_ID` are both
-provided; the installer creates the envelope and removes the legacy installed
-plaintext file.
+For normal installation, provide `BUZZ_OWNER_SECRET_FILE`; add
+`BUZZ_KMS_KEY_ID` only when KMS custody is desired.
 
 ## Encrypted backup and restore
 
@@ -56,11 +66,12 @@ KMS key policy and backup storage policy are separate controls.
 ## Owner rotation and reauthorization
 
 ```sh
-sudo buzz-serverctl rotate-owner alias/buzz-server-owner ./new-owner-secret
+sudo buzz-serverctl rotate-owner ./new-owner-secret
+# Or keep/use KMS custody:
+sudo buzz-serverctl rotate-owner ./new-owner-secret alias/buzz-server-owner
 ```
 
-Rotation creates a new envelope, restarts the daemon, and restores the previous
-envelope if readiness fails. Startup reissues agent authorization through the
+Rotation writes through the selected custody backend, restarts the daemon, and restores the previous owner and custody mode if readiness fails. Startup reissues agent authorization through the
 constrained signer. Confirm relay reachability and expected signed presence after
 rotation; already published authorization revocation remains relay/owner policy.
 

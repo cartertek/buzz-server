@@ -37,7 +37,7 @@ The packaged host deployment currently targets a systemd-based Linux host with:
 - root access for installation
 - `curl`, `tar`, `sha256sum`, `systemctl`, `runuser`, GitHub CLI (`gh`), AWS CLI, and standard GNU utilities
 - a reachable Buzz relay
-- an owner Nostr secret key and an AWS KMS key accessible through an instance role
+- an owner Nostr secret key; AWS KMS is optional and takes precedence when configured
 - model/runtime credentials such as an OpenAI API key
 - HTTPS URLs and SHA-256 values for the pinned Sprig and Codex ACP runtime packages
 
@@ -136,7 +136,6 @@ sudo env \
   BUZZ_CONFIG_FILE=/tmp/buzz-server-config.json \
   BUZZ_SECRETS_FILE=/tmp/buzz-server-secrets.env \
   BUZZ_OWNER_SECRET_FILE=/tmp/buzz-owner-secret \
-  BUZZ_KMS_KEY_ID=alias/buzz-server-owner \
   BUZZ_HARNESS_URL="$BUZZ_HARNESS_URL" \
   BUZZ_HARNESS_SHA256="$BUZZ_HARNESS_SHA256" \
   BUZZ_RUNTIME_URL="$BUZZ_RUNTIME_URL" \
@@ -145,7 +144,14 @@ sudo env \
   "$BUZZ_VERSION" "$BUZZ_TARGET" cartertek/buzz-server
 ```
 
-The installer verifies GitHub build provenance, the release checksum, and archive layout; envelope-encrypts the owner key; provisions the
+
+To use AWS KMS custody, add the variable to the `sudo env` invocation:
+
+```sh
+BUZZ_KMS_KEY_ID=alias/buzz-server-owner
+```
+
+The installer verifies GitHub build provenance, the release checksum, and archive layout; stores the owner key in KMS when configured or otherwise through the OS keyring/restricted-file fallback; provisions the
 runtime packages, runs the ACP preflight as the isolated `buzz-agent` user,
 installs the systemd service, starts it, and rolls back automatically if the new
 release fails its health check.
@@ -340,7 +346,7 @@ not copying a locally built binary directly into the production filesystem.
 
 ## Security model
 
-- The owner key is KMS-envelope encrypted at rest and decrypted only into a root-only runtime file.
+- The owner key is stored through AWS KMS when configured, otherwise in the OS secret manager with a restricted key-file fallback, and materialized only into a root-only runtime file.
 - Runtime and model credentials are stored separately from JSON configuration.
 - Agent processes run under the restricted `buzz-agent` account.
 - Administrative Unix access is authorized using `SO_PEERCRED` UIDs.

@@ -61,7 +61,7 @@ Exit: the Kubernetes reference provider and a fake provider pass the compatibili
 
 ## Milestone 5: production hardening
 
-Status: implementation complete. KMS envelope custody, encrypted backup/restore,
+Status: implementation complete. tiered owner custody, encrypted backup/restore,
 owner rotation, host restrictions, provenance verification, rollback, monitoring,
 and alert hooks are implemented. Final acceptance requires recording the live
 disaster-recovery exercise against a disposable community.
