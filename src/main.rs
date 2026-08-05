@@ -173,11 +173,9 @@ impl DaemonConfig {
                 "credential references must be environment variable names".into(),
             ));
         }
-        if self.owner_secret_file.parent()
-            != Some(Path::new("/run/credentials/buzz-server.service"))
-        {
+        if self.owner_secret_file != Path::new("/run/buzz-server/credentials/owner-secret") {
             return Err(DaemonError::InvalidConfig(
-                "owner_secret_file must be inside the systemd credential directory".into(),
+                "owner_secret_file must be the ephemeral KMS-decrypted credential path".into(),
             ));
         }
         if self.runtime_user != "buzz-agent" {

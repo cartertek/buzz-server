@@ -18,6 +18,21 @@ case "$command" in
     [ "$#" -ge 3 ] && [ "$#" -le 4 ] || { echo "usage: buzz-serverctl redeploy VERSION TARGET [OWNER/REPOSITORY]" >&2; exit 64; }
     exec /usr/libexec/buzz-server/install-release.sh "$2" "$3" "${4:-cartertek/buzz-server}"
     ;;
+  backup)
+    [ "$#" -eq 3 ] || { echo "usage: buzz-serverctl backup KMS_KEY_ID OUTPUT" >&2; exit 64; }
+    exec /opt/buzz-server/current/share/deploy/backup.sh "$2" "$3"
+    ;;
+  restore)
+    [ "$#" -eq 2 ] || { echo "usage: buzz-serverctl restore BACKUP" >&2; exit 64; }
+    exec /opt/buzz-server/current/share/deploy/restore.sh "$2"
+    ;;
+  rotate-owner)
+    [ "$#" -eq 3 ] || { echo "usage: buzz-serverctl rotate-owner KMS_KEY_ID SECRET_FILE" >&2; exit 64; }
+    exec /opt/buzz-server/current/share/deploy/rotate-owner.sh "$2" "$3"
+    ;;
+  check)
+    exec /opt/buzz-server/current/share/deploy/healthcheck.sh
+    ;;
   rollback)
     [ "$#" -eq 2 ] || { echo "usage: buzz-serverctl rollback VERSION" >&2; exit 64; }
     case "$2" in *[!A-Za-z0-9._-]*|'') echo "invalid version" >&2; exit 64;; esac
@@ -59,7 +74,7 @@ case "$command" in
     fi
     ;;
   *)
-    echo "usage: buzz-serverctl {health|start|restart|stop|status|redeploy|rollback}" >&2
+    echo "usage: buzz-serverctl {health|check|start|restart|stop|status|redeploy|rollback|backup|restore|rotate-owner}" >&2
     exit 64
     ;;
 esac

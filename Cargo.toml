@@ -1,6 +1,6 @@
 [package]
 name = "buzz-server"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -13,12 +13,14 @@ buzz-sdk = { git = "https://github.com/block/buzz.git", rev = "79c52166cfe6b6d36
 buzz-ws-client = { git = "https://github.com/block/buzz.git", rev = "79c52166cfe6b6d36bdc7686f943595c74e2f578" }
 axum = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
+aes-gcm = "0.10"
 base64 = "0.22"
 nix = { version = "0.30", features = ["fs"] }
 nostr = { version = "0.44", features = ["nip44", "nip98"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.10"
+zeroize = "1.8"
 rusqlite = { version = "0.37", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 thiserror = "2.0.17"

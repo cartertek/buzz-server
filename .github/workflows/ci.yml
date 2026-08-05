@@ -16,6 +16,11 @@ jobs:
       - run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt,clippy
       - run: rustup override set 1.88.0
       - run: cargo fmt --check
+      - name: Validate deployment scripts and units
+        run: |
+          set -eu
+          for script in deploy/*.sh deploy/buzz-serverctl; do sh -n "$script"; done
+          systemd-analyze verify deploy/buzz-server.service deploy/buzz-server-healthcheck.service deploy/buzz-server-healthcheck.timer
       - run: cargo test --all-targets --locked
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - run: scripts/check-provider-upstream.sh

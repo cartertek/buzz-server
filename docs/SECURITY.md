@@ -21,9 +21,10 @@ verification call Buzz's shared `buzz-sdk` NIP-OA implementation so Desktop and
 Server remain byte-for-byte compatible. The signer exposes only a structured,
 policy-limited “authorize agent” operation—never arbitrary Nostr signing.
 
-Development begins with a disposable owner identity. Production key import occurs
-only after review of event construction, policy, logging, isolation, recovery, and
-revocation.
+Production owner import uses the KMS envelope workflow documented in
+[PRODUCTION_HARDENING.md](PRODUCTION_HARDENING.md). The encrypted envelope is
+persistent; plaintext exists only in a root-only runtime path while the daemon is
+running.
 
 Envelope encryption with KMS protects offline ciphertext, backups, and snapshots;
 provides audit records and a kill switch; and limits decrypt permission to the
@@ -67,9 +68,8 @@ or inspect the authorized signer.
   paths by community and agent; deny agents access to the Docker socket; and use
   a narrow helper rather than granting Docker access to the API daemon.
 
-## Open threat-model questions
+## Residual threat-model questions
 
-- exact API credential and authorization mechanism for remote administration;
 - agent-to-signer network and filesystem isolation;
 - authorization revocation semantics for already issued NIP-OA tags;
 - identity attribution and membership policy for future external bridges.

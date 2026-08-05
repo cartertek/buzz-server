@@ -1,0 +1,14 @@
+[Unit]
+Description=Buzz Server health and alert check
+After=buzz-server.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/buzz-server/current/share/deploy/healthcheck.sh
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/buzz-server

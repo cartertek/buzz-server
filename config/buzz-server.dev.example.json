@@ -7,7 +7,7 @@
   "workspace_path": "/var/lib/buzz-server/workspaces/agent",
   "runtime_path": "/var/lib/buzz-server/runtime/agent",
   "agent_secret_env": "BUZZ_AGENT_SECRET",
-  "owner_secret_file": "/run/credentials/buzz-server.service/owner-secret",
+  "owner_secret_file": "/run/buzz-server/credentials/owner-secret",
   "runtime_user": "buzz-agent",
   "expected_agent_pubkey": "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
   "signer_conditions": "kind=9",

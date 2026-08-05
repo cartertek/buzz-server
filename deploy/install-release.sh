@@ -30,17 +30,28 @@ trap cleanup EXIT HUP INT TERM
 curl --fail --location --proto '=https' --tlsv1.2 --output "$temporary/$asset" "$base/$asset"
 curl --fail --location --proto '=https' --tlsv1.2 --output "$temporary/$asset.sha256" "$base/$asset.sha256"
 (cd "$temporary" && sha256sum -c "$asset.sha256")
+command -v gh >/dev/null 2>&1 || { echo "GitHub CLI is required for release provenance verification" >&2; exit 69; }
+gh attestation verify "$temporary/$asset" --repo "$repository" >/dev/null
 package="buzz-server-${version}-${target}"
 expected_manifest=$(cat <<EOF
 $package/
 $package/buzz-server
 $package/buzz-agentctl
+$package/buzz-secretsctl
 $package/config/
 $package/config/buzz-server.dev.example.json
 $package/config/buzz-server.schema.json
 $package/deploy/
 $package/deploy/README.md
 $package/deploy/buzz-server.service
+$package/deploy/buzz-server-healthcheck.service
+$package/deploy/buzz-server-healthcheck.timer
+$package/deploy/backup.sh
+$package/deploy/healthcheck.sh
+$package/deploy/disaster-recovery-exercise.sh
+$package/deploy/prepare-owner-credential.sh
+$package/deploy/restore.sh
+$package/deploy/rotate-owner.sh
 $package/deploy/buzz-serverctl
 $package/deploy/install-release.sh
 $package/deploy/provision-runtimes.sh
@@ -67,6 +78,7 @@ tar --no-same-owner --no-same-permissions -C "$temporary" -xzf "$temporary/$asse
 source_directory="$temporary/$package"
 test -x "$source_directory/buzz-server"
 test -x "$source_directory/buzz-agentctl"
+test -x "$source_directory/buzz-secretsctl"
 release="/opt/buzz-server/releases/$version-$target"
 previous=$(readlink -f /opt/buzz-server/current 2>/dev/null || true)
 if ! getent group buzz-server >/dev/null 2>&1; then
@@ -99,6 +111,7 @@ install -d -o root -g root -m 0755 /usr/libexec/buzz-server
 release_staging=$(mktemp -d "/opt/buzz-server/releases/.${version}-${target}.staging.XXXXXX")
 install -o root -g root -m 0555 "$source_directory/buzz-server" "$release_staging/buzz-server"
 install -o root -g root -m 0555 "$source_directory/buzz-agentctl" "$release_staging/buzz-agentctl"
+install -o root -g root -m 0555 "$source_directory/buzz-secretsctl" "$release_staging/buzz-secretsctl"
 install -d -o root -g root -m 0555 "$release_staging/share"
 cp -R "$source_directory/config" "$source_directory/deploy" "$release_staging/share/"
 chown -R root:root "$release_staging"
@@ -107,25 +120,45 @@ find "$release_staging/share" -type f -exec chmod 0444 {} +
 chmod 0555 \
   "$release_staging/share/deploy/buzz-serverctl" \
   "$release_staging/share/deploy/install-release.sh" \
-  "$release_staging/share/deploy/provision-runtimes.sh"
+  "$release_staging/share/deploy/provision-runtimes.sh" \
+  "$release_staging/share/deploy/prepare-owner-credential.sh" \
+  "$release_staging/share/deploy/backup.sh" \
+  "$release_staging/share/deploy/restore.sh" \
+  "$release_staging/share/deploy/rotate-owner.sh" \
+  "$release_staging/share/deploy/healthcheck.sh" \
+  "$release_staging/share/deploy/disaster-recovery-exercise.sh"
 chmod 0555 "$release_staging"
 if [ ! -e /etc/buzz-server/config.json ]; then
   config_source=${BUZZ_CONFIG_FILE:-$source_directory/config/buzz-server.dev.example.json}
   test -f "$config_source"
   install -o root -g buzz-server -m 0640 "$config_source" /etc/buzz-server/config.json
 fi
+if grep -q '"owner_secret_file": "/run/credentials/buzz-server.service/owner-secret"' /etc/buzz-server/config.json; then
+  sed -i 's#"owner_secret_file": "/run/credentials/buzz-server.service/owner-secret"#"owner_secret_file": "/run/buzz-server/credentials/owner-secret"#' /etc/buzz-server/config.json
+fi
 if [ ! -e /etc/buzz-server/secrets.env ]; then
   secrets_source=${BUZZ_SECRETS_FILE:-/dev/null}
   test -f "$secrets_source"
   install -o root -g buzz-server -m 0640 "$secrets_source" /etc/buzz-server/secrets.env
 fi
-if [ ! -e /etc/buzz-server/owner-secret ]; then
-  owner_source=${BUZZ_OWNER_SECRET_FILE:-}
-  [ -n "$owner_source" ] && [ -f "$owner_source" ] || {
-    echo "first install requires BUZZ_OWNER_SECRET_FILE" >&2
-    exit 66
-  }
-  install -o root -g root -m 0400 "$owner_source" /etc/buzz-server/owner-secret
+owner_envelope=/etc/buzz-server/owner-secret.envelope.json
+if [ ! -e "$owner_envelope" ]; then
+  if [ -n "${BUZZ_OWNER_ENVELOPE_FILE:-}" ] && [ -f "$BUZZ_OWNER_ENVELOPE_FILE" ]; then
+    install -o root -g root -m 0400 "$BUZZ_OWNER_ENVELOPE_FILE" "$owner_envelope"
+  else
+    owner_source=${BUZZ_OWNER_SECRET_FILE:-}
+    if [ -z "$owner_source" ] && [ -f /etc/buzz-server/owner-secret ]; then
+      owner_source=/etc/buzz-server/owner-secret
+    fi
+    [ -n "$owner_source" ] && [ -f "$owner_source" ] && [ -n "${BUZZ_KMS_KEY_ID:-}" ] || {
+      echo "first install requires BUZZ_OWNER_ENVELOPE_FILE or BUZZ_OWNER_SECRET_FILE plus BUZZ_KMS_KEY_ID" >&2
+      exit 66
+    }
+    "$release_staging/buzz-secretsctl" encrypt --kms-key-id "$BUZZ_KMS_KEY_ID" --input "$owner_source" --output "$owner_envelope"
+    chown root:root "$owner_envelope"
+    chmod 0400 "$owner_envelope"
+    if [ "$owner_source" = /etc/buzz-server/owner-secret ]; then rm -f "$owner_source"; fi
+  fi
 fi
 runtime_assets_valid() {
   harness_dir=/opt/buzz-server/runtimes/sprig-0.1.0
@@ -173,8 +206,11 @@ install -o root -g root -m 0444 "$release/share/deploy/buzz-server.service" /etc
 ln -sfn /opt/buzz-server/current/share/deploy/install-release.sh /usr/libexec/buzz-server/install-release.sh
 ln -sfn /opt/buzz-server/current/share/deploy/buzz-serverctl /usr/local/sbin/buzz-serverctl
 ln -sfn /opt/buzz-server/current/buzz-agentctl /usr/local/bin/buzz-agentctl
+ln -sfn /opt/buzz-server/current/buzz-secretsctl /usr/local/sbin/buzz-secretsctl
+install -o root -g root -m 0444 "$release/share/deploy/buzz-server-healthcheck.service" /etc/systemd/system/buzz-server-healthcheck.service
+install -o root -g root -m 0444 "$release/share/deploy/buzz-server-healthcheck.timer" /etc/systemd/system/buzz-server-healthcheck.timer
 systemctl daemon-reload
-systemctl enable buzz-server.service
+systemctl enable buzz-server.service buzz-server-healthcheck.timer
 wait_for_health() {
   healthy=false
   attempts=0
@@ -187,6 +223,7 @@ wait_for_health() {
   done
   return 1
 }
+systemctl restart buzz-server-healthcheck.timer
 if ! systemctl restart buzz-server.service || ! wait_for_health; then
   if [ -n "$previous" ] && [ -x "$previous/buzz-server" ]; then
     ln -sfn "$previous" /opt/buzz-server/current.next
