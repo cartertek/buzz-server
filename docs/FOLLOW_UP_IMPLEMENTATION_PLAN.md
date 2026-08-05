@@ -12,11 +12,15 @@ restart, compatibility, freshness, and full-package gates.
 - Add direct `buzz-core` and `buzz-ws-client` dependencies at the same reviewed Buzz revision.
 - Wire `scripts/check-buzz-upstream.sh` into weekly CI once the repository credential has GitHub workflow-write scope.
 - Identify and reuse or extract Tauri-free Desktop local-launch, configuration, runtime, and shared type semantics without importing Desktop/Tauri.
-- Add the runtime catalog with digest-pinned Sprig and Codex entries.
+- Add version-pinned Sprig and Codex runtime catalog entries backed by
+  digest-verified immutable deployment artifacts.
 
 Exit: migrations and repositories pass restart/idempotency tests; dependency and fixture checks are green.
 
 ## Milestone 2: disposable vertical slice
+
+Status: complete. The packaged Codex agent is deployed through the real relay,
+and the live service restart adopted the same identity and managed process.
 
 - Configure one community through its authoritative relay URL.
 - Generate a disposable owner and agent identity; issue NIP-OA through `buzz-sdk`.
@@ -30,6 +34,9 @@ Exit: no duplicate identity or service across injected restart points; the agent
 
 ## Milestone 3: lifecycle API
 
+Status: complete. The Unix and TLS/NIP-98 adapters share one application service,
+and lifecycle, retention, reconciliation, drafts, and audit contracts pass CI.
+
 - Add authenticated Unix-socket and TLS/NIP-98 adapters over one application service.
 - Implement create, get/list, update, enable, disable, logs, recoverable delete, purge, and durable operation polling.
 - Add fixed administrator and draft-submitter authority classes and redacted audit attribution.
@@ -38,6 +45,12 @@ Exit: no duplicate identity or service across injected restart points; the agent
 Exit: full lifecycle contract passes API, reconciliation, retention, and audit tests.
 
 ## Milestone 4: provider compatibility
+
+Status: complete. Trusted discovery, sealed staged execution, negotiation,
+configuration validation, fake-provider tests, the complete pinned fixture corpus,
+and the real Kubernetes provider wire suite pass CI without pre-negotiation secret
+construction. Production lifecycle selection of an external provider remains a
+separate post-compatibility integration.
 
 - Add trusted `buzz-backend-*` discovery and staged `info`/`deploy` invocation.
 - Evaluate a Docker Compose provider as an optional external deployment path.

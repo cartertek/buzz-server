@@ -1,7 +1,9 @@
 # Buzz Server host deployment
 
 Releases also install `buzz-agentctl`, a machine-readable lifecycle client for
-the owner-only Unix socket. For example:
+the authenticated Unix socket. See [`docs/CLI.md`](../docs/CLI.md) for the full
+command reference and [`docs/LIFECYCLE_API.md`](../docs/LIFECYCLE_API.md) for the
+wire and authorization contracts. For example:
 
 ```sh
 buzz-agentctl list

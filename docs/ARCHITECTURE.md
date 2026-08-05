@@ -48,7 +48,8 @@ future bridge with separate authorization and audit.
   provider.
 - **Backend provider**: an external Buzz-compatible deployment adapter. Existing
   providers are executables named `buzz-backend-<id>` supporting `info` and
-  `deploy` operations. Provider discovery is a future extension.
+  `deploy` operations. Trusted discovery and protocol compatibility are
+  implemented; durable lifecycle-backend selection is a later integration.
 - **Process supervisor**: the Server component that launches and keeps the local
   `buzz-acp`/runtime child process alive, including process-group, restart, and
   health handling.
@@ -103,18 +104,24 @@ provider protocol.
 Identity generation and owner signing remain control-plane responsibilities, not
 backend or supervisor responsibilities.
 
-### Future external providers
+### External provider compatibility
 
-External `buzz-backend-*` discovery and provider v1 `info`/`deploy` compatibility
-follow the local MVP. Container execution, a Compose supervisor driver, and a
-possible Docker Compose provider are also future extensions. Installing an
-external provider is an administrator trust decision because the current Buzz
+Buzz Server implements trusted `buzz-backend-*` discovery and provider v1
+`info`/`deploy` compatibility. Provider bytes are bound to an administrator
+approved path and SHA-256, copied into sealed private execution storage, and
+negotiated before a secret-bearing deployment payload can be constructed.
+Installing a provider is an administrator trust decision because the current Buzz
 payload includes the agent private key and owner authorization.
 
-The existing provider protocol is deploy-oriented. Status, logs, enable, disable,
-and deletion remain Buzz Server lifecycle operations. A future provider protocol
-extension must be versioned or capability-negotiated rather than silently changing
-the existing `info`/`deploy` contract.
+The existing provider protocol is deploy-oriented. Additional lifecycle actions
+are invoked only when advertised through the independently versioned capability
+contract. Unsupported actions are explicit and are never silently assigned new
+meaning under provider protocol v1.
+
+The built-in local backend remains the operational lifecycle backend. Persisting
+`Provider { id, config }` in agent intent and routing lifecycle operations through
+that backend is a later control-plane integration. Container execution, a Compose
+supervisor driver, and a Docker Compose provider also remain future options.
 
 ### Local launch specification
 

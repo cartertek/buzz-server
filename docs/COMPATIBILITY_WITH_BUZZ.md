@@ -46,7 +46,7 @@ authority. “Headless Buzz Desktop” is a long-term direction, not the v0 cont
 - durable headless process supervision for local agent child processes;
 - remote update, status, enable, disable, deletion, logs, and retention behavior;
 - secure secret storage and rotation procedures;
-- future provider-host functionality outside Desktop;
+- trusted provider-host discovery, negotiation, and compatibility outside Desktop;
 - future bridges such as Discord.
 
 The earlier inventory was made at Buzz commit `b1b283cd4c7f926e12eeee8ae1f38c7471922b16`. Phase 0 refreshed it against commit `7ff5fc31895efe6265a379d01637c8ee301872e5`, which supplied the NIP-OA and provider-wire fixtures. The dependency pin was reviewed again at `79c52166cfe6b6d36bdc7686f943595c74e2f578`. Changes since the previous reviewed pin affected `buzz-acp` pooling/prompts and Desktop managed-agent behavior, but not the shared `buzz-core`, `buzz-sdk`, or `buzz-ws-client` contracts consumed here; the compatibility fixtures remained green. A separate weekly workflow reports later upstream movement without making ordinary PR and release verification race against a moving branch.
@@ -66,10 +66,11 @@ contract/fixtures are unchanged.
 3. Keep the local launch specification, process supervision, receipts, and
    reconciliation as internal Server contracts. Do not call supervisor drivers
    providers.
-4. Defer external provider discovery, provider v1 `info`/`deploy` compatibility,
-   container/Compose supervision, and a possible Docker Compose provider until
-   after the local-process MVP.
-5. Keep the signer before any future external-provider boundary; providers receive
+4. Keep external provider compatibility separate from the built-in local backend.
+   Trusted discovery and provider v1 `info`/`deploy` compatibility are implemented;
+   provider-backed lifecycle selection and container/Compose supervision remain
+   later integrations.
+5. Keep the signer before the external-provider boundary; providers receive
    an already authorized deployment, matching Desktop's trust model. Treat existing
    providers as deploy-only unless they advertise a future, versioned lifecycle
    capability.
