@@ -1,13 +1,23 @@
 //! Version-1 external provider negotiation and deployment boundary.
 
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    collections::{BTreeMap, BTreeSet},
+    fs::{self, File},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::mpsc,
     thread,
     time::{Duration, Instant},
+};
+
+#[cfg(target_os = "linux")]
+use std::{ffi::CString, os::fd::AsRawFd};
+
+#[cfg(target_os = "linux")]
+use nix::{
+    fcntl::{fcntl, FcntlArg, SealFlag},
+    sys::memfd::{memfd_create, MFdFlags},
 };
 
 #[cfg(unix)]
@@ -18,6 +28,9 @@ use serde::{Deserialize, Serialize};
 use crate::provider_discovery::{hex_digest, sha256_reader, ProviderCandidate};
 
 pub const PROVIDER_PROTOCOL_VERSION: u32 = 1;
+pub const PROVIDER_LIFECYCLE_PROTOCOL_VERSION: u32 = 1;
+const PROVIDER_INPUT_CAP: usize = 1024 * 1024;
+const PROVIDER_EXECUTABLE_CAP: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -28,6 +41,16 @@ pub struct ProviderInfo {
     pub protocol_version: u32,
     pub description: String,
     pub config_schema: serde_json::Value,
+    #[serde(default)]
+    pub capabilities: ProviderCapabilities,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderCapabilities {
+    pub lifecycle_protocol_version: Option<u32>,
+    #[serde(default)]
+    pub lifecycle_actions: BTreeSet<ProviderLifecycleAction>,
 }
 
 impl ProviderInfo {
@@ -45,11 +68,26 @@ impl ProviderInfo {
                 actual: self.protocol_version,
             });
         }
+        if let Some(actual) = self.capabilities.lifecycle_protocol_version {
+            if actual != PROVIDER_LIFECYCLE_PROTOCOL_VERSION {
+                return Err(ProviderError::UnsupportedLifecycleProtocol { actual });
+            }
+        } else if !self.capabilities.lifecycle_actions.is_empty() {
+            return Err(ProviderError::InvalidInfo);
+        }
+        if self
+            .capabilities
+            .lifecycle_actions
+            .contains(&ProviderLifecycleAction::Deploy)
+        {
+            return Err(ProviderError::InvalidInfo);
+        }
         Ok(())
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderLifecycleAction {
     Deploy,
     Inspect,
@@ -85,6 +123,10 @@ pub enum ProviderError {
     Timeout,
     #[error("provider output exceeded its byte limit")]
     OutputLimit,
+    #[error("provider request exceeded its byte limit")]
+    InputLimit,
+    #[error("provider executable exceeded its byte limit")]
+    ExecutableLimit,
     #[error("provider response was not valid JSON")]
     InvalidJson,
     #[error("provider info response is incomplete or invalid")]
@@ -95,6 +137,8 @@ pub enum ProviderError {
     TrustBinding,
     #[error("unsupported provider protocol version {actual}")]
     UnsupportedProtocol { actual: u32 },
+    #[error("unsupported provider lifecycle protocol version {actual}")]
+    UnsupportedLifecycleProtocol { actual: u32 },
     #[error("provider returned an error: {0}")]
     Provider(String),
     #[error("deploy response is missing agent_id")]
@@ -105,6 +149,10 @@ pub enum ProviderError {
     UnsupportedSchema(String),
     #[error("provider config does not satisfy negotiated schema: {0}")]
     InvalidConfig(String),
+    #[error("provider lifecycle action {0:?} is not supported by protocol v1")]
+    UnsupportedLifecycle(ProviderLifecycleAction),
+    #[error("provider environment variable {0} is secret-shaped")]
+    SecretEnvironment(String),
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +162,9 @@ pub struct ProviderHostConfig {
     pub deploy_timeout: Duration,
     pub stdout_cap: usize,
     pub stderr_cap: usize,
+    /// Explicit non-secret environment passed to provider subprocesses.
+    /// The server's ambient environment is never inherited.
+    pub environment: BTreeMap<String, String>,
 }
 
 pub struct ProviderHost {
@@ -134,7 +185,11 @@ impl ProviderHost {
             )
             .into());
         }
+        if let Some(key) = config.environment.keys().find(|key| secret_shaped_key(key)) {
+            return Err(ProviderError::SecretEnvironment(key.clone()));
+        }
         fs::create_dir_all(&config.staging_directory)?;
+        cleanup_stale_staging(&config.staging_directory)?;
         Ok(Self { config })
     }
 
@@ -155,10 +210,12 @@ impl ProviderHost {
         });
         let response = invoke(
             &staged.path,
+            &staged.directory,
             &request,
             self.config.info_timeout,
             self.config.stdout_cap,
             self.config.stderr_cap,
+            &self.config.environment,
         )?;
         let info: ProviderInfo =
             serde_json::from_value(response).map_err(|_| ProviderError::InvalidInfo)?;
@@ -178,6 +235,7 @@ impl ProviderHost {
             deploy_timeout: self.config.deploy_timeout,
             stdout_cap: self.config.stdout_cap,
             stderr_cap: self.config.stderr_cap,
+            environment: self.config.environment.clone(),
         })
     }
 }
@@ -190,30 +248,74 @@ pub struct NegotiatedProvider {
     deploy_timeout: Duration,
     stdout_cap: usize,
     stderr_cap: usize,
+    environment: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProviderDescriptor {
+    pub id: String,
+    pub version: String,
+    pub protocol_version: u32,
+    pub description: String,
+    pub config_schema: serde_json::Value,
+    pub capabilities: ProviderCapabilities,
+    pub staged_sha256: String,
 }
 
 impl NegotiatedProvider {
+    /// Public, secret-free provider metadata suitable for the private API.
+    #[must_use]
+    pub fn descriptor(&self) -> ProviderDescriptor {
+        ProviderDescriptor {
+            id: self.id.clone(),
+            version: self.info.version.clone(),
+            protocol_version: self.info.protocol_version,
+            description: self.info.description.clone(),
+            config_schema: self.info.config_schema.clone(),
+            capabilities: self.info.capabilities.clone(),
+            staged_sha256: self.staged_sha256.clone(),
+        }
+    }
+
     /// The closure is intentionally invoked only after trust and protocol
     /// negotiation have succeeded on the exact immutable staged bytes.
     pub fn deploy<F>(&self, build_payload: F) -> Result<String, ProviderError>
     where
         F: FnOnce() -> Result<(serde_json::Value, serde_json::Value), ProviderError>,
     {
+        self.deploy_idempotent(&uuid::Uuid::now_v7().to_string(), build_payload)
+    }
+
+    /// Uses a durable caller-supplied request ID so a reconciling provider can
+    /// converge retries on the same external deployment.
+    pub fn deploy_idempotent<F>(
+        &self,
+        request_id: &str,
+        build_payload: F,
+    ) -> Result<String, ProviderError>
+    where
+        F: FnOnce() -> Result<(serde_json::Value, serde_json::Value), ProviderError>,
+    {
+        if request_id.is_empty() || request_id.len() > 200 {
+            return Err(ProviderError::Payload);
+        }
         let (agent, provider_config) = build_payload().map_err(|_| ProviderError::Payload)?;
         validate_provider_config(&provider_config)?;
         validate_config_against_schema(&self.info.config_schema, &provider_config)?;
         let request = serde_json::json!({
             "op": "deploy",
-            "request_id": uuid::Uuid::now_v7().to_string(),
+            "request_id": request_id,
             "agent": agent,
             "provider_config": provider_config,
         });
         let response = invoke(
             &self.staged.path,
+            &self.staged.directory,
             &request,
             self.deploy_timeout,
             self.stdout_cap,
             self.stderr_cap,
+            &self.environment,
         )?;
         response
             .get("agent_id")
@@ -221,6 +323,32 @@ impl NegotiatedProvider {
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
             .ok_or(ProviderError::MissingAgentId)
+    }
+
+    /// Invokes only independently versioned, explicitly advertised lifecycle
+    /// operations. Deploy remains on the deploy protocol and is never accepted
+    /// through this method.
+    pub fn lifecycle(
+        &self,
+        action: ProviderLifecycleAction,
+    ) -> Result<serde_json::Value, ProviderError> {
+        if action == ProviderLifecycleAction::Deploy
+            || !self.info.capabilities.lifecycle_actions.contains(&action)
+        {
+            return Err(ProviderError::UnsupportedLifecycle(action));
+        }
+        invoke(
+            &self.staged.path,
+            &self.staged.directory,
+            &serde_json::json!({
+                "op": action,
+                "request_id": uuid::Uuid::now_v7().to_string(),
+            }),
+            self.deploy_timeout,
+            self.stdout_cap,
+            self.stderr_cap,
+            &self.environment,
+        )
     }
 }
 
@@ -446,31 +574,85 @@ impl StagedProvider {
     fn copy(source: &Path, root: &Path, trusted_sha256: &[u8; 32]) -> Result<Self, ProviderError> {
         let directory = root.join(format!("provider-{}", uuid::Uuid::now_v7().simple()));
         fs::create_dir(&directory)?;
-        #[cfg(unix)]
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
-        let path = directory.join("provider");
+        let result = (|| {
+            #[cfg(unix)]
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+            fs::write(directory.join("owner.pid"), std::process::id().to_string())?;
+            Self::copy_into_sealed_file(source, directory.clone(), trusted_sha256)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&directory);
+        }
+        result
+    }
+
+    fn copy_into_sealed_file(
+        source: &Path,
+        directory: PathBuf,
+        trusted_sha256: &[u8; 32],
+    ) -> Result<Self, ProviderError> {
         let mut input = File::open(source)?;
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        io::copy(&mut input, &mut output)?;
+        #[cfg(target_os = "linux")]
+        let mut output = File::from(
+            memfd_create(
+                CString::new("buzz-provider")
+                    .expect("static memfd name has no NUL")
+                    .as_c_str(),
+                MFdFlags::MFD_ALLOW_SEALING,
+            )
+            .map_err(io::Error::from)?,
+        );
+        #[cfg(not(target_os = "linux"))]
+        compile_error!("the provider host requires Linux sealed executable support");
+        let copied = io::copy(
+            &mut Read::by_ref(&mut input).take(PROVIDER_EXECUTABLE_CAP + 1),
+            &mut output,
+        )?;
+        if copied > PROVIDER_EXECUTABLE_CAP {
+            return Err(ProviderError::ExecutableLimit);
+        }
         output.sync_all()?;
-        #[cfg(unix)]
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o500))?;
-        drop(output);
-        let sha256 = sha256_reader(File::open(&path)?)?;
+        output.seek(SeekFrom::Start(0))?;
+        let sha256 = sha256_reader(output.try_clone()?)?;
         if &sha256 != trusted_sha256 {
             return Err(ProviderError::TrustBinding);
         }
-        let guard = File::open(&path)?;
+        fcntl(
+            &output,
+            FcntlArg::F_ADD_SEALS(
+                SealFlag::F_SEAL_WRITE
+                    | SealFlag::F_SEAL_GROW
+                    | SealFlag::F_SEAL_SHRINK
+                    | SealFlag::F_SEAL_SEAL,
+            ),
+        )
+        .map_err(io::Error::from)?;
+        let path = PathBuf::from(format!("/proc/self/fd/{}", output.as_raw_fd()));
         Ok(Self {
             directory,
             path,
-            _guard: guard,
+            _guard: output,
             sha256,
         })
     }
+}
+
+fn cleanup_stale_staging(root: &Path) -> Result<(), ProviderError> {
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_name().to_string_lossy().starts_with("provider-")
+            || !entry.file_type()?.is_dir()
+        {
+            continue;
+        }
+        let owner = fs::read_to_string(entry.path().join("owner.pid"))
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok());
+        if owner.is_none_or(|pid| !Path::new(&format!("/proc/{pid}")).exists()) {
+            fs::remove_dir_all(entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 impl Drop for StagedProvider {
@@ -483,28 +665,33 @@ impl Drop for StagedProvider {
 
 fn invoke(
     binary: &Path,
+    working_directory: &Path,
     request: &serde_json::Value,
     timeout: Duration,
     stdout_cap: usize,
     stderr_cap: usize,
+    environment: &BTreeMap<String, String>,
 ) -> Result<serde_json::Value, ProviderError> {
     let request_bytes = serde_json::to_vec(request).map_err(|_| ProviderError::InvalidJson)?;
+    if request_bytes.len() > PROVIDER_INPUT_CAP {
+        return Err(ProviderError::InputLimit);
+    }
     let secrets = collect_strings(request);
     let mut command = Command::new(binary);
     command
+        .env_clear()
+        .envs(environment)
+        .current_dir(working_directory)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(unix)]
     command.process_group(0);
+    let deadline = Instant::now() + timeout;
     let mut child = spawn_provider(&mut command)?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(&request_bytes)?;
-        stdin.write_all(b"\n")?;
-    }
+    let stdin = spawn_request_writer(child.stdin.take(), request_bytes);
     let stdout = spawn_bounded_reader(child.stdout.take(), stdout_cap);
     let stderr = spawn_bounded_reader(child.stderr.take(), stderr_cap);
-    let deadline = Instant::now() + timeout;
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -515,12 +702,12 @@ fn invoke(
         }
         thread::sleep(Duration::from_millis(20));
     };
-    let stdout = stdout
-        .recv_timeout(Duration::from_secs(2))
-        .map_err(|_| ProviderError::Timeout)??;
-    let stderr = stderr
-        .recv_timeout(Duration::from_secs(2))
-        .map_err(|_| ProviderError::Timeout)??;
+    // A successful main process may leave descendants holding inherited pipe
+    // ends. Always tear down its process group before collecting output.
+    terminate_process_group(child.id());
+    receive_before_deadline(stdin, deadline)??;
+    let stdout = receive_before_deadline(stdout, deadline)??;
+    let stderr = receive_before_deadline(stderr, deadline)??;
     if !status.success() {
         return Err(ProviderError::Provider(redact(
             &String::from_utf8_lossy(&stderr),
@@ -529,7 +716,7 @@ fn invoke(
     }
     let response: serde_json::Value =
         serde_json::from_slice(&stdout).map_err(|_| ProviderError::InvalidJson)?;
-    if response.get("ok") == Some(&serde_json::Value::Bool(false)) {
+    if response.get("ok") != Some(&serde_json::Value::Bool(true)) {
         let message = response
             .get("error")
             .and_then(serde_json::Value::as_str)
@@ -537,6 +724,35 @@ fn invoke(
         return Err(ProviderError::Provider(redact(message, &secrets)));
     }
     Ok(response)
+}
+
+fn spawn_request_writer<W>(
+    writer: Option<W>,
+    request_bytes: Vec<u8>,
+) -> mpsc::Receiver<io::Result<()>>
+where
+    W: Write + Send + 'static,
+{
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let result = match writer {
+            Some(mut writer) => writer
+                .write_all(&request_bytes)
+                .and_then(|()| writer.write_all(b"\n")),
+            None => Ok(()),
+        };
+        let _ = sender.send(result);
+    });
+    receiver
+}
+
+fn receive_before_deadline<T>(
+    receiver: mpsc::Receiver<T>,
+    deadline: Instant,
+) -> Result<T, ProviderError> {
+    receiver
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .map_err(|_| ProviderError::Timeout)
 }
 
 fn spawn_provider(command: &mut Command) -> io::Result<std::process::Child> {
@@ -582,31 +798,58 @@ where
 }
 
 fn terminate_provider(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    {
-        let _ = Command::new("/bin/kill")
-            .args(["-KILL", "--", &format!("-{}", child.id())])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
+    terminate_process_group(child.id());
     let _ = child.kill();
     let _ = child.wait();
 }
 
+fn terminate_process_group(process_group: u32) {
+    let _ = Command::new("/bin/kill")
+        .args(["-KILL", "--", &format!("-{process_group}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 fn collect_strings(value: &serde_json::Value) -> Vec<String> {
     let mut values = Vec::new();
+    fn collect_value(value: &serde_json::Value, values: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(value) if !value.is_empty() => values.push(value.clone()),
+            serde_json::Value::Array(items) => {
+                items.iter().for_each(|value| collect_value(value, values));
+            }
+            serde_json::Value::Object(object) => {
+                object
+                    .values()
+                    .for_each(|value| collect_value(value, values));
+            }
+            _ => {}
+        }
+    }
     fn visit(value: &serde_json::Value, values: &mut Vec<String>) {
         match value {
-            serde_json::Value::String(value) if value.len() >= 4 => values.push(value.clone()),
             serde_json::Value::Array(items) => items.iter().for_each(|value| visit(value, values)),
             serde_json::Value::Object(object) => {
-                object.values().for_each(|value| visit(value, values))
+                for (key, value) in object {
+                    if secret_shaped_key(key)
+                        || matches!(
+                            key.as_str(),
+                            "auth_tag" | "system_prompt" | "env" | "env_vars" | "policy_env"
+                        )
+                    {
+                        collect_value(value, values);
+                    } else {
+                        visit(value, values);
+                    }
+                }
             }
             _ => {}
         }
     }
     visit(value, &mut values);
+    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    values.dedup();
     values
 }
 
@@ -652,6 +895,7 @@ esac
             deploy_timeout: Duration::from_secs(10),
             stdout_cap: 64 * 1024,
             stderr_cap: 4096,
+            environment: BTreeMap::new(),
         })
         .unwrap()
     }
@@ -716,6 +960,27 @@ esac
         ] {
             assert_eq!(lifecycle_support(action), LifecycleSupport::Unsupported);
         }
+    }
+
+    #[test]
+    fn lifecycle_capabilities_are_independently_versioned() {
+        let base = serde_json::json!({
+            "ok": true,
+            "name": "fake",
+            "version": "1.0.0",
+            "protocol_version": 1,
+            "description": "fake provider",
+            "config_schema": {},
+            "capabilities": {
+                "lifecycle_protocol_version": 2,
+                "lifecycle_actions": ["inspect"]
+            }
+        });
+        let info: ProviderInfo = serde_json::from_value(base).unwrap();
+        assert!(matches!(
+            info.validate(),
+            Err(ProviderError::UnsupportedLifecycleProtocol { actual: 2 })
+        ));
     }
 
     #[test]
