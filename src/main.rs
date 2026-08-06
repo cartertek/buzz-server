@@ -175,7 +175,7 @@ impl DaemonConfig {
         }
         if self.owner_secret_file != Path::new("/run/buzz-server/credentials/owner-secret") {
             return Err(DaemonError::InvalidConfig(
-                "owner_secret_file must be the ephemeral KMS-decrypted credential path".into(),
+                "owner_secret_file must be the ephemeral materialized credential path".into(),
             ));
         }
         if self.runtime_user != "buzz-agent" {

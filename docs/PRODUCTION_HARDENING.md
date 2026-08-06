@@ -44,24 +44,32 @@ For normal installation, provide `BUZZ_OWNER_SECRET_FILE`; add
 
 ## Encrypted backup and restore
 
-A backup stops the daemon for a consistent SQLite/filesystem snapshot, archives
-configuration, state, identities, workspaces, and logs with numeric ownership,
-and encrypts the archive with a fresh KMS data key:
+A backup stops the daemon for a consistent SQLite/filesystem snapshot and archives `/etc/buzz-server`, `/var/lib/buzz-server`, and `/var/log/buzz-server` with numeric ownership. AWS KMS is used when a key ID is supplied; otherwise the archive uses a passphrase-derived scrypt key with AES-256-GCM authenticated encryption.
+
+For a portable passphrase backup:
 
 ```sh
-sudo buzz-serverctl backup alias/buzz-server-backup /secure/buzz-backup.envelope.json
+sudo install -m 0400 /dev/stdin /root/buzz-backup-passphrase
+sudo env BUZZ_BACKUP_PASSPHRASE_FILE=/root/buzz-backup-passphrase \
+  buzz-serverctl backup /secure/buzz-backup.json
 ```
 
-Restore validates the authenticated envelope, archive member allowlist, file
-types, manifest, and configuration digest before replacing state. It starts the
-daemon and automatically restores the pre-restore state if health fails:
+For KMS-backed encryption:
 
 ```sh
-sudo buzz-serverctl restore /secure/buzz-backup.envelope.json
+sudo buzz-serverctl backup /secure/buzz-backup.json alias/buzz-server-backup
 ```
 
-Copy encrypted backups off-host and apply an independent retention policy. The
-KMS key policy and backup storage policy are separate controls.
+When the owner is held in Secret Service, backup materializes it before shutdown and embeds a decrypt-verified NIP-49 `ncryptsec` recovery artifact. Restore imports that artifact through the normal keyring-first, restricted-file-fallback custody path; it never attempts to copy OS keyring internals.
+
+Restore validates authenticated encryption, archive paths and file types, the manifest, and the configuration digest before replacing state. It automatically restores the pre-restore configuration and state if health checks fail:
+
+```sh
+sudo env BUZZ_BACKUP_PASSPHRASE_FILE=/root/buzz-backup-passphrase \
+  buzz-serverctl restore /secure/buzz-backup.json
+```
+
+Copy encrypted backups off-host and apply an independent retention policy. KMS policy and backup storage policy remain separate controls when KMS is selected.
 
 ## Owner rotation and reauthorization
 
@@ -83,12 +91,14 @@ fingerprint, and runs the monitoring check. It is intentionally destructive and
 requires an explicit acknowledgement:
 
 ```sh
-sudo env BUZZ_CONFIRM_DESTRUCTIVE_DR_EXERCISE=YES \
+sudo env \
+  BUZZ_CONFIRM_DESTRUCTIVE_DR_EXERCISE=YES \
+  BUZZ_BACKUP_PASSPHRASE_FILE=/root/buzz-backup-passphrase \
   /opt/buzz-server/current/share/deploy/disaster-recovery-exercise.sh \
-  alias/buzz-server-backup ./new-owner-secret /secure/dr-exercise.envelope.json
+  ./new-owner-secret /secure/dr-exercise.json
 ```
 
-Record the output, KMS audit events, relay presence, and recovery time as the
+Record the output, relay presence, recovery time, and KMS audit events when KMS is used as the
 Milestone 5 acceptance artifact. Run it first against a disposable community.
 
 ## Resource and network restrictions

@@ -19,8 +19,8 @@ case "$command" in
     exec /usr/libexec/buzz-server/install-release.sh "$2" "$3" "${4:-cartertek/buzz-server}"
     ;;
   backup)
-    [ "$#" -eq 3 ] || { echo "usage: buzz-serverctl backup KMS_KEY_ID OUTPUT" >&2; exit 64; }
-    exec /opt/buzz-server/current/share/deploy/backup.sh "$2" "$3"
+    [ "$#" -ge 2 ] && [ "$#" -le 3 ] || { echo "usage: buzz-serverctl backup OUTPUT [KMS_KEY_ID]" >&2; exit 64; }
+    exec /opt/buzz-server/current/share/deploy/backup.sh "$2" "${3:-}"
     ;;
   restore)
     [ "$#" -eq 2 ] || { echo "usage: buzz-serverctl restore BACKUP" >&2; exit 64; }
