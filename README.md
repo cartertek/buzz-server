@@ -46,7 +46,7 @@ accounts and installs immutable releases below `/opt/buzz-server`.
 
 ## Installation
 
-Download the latest release for your architecture:
+Download the latest [release](https://github.com/cartertek/buzz-server/releases) for your architecture:
 
 ```sh
 curl -LO https://github.com/cartertek/buzz-server/releases/latest/download/buzz-server-x86_64-unknown-linux-gnu.tar.gz
