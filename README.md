@@ -46,21 +46,23 @@ accounts and installs immutable releases below `/opt/buzz-server`.
 
 ## Installation
 
-Run the installer from the latest release:
+Install the latest release:
 
 ```sh
 curl -fsSL https://github.com/cartertek/buzz-server/releases/latest/download/install.sh | sudo sh
 ```
 
-On first install it asks for the required values, creates the server configuration
-and runtime secrets files, and securely persists the owner Nostr secret. It
-detects the host architecture and installs the matching package from the same
-release.
+Install a specific release:
 
-To use AWS KMS for owner-key custody, set `BUZZ_KMS_KEY_ID` when running the
-installer. For unattended installation, pass the prompted values as environment
-variables and add `--non-interactive`. See [host deployment details](deploy/README.md)
-for the lower-level deployment contract.
+```sh
+curl -fsSL https://github.com/cartertek/buzz-server/releases/download/v0.1.4/install.sh | sudo sh
+```
+
+On first install, the installer asks for the required values and creates the Buzz Server configuration and secret files. It detects the host architecture and installs the matching package from the same release.
+
+The same process is also used for updates. Running an installer from a newer or older release installs that release atomically over the existing installation while preserving configuration, secrets, state, workspaces, and logs. If the new release fails its health check, the previous release is restored automatically.
+
+For unattended installation, pass the prompted values as environment variables and add `--non-interactive`. See [host deployment details](deploy/README.md) for the variable names and lower-level deployment contract.
 
 Verify the installation with:
 
@@ -92,26 +94,6 @@ sudo buzz-agentctl operation --operation operation_...
 ```
 
 See [`docs/CLI.md`](docs/CLI.md) for every command and option.
-
-## Updating
-
-Run the installer from the release you want to install. Existing configuration,
-secrets, state, workspaces, and logs are preserved.
-
-Latest release:
-
-```sh
-curl -fsSL https://github.com/cartertek/buzz-server/releases/latest/download/install.sh | sudo sh
-```
-
-Specific release:
-
-```sh
-curl -fsSL https://github.com/cartertek/buzz-server/releases/download/v0.1.4/install.sh | sudo sh
-```
-
-Deployment is atomic and automatically restores the previous release if the new
-service fails its health check.
 
 ## Rollback
 
