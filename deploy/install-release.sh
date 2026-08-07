@@ -19,8 +19,41 @@ run_bounded() {
 service_diagnostics() {
   printf '%s\n' '--- buzz-server service status ---' >&2
   timeout 10 systemctl status --no-pager --lines=20 buzz-server.service >&2 2>&1 || true
+  tasks=$(timeout 5 systemctl show buzz-server.service -p TasksCurrent --value 2>/dev/null || true)
+  tasks_max=$(timeout 5 systemctl show buzz-server.service -p TasksMax --value 2>/dev/null || true)
+  printf 'buzz-server tasks: %s/%s\n' "${tasks:-unknown}" "${tasks_max:-unknown}" >&2
   printf '%s\n' '--- recent buzz-server logs ---' >&2
   timeout 10 journalctl -u buzz-server.service -n 30 --no-pager >&2 2>&1 || true
+}
+service_process_count() {
+  control_group=$(timeout 5 systemctl show buzz-server.service -p ControlGroup --value 2>/dev/null || true)
+  [ -n "$control_group" ] || { printf '0\n'; return; }
+  procs="/sys/fs/cgroup${control_group}/cgroup.procs"
+  [ -r "$procs" ] || { printf '0\n'; return; }
+  wc -l < "$procs" | tr -d ' '
+}
+drain_service() {
+  label=$1
+  log "$label"
+  timeout 20 systemctl stop buzz-server.service >/dev/null 2>&1 || true
+  timeout 5 systemctl kill --kill-whom=all --signal=SIGTERM buzz-server.service >/dev/null 2>&1 || true
+  elapsed=0
+  while [ "$elapsed" -lt 5 ]; do
+    count=$(service_process_count)
+    [ "$count" -eq 0 ] && return 0
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  timeout 5 systemctl kill --kill-whom=all --signal=SIGKILL buzz-server.service >/dev/null 2>&1 || true
+  elapsed=0
+  while [ "$elapsed" -lt 5 ]; do
+    count=$(service_process_count)
+    [ "$count" -eq 0 ] && return 0
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  service_diagnostics
+  fail "$label could not drain the existing service process tree"
 }
 wait_for_health() {
   controller=$1
@@ -269,7 +302,7 @@ if ! runtime_assets_valid; then
 fi
 runtime_assets_valid || { echo "pinned runtime asset validation failed" >&2; exit 66; }
 log "Running isolated runtime preflight"
-timeout 30s runuser --user buzz-agent -- /usr/bin/env -i \
+timeout --kill-after=5s 30s runuser --user buzz-agent -- /usr/bin/env -i \
   HOME=/var/lib/buzz-server/runtime/agent \
   CODEX_HOME=/var/lib/buzz-server/runtime/agent/codex-home \
   TMPDIR=/var/lib/buzz-server/runtime/agent/tmp \
@@ -289,6 +322,10 @@ health_timer_existed=false
 [ ! -e /etc/systemd/system/buzz-server.service ] || { cp -L /etc/systemd/system/buzz-server.service "$unit_backup"; unit_existed=true; }
 [ ! -e /etc/systemd/system/buzz-server-healthcheck.service ] || { cp -L /etc/systemd/system/buzz-server-healthcheck.service "$health_service_backup"; health_service_existed=true; }
 [ ! -e /etc/systemd/system/buzz-server-healthcheck.timer ] || { cp -L /etc/systemd/system/buzz-server-healthcheck.timer "$health_timer_backup"; health_timer_existed=true; }
+
+if timeout 5 systemctl cat buzz-server.service >/dev/null 2>&1; then
+  drain_service "Stopping existing Buzz Server process tree"
+fi
 
 log "Activating release $version-$target"
 mv -T "$release_staging" "$release"
@@ -319,6 +356,7 @@ fi
 
 if [ "$deployment_ok" != true ]; then
   log "Deployment failed; rolling back"
+  drain_service "Stopping failed Buzz Server process tree"
   if [ "$config_migrated" = true ]; then
     install -o root -g buzz-server -m 0640 "$config_backup" /etc/buzz-server/config.json
   fi
