@@ -50,18 +50,20 @@ Download the latest release for this host, verify it, extract it, and run the
 bundled installer:
 
 ```sh
+version=$(basename "$(curl -Ls -o /dev/null -w '%{url_effective}' https://github.com/cartertek/buzz-server/releases/latest)")
 target="$(uname -m)-unknown-linux-gnu"
-gh release download -R cartertek/buzz-server -p "buzz-server-*-${target}.tar.gz*"
+curl -LO "https://github.com/cartertek/buzz-server/releases/download/$version/buzz-server-$version-$target.tar.gz{,.sha256}"
 sha256sum -c *.sha256
 tar -xzf *.tar.gz
 sudo ./buzz-server-*/deploy/install.sh
 ```
 
-To install a specific version, give `gh release download` the release tag:
+To install a specific version:
 
 ```sh
+version=v0.1.4
 target="$(uname -m)-unknown-linux-gnu"
-gh release download v0.1.4 -R cartertek/buzz-server -p "buzz-server-*-${target}.tar.gz*"
+curl -LO "https://github.com/cartertek/buzz-server/releases/download/$version/buzz-server-$version-$target.tar.gz{,.sha256}"
 sha256sum -c *.sha256
 tar -xzf *.tar.gz
 sudo ./buzz-server-*/deploy/install.sh
