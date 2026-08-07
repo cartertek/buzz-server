@@ -46,49 +46,39 @@ accounts and installs immutable releases below `/opt/buzz-server`.
 
 ## Installation
 
-Download the latest release for this host, verify it, extract it, and run the
-bundled installer:
+Download the latest release for your architecture:
 
 ```sh
-version=$(basename "$(curl -Ls -o /dev/null -w '%{url_effective}' https://github.com/cartertek/buzz-server/releases/latest)")
-target="$(uname -m)-unknown-linux-gnu"
-curl -LO "https://github.com/cartertek/buzz-server/releases/download/$version/buzz-server-$version-$target.tar.gz{,.sha256}"
-sha256sum -c *.sha256
-tar -xzf *.tar.gz
-sudo ./buzz-server-*/deploy/install.sh
+curl -LO https://github.com/cartertek/buzz-server/releases/latest/download/buzz-server-x86_64-unknown-linux-gnu.tar.gz
 ```
+
+For ARM64, replace `x86_64-unknown-linux-gnu` with `aarch64-unknown-linux-gnu`.
 
 To install a specific version:
 
 ```sh
-version=v0.1.4
-target="$(uname -m)-unknown-linux-gnu"
-curl -LO "https://github.com/cartertek/buzz-server/releases/download/$version/buzz-server-$version-$target.tar.gz{,.sha256}"
-sha256sum -c *.sha256
-tar -xzf *.tar.gz
+curl -LO https://github.com/cartertek/buzz-server/releases/download/v0.1.4/buzz-server-x86_64-unknown-linux-gnu.tar.gz
+```
+
+Then extract it and run the bundled installer:
+
+```sh
+tar -xzf buzz-server-*.tar.gz
 sudo ./buzz-server-*/deploy/install.sh
 ```
 
 On first install, the installer asks for the required values and creates the Buzz
-Server configuration and secret files. The installer is part of the release
-archive and installs that exact extracted build; it does not fetch another copy
-of the release.
+Server configuration and secret files. The installer is part of the downloaded
+archive and installs that exact build.
 
-The same process is also used for updates. Running the installer from a newer or
-older extracted release installs that release atomically over the existing
-installation while preserving configuration, secrets, state, workspaces, and
-logs. If the new release fails its health check, the previous release is restored
-automatically.
+The same process is used for updates. Running the installer from a newer or older
+release atomically installs that release over the existing installation while
+preserving configuration, secrets, state, workspaces, and logs. If the new
+release fails its health check, the previous release is restored automatically.
 
 For unattended installation, pass the prompted values as environment variables
 and add `--non-interactive`. See [host deployment details](deploy/README.md) for
 the variable names and lower-level deployment contract.
-
-Verify the installation with:
-
-```sh
-sudo buzz-serverctl health
-```
 
 ## Configuration
 

@@ -16,7 +16,7 @@ case "$repository" in *[!A-Za-z0-9._/-]*|*/*/*|'') echo "invalid repository" >&2
 cargo_version=${version#v}
 [ -n "$cargo_version" ] || { echo "tag has no Cargo version" >&2; exit 64; }
 
-asset="buzz-server-${version}-${target}.tar.gz"
+asset="buzz-server-${target}.tar.gz"
 base="https://github.com/${repository}/releases/download/${version}"
 temporary=$(mktemp -d)
 release_staging=
