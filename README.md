@@ -22,6 +22,7 @@ bridge between Buzz events and ACP-compatible agent runtimes.
 - Version-pinned runtimes installed from digest-verified immutable packages
 - Multiple isolated Buzz communities and relay connections
 - Authenticated lifecycle API over a Unix socket or TLS with NIP-98
+- Command-line management for server operations, agents, and secrets
 - Create, inspect, update, enable, disable, logs, delete, purge, and operation polling
 - Optional draft submission and promotion workflow
 - Trusted `buzz-backend-*` provider discovery and provider compatibility testing
