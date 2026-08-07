@@ -7,7 +7,7 @@ management operations live under `secrets`.
 ```text
 buzz-server health|status|start|stop|restart|backup|restore|rollback|rotate-owner
 buzz-server agent [--socket PATH] COMMAND [OPTIONS]
-buzz-server secrets COMMAND [OPTIONS]
+buzz-server secret COMMAND [OPTIONS]
 ```
 
 The systemd service uses `buzz-server run --config /etc/buzz-server/config.json`.

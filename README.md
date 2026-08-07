@@ -89,7 +89,7 @@ fallback. The schema is [`config/buzz-server.schema.json`](config/buzz-server.sc
 
 ## Using the CLI
 
-The installer places one operator command, `buzz-server`, in `/usr/local/bin`. Service operations are top-level commands; agent lifecycle operations use `buzz-server agent`, and key management uses `buzz-server secrets`.
+The installer places one operator command, `buzz-server`, in `/usr/local/bin`. Service operations are top-level commands; agent lifecycle operations use `buzz-server agent`, and key management uses `buzz-server secret`.
 
 ```sh
 sudo buzz-server agent list

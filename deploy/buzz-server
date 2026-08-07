@@ -17,7 +17,7 @@ case "$command" in
     shift
     exec "$release/buzz-agentctl" "$@"
     ;;
-  secrets)
+  secret)
     shift
     exec "$release/buzz-secretsctl" "$@"
     ;;
