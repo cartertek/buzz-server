@@ -63,8 +63,8 @@ curl -LO https://github.com/cartertek/buzz-server/releases/download/v0.1.4/buzz-
 Then extract it and run the bundled installer:
 
 ```sh
-tar -xzf buzz-server-*.tar.gz
-sudo ./buzz-server-*/deploy/install.sh
+tar -xzf buzz-server-x86_64-unknown-linux-gnu.tar.gz
+sudo ./buzz-server/deploy/install.sh
 ```
 
 On first install, the installer asks for the required values and creates the Buzz

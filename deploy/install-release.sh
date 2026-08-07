@@ -27,7 +27,7 @@ cleanup() {
   fi
 }
 trap cleanup EXIT HUP INT TERM
-package="buzz-server-${version}-${target}"
+package="buzz-server"
 expected_manifest=$(cat <<EOF
 $package/
 $package/buzz-server

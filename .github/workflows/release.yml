@@ -69,7 +69,7 @@ jobs:
           VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.0.0-pr' }}
         run: |
           set -eu
-          package="buzz-server-${VERSION}-${TARGET}"
+          package="buzz-server"
           mkdir -p "dist/${package}/config" "dist/${package}/deploy"
           install -m 0755 "target/${TARGET}/release/buzz-server" "dist/${package}/buzz-server"
           install -m 0755 "target/${TARGET}/release/buzz-agentctl" "dist/${package}/buzz-agentctl"
