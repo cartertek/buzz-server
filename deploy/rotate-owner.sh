@@ -1,6 +1,16 @@
 #!/bin/sh
 set -eu
 
+wait_for_health() {
+  attempts=0
+  while [ "$attempts" -lt 90 ]; do
+    if /usr/local/sbin/buzz-serverctl health >/dev/null 2>&1; then return 0; fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  return 1
+}
+
 [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { echo "usage: rotate-owner.sh NEW_OWNER_SECRET_FILE [KMS_KEY_ID]" >&2; exit 64; }
 secret=$1
 kms_key_id=${2:-${BUZZ_KMS_KEY_ID:-}}
@@ -30,7 +40,7 @@ else
   [ ! -e "$key_file" ] || { chown root:root "$key_file"; chmod 0400 "$key_file"; }
   [ ! -e "$marker" ] || { chown root:root "$marker"; chmod 0600 "$marker"; }
 fi
-if ! systemctl restart buzz-server.service || ! /usr/local/sbin/buzz-serverctl health >/dev/null; then
+if ! systemctl restart buzz-server.service || ! wait_for_health; then
   rm -f "$envelope"
   "$secretsctl" clear-local --key-file "$key_file" --marker "$marker"
   if [ "$previous_mode" = kms ]; then
@@ -40,7 +50,7 @@ if ! systemctl restart buzz-server.service || ! /usr/local/sbin/buzz-serverctl h
     [ ! -e "$key_file" ] || { chown root:root "$key_file"; chmod 0400 "$key_file"; }
     [ ! -e "$marker" ] || { chown root:root "$marker"; chmod 0600 "$marker"; }
   fi
-  systemctl restart buzz-server.service || true
+  if systemctl restart buzz-server.service; then wait_for_health || true; fi
   echo "owner rotation failed; previous custody state restored" >&2
   exit 1
 fi

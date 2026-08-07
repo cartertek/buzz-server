@@ -1,6 +1,16 @@
 #!/bin/sh
 set -eu
 
+wait_for_health() {
+  attempts=0
+  while [ "$attempts" -lt 90 ]; do
+    if /usr/local/sbin/buzz-serverctl health >/dev/null 2>&1; then return 0; fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  return 1
+}
+
 [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { echo "usage: backup.sh OUTPUT [KMS_KEY_ID]" >&2; exit 64; }
 output=$1
 kms_key_id=${2:-${BUZZ_KMS_KEY_ID:-}}
@@ -69,5 +79,9 @@ else
   "$secretsctl" encrypt-passphrase --input "$archive" --output "$output" --passphrase-file "$passphrase_file"
 fi
 chmod 0600 "$output"
-if [ "$was_active" = true ]; then systemctl start buzz-server.service; was_active=false; /usr/local/sbin/buzz-serverctl health >/dev/null; fi
+if [ "$was_active" = true ]; then
+  systemctl start buzz-server.service
+  was_active=false
+  wait_for_health || { echo "buzz-server failed health checks after backup restart" >&2; exit 1; }
+fi
 printf '%s\n' "$output"

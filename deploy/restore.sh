@@ -1,6 +1,16 @@
 #!/bin/sh
 set -eu
 
+wait_for_health() {
+  attempts=0
+  while [ "$attempts" -lt 90 ]; do
+    if /usr/local/sbin/buzz-serverctl health >/dev/null 2>&1; then return 0; fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  return 1
+}
+
 [ "$#" -eq 1 ] || { echo "usage: restore.sh BACKUP" >&2; exit 64; }
 backup=$1
 passphrase_file=${BUZZ_BACKUP_PASSPHRASE_FILE:-}
@@ -51,12 +61,12 @@ rm -rf /etc/buzz-server
 mv "$staging/etc/buzz-server" /etc/buzz-server
 if [ -d "$staging/var/log/buzz-server" ]; then install -d -o buzz-server -g buzz-server -m 0700 /var/log/buzz-server; cp -a "$staging/var/log/buzz-server/." /var/log/buzz-server/; fi
 systemctl start buzz-server.service
-if ! /usr/local/sbin/buzz-serverctl health >/dev/null; then
+if ! wait_for_health; then
   systemctl stop buzz-server.service || true
   rm -rf /var/lib/buzz-server /etc/buzz-server
   [ ! -e "$snapshot" ] || mv "$snapshot" /var/lib/buzz-server
   cp -a "$etc_snapshot" /etc/buzz-server
-  systemctl start buzz-server.service || true
+  if systemctl start buzz-server.service; then wait_for_health || true; fi
   echo "restored backup failed health checks; previous state restored" >&2
   exit 1
 fi
