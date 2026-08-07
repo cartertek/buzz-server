@@ -77,6 +77,7 @@ Commands:
   delete         Recoverably delete an agent
   purge          Permanently purge an agent
   operation      Get an operation
+  pubkey         Show an agent Nostr public key
   draft-submit   Submit an agent draft
   draft-get      Get an agent draft
   draft-promote  Promote a draft to an agent
@@ -97,6 +98,7 @@ agent_command_help() {
     delete)        printf '%s\n' 'Usage: buzz-server agent delete --agent ID --idempotency KEY --correlation ID' ;;
     purge)         printf '%s\n' 'Usage: buzz-server agent purge --agent ID --idempotency KEY --correlation ID' ;;
     operation)     printf '%s\n' 'Usage: buzz-server agent operation --operation ID' ;;
+    pubkey)        printf '%s\n' 'Usage: sudo buzz-server agent pubkey --agent ID' 'Show the agent Nostr public key without exposing its private key.' ;;
     draft-submit)  printf '%s\n' 'Usage: buzz-server agent draft-submit --community ID --display-name NAME --system-prompt PROMPT --runtime ID --idempotency KEY --correlation ID' ;;
     draft-get)     printf '%s\n' 'Usage: buzz-server agent draft-get --draft ID' ;;
     draft-promote) printf '%s\n' 'Usage: buzz-server agent draft-promote --draft ID --idempotency KEY --correlation ID' ;;
@@ -158,6 +160,12 @@ case "$command" in
       agent_help
     elif [ "$#" -ge 2 ] && is_help "${2:-}"; then
       agent_command_help "$1" || { agent_help >&2; exit 64; }
+    elif [ "${1:-}" = pubkey ]; then
+      [ "$#" -eq 3 ] && [ "${2:-}" = --agent ] || { agent_command_help pubkey >&2; exit 64; }
+      agent_id=$3
+      case "$agent_id" in agent_[A-Za-z0-9]* ) ;; *) echo "invalid agent ID" >&2; exit 64 ;; esac
+      case "$agent_id" in *[!A-Za-z0-9_]* ) echo "invalid agent ID" >&2; exit 64 ;; esac
+      exec "$release/buzz-secretsctl" public-key --input "/var/lib/buzz-server/identities/${agent_id}.secret"
     else
       exec "$release/buzz-agentctl" "$@"
     fi

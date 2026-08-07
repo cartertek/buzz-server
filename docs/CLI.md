@@ -137,6 +137,16 @@ Purge is immediate and irreversible after the operation succeeds.
 buzz-server agent operation --operation operation_...
 ```
 
+### `pubkey`
+
+```sh
+sudo buzz-server agent pubkey --agent agent_...
+```
+
+Prints the agent's 64-character lowercase Nostr public key. The command derives
+the public key from the root-only custodied identity and never prints the private
+key. This is useful when adding a Server-managed agent to a Buzz channel.
+
 Typical polling loop:
 
 ```sh

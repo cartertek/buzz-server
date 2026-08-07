@@ -87,22 +87,54 @@ agent settings; runtime secrets remain in `secrets.env`. The owner key is stored
 through KMS when configured, otherwise through the OS keyring or restricted-file
 fallback. The schema is [`config/buzz-server.schema.json`](config/buzz-server.schema.json).
 
-## Using the CLI
+## Getting started
 
-The installer places one operator command, `buzz-server`, in `/usr/local/bin`. Service operations are top-level commands; agent lifecycle operations use `buzz-server agent`, and key management uses `buzz-server secret`.
+After installation, create an agent in one of the communities configured on this
+server. The community ID is the `community.id` value in
+`/etc/buzz-server/config.json`.
 
 ```sh
-sudo buzz-server agent list
-sudo buzz-server agent get --agent agent_...
-sudo buzz-server agent logs --agent agent_... --limit 100
-sudo buzz-server agent disable \
-  --agent agent_... \
-  --idempotency maintenance-1 \
-  --correlation maintenance-1
+sudo buzz-server agent create \
+  --community community_... \
+  --display-name 'Build agent' \
+  --system-prompt 'Help with software engineering work in this channel.' \
+  --runtime codex-acp \
+  --idempotency getting-started-agent-1 \
+  --correlation getting-started
+```
+
+The response contains an operation ID and the new `agent_...` ID. Poll the
+operation until it succeeds:
+
+```sh
 sudo buzz-server agent operation --operation operation_...
 ```
 
-See [`docs/CLI.md`](docs/CLI.md) for every command and option.
+Creating the agent with `--community` gives it an identity and authorization for
+that Buzz community and starts its ACP runtime against the community relay. Get
+the generated Nostr public key without exposing the private key:
+
+```sh
+sudo buzz-server agent pubkey --agent agent_...
+```
+
+From a Buzz CLI logged into the same community as an identity allowed to manage
+the target channel, add the agent as a channel member:
+
+```sh
+buzz channels add-member \
+  --channel <channel-uuid> \
+  --pubkey <agent-public-key> \
+  --role bot
+```
+
+`buzz-acp` watches community membership notifications. Once the relay records the
+new membership, the running agent discovers the channel and subscribes to it
+automatically; no Buzz Server restart or separate subscribe command is required.
+
+Use `buzz-server agent list`, `buzz-server agent get --agent agent_...`, and
+`buzz-server agent logs --agent agent_...` to inspect it. See
+[`docs/CLI.md`](docs/CLI.md) for the complete Buzz Server command reference.
 
 ## Rollback
 
