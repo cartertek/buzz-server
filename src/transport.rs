@@ -210,12 +210,29 @@ async fn serve_connection<H: AuthenticatedRequestHandler>(
     handler: &H,
 ) -> Result<(), TransportError> {
     let credentials = stream.peer_cred()?;
-    let actor = authority.authenticate(UnixPeerCredentials {
+    // Consume the bounded request before deciding authorization. If we close a Unix socket while
+    // the client still has unread request bytes queued, Linux may report ECONNRESET to the client
+    // instead of the authorization failure that caused the close.
+    let request = read_frame(&mut stream).await?;
+    let actor = match authority.authenticate(UnixPeerCredentials {
         uid: credentials.uid(),
         gid: credentials.gid(),
         pid: credentials.pid().and_then(|pid| u32::try_from(pid).ok()),
-    })?;
-    let request = read_frame(&mut stream).await?;
+    }) {
+        Ok(actor) => actor,
+        Err(_) => {
+            let response = LifecycleWireResponse::Error(ApiError {
+                code: ErrorCode::Unauthorized,
+                message: "principal is not authorized".into(),
+                field: None,
+            });
+            let body = serde_json::to_vec(&response)
+                .map_err(|error| TransportError::Task(error.to_string()))?;
+            write_frame(&mut stream, &body).await?;
+            stream.shutdown().await?;
+            return Ok(());
+        }
+    };
     let response = handler.handle(&actor, &request);
     if response.body.len() > MAX_LIFECYCLE_RESPONSE_BYTES {
         return Err(TransportError::ResponseTooLarge);
