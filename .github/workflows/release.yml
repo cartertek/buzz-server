@@ -71,7 +71,8 @@ jobs:
           set -eu
           package="buzz-server"
           mkdir -p "dist/${package}/config" "dist/${package}/deploy"
-          install -m 0755 "target/${TARGET}/release/buzz-server" "dist/${package}/buzz-server"
+          install -m 0755 "target/${TARGET}/release/buzz-server" "dist/${package}/buzz-server-daemon"
+          install -m 0755 deploy/buzz-server "dist/${package}/buzz-server"
           install -m 0755 "target/${TARGET}/release/buzz-agentctl" "dist/${package}/buzz-agentctl"
           install -m 0755 "target/${TARGET}/release/buzz-secretsctl" "dist/${package}/buzz-secretsctl"
           install -m 0644 config/buzz-server.dev.example.json config/buzz-server.schema.json "dist/${package}/config/"

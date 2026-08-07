@@ -22,7 +22,7 @@ bridge between Buzz events and ACP-compatible agent runtimes.
 - Version-pinned runtimes installed from digest-verified immutable packages
 - Multiple isolated Buzz communities and relay connections
 - Authenticated lifecycle API over a Unix socket or TLS with NIP-98
-- Machine-readable `buzz-agentctl` CLI
+- Unified `buzz-server` CLI
 - Create, inspect, update, enable, disable, logs, delete, purge, and operation polling
 - Optional draft submission and promotion workflow
 - Trusted `buzz-backend-*` provider discovery and provider compatibility testing
@@ -89,18 +89,17 @@ fallback. The schema is [`config/buzz-server.schema.json`](config/buzz-server.sc
 
 ## Using the CLI
 
-The installer places `buzz-agentctl` in `/usr/local/bin`. Responses are compact
-JSON on stdout.
+The installer places one operator command, `buzz-server`, in `/usr/local/bin`. Service operations are top-level commands; agent lifecycle operations use `buzz-server agent`, and key management uses `buzz-server secrets`.
 
 ```sh
-sudo buzz-agentctl list
-sudo buzz-agentctl get --agent agent_...
-sudo buzz-agentctl logs --agent agent_... --limit 100
-sudo buzz-agentctl disable \
+sudo buzz-server agent list
+sudo buzz-server agent get --agent agent_...
+sudo buzz-server agent logs --agent agent_... --limit 100
+sudo buzz-server agent disable \
   --agent agent_... \
   --idempotency maintenance-1 \
   --correlation maintenance-1
-sudo buzz-agentctl operation --operation operation_...
+sudo buzz-server agent operation --operation operation_...
 ```
 
 See [`docs/CLI.md`](docs/CLI.md) for every command and option.
@@ -116,7 +115,7 @@ ls -1 /opt/buzz-server/releases
 Select an earlier installed release by its directory name:
 
 ```sh
-sudo buzz-serverctl rollback v0.1.4-x86_64-unknown-linux-gnu
+sudo buzz-server rollback v0.1.4-x86_64-unknown-linux-gnu
 ```
 
 Rollback preserves the database, identities, runtime state, workspaces, and
@@ -126,11 +125,11 @@ rollback target fails health checks.
 ## Service management
 
 ```sh
-sudo buzz-serverctl health
-sudo buzz-serverctl status
-sudo buzz-serverctl restart
-sudo buzz-serverctl stop
-sudo buzz-serverctl start
+sudo buzz-server health
+sudo buzz-server status
+sudo buzz-server restart
+sudo buzz-server stop
+sudo buzz-server start
 ```
 
 System logs are available through:
@@ -173,7 +172,7 @@ See [Security](docs/SECURITY.md), [Production hardening](docs/PRODUCTION_HARDENI
 - [Installation and host deployment details](deploy/README.md)
 - [Configuration schema](config/buzz-server.schema.json)
 - [Lifecycle API](docs/LIFECYCLE_API.md)
-- [`buzz-agentctl` CLI](docs/CLI.md)
+- [`buzz-server` CLI](docs/CLI.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Security](docs/SECURITY.md)
 - [Production hardening](docs/PRODUCTION_HARDENING.md)

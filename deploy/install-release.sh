@@ -31,6 +31,7 @@ package="buzz-server"
 expected_manifest=$(cat <<EOF
 $package/
 $package/buzz-server
+$package/buzz-server-daemon
 $package/buzz-agentctl
 $package/buzz-secretsctl
 $package/config/
@@ -83,6 +84,7 @@ else
   source_directory="$temporary/$package"
 fi
 test -x "$source_directory/buzz-server"
+test -x "$source_directory/buzz-server-daemon"
 test -x "$source_directory/buzz-agentctl"
 test -x "$source_directory/buzz-secretsctl"
 release="/opt/buzz-server/releases/$version-$target"
@@ -116,6 +118,7 @@ install -d -o buzz-server -g buzz-server -m 0700 /var/log/buzz-server
 install -d -o root -g root -m 0755 /usr/libexec/buzz-server
 release_staging=$(mktemp -d "/opt/buzz-server/releases/.${version}-${target}.staging.XXXXXX")
 install -o root -g root -m 0555 "$source_directory/buzz-server" "$release_staging/buzz-server"
+install -o root -g root -m 0555 "$source_directory/buzz-server-daemon" "$release_staging/buzz-server-daemon"
 install -o root -g root -m 0555 "$source_directory/buzz-agentctl" "$release_staging/buzz-agentctl"
 install -o root -g root -m 0555 "$source_directory/buzz-secretsctl" "$release_staging/buzz-secretsctl"
 install -d -o root -g root -m 0555 "$release_staging/share"
@@ -215,9 +218,8 @@ ln -sfn "$release" /opt/buzz-server/current.next
 mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
 install -o root -g root -m 0444 "$release/share/deploy/buzz-server.service" /etc/systemd/system/buzz-server.service
 ln -sfn /opt/buzz-server/current/share/deploy/install-release.sh /usr/libexec/buzz-server/install-release.sh
-ln -sfn /opt/buzz-server/current/share/deploy/buzz-serverctl /usr/local/sbin/buzz-serverctl
-ln -sfn /opt/buzz-server/current/buzz-agentctl /usr/local/bin/buzz-agentctl
-ln -sfn /opt/buzz-server/current/buzz-secretsctl /usr/local/sbin/buzz-secretsctl
+ln -sfn /opt/buzz-server/current/buzz-server /usr/local/bin/buzz-server
+rm -f /usr/local/sbin/buzz-serverctl /usr/local/bin/buzz-agentctl /usr/local/sbin/buzz-secretsctl
 install -o root -g root -m 0444 "$release/share/deploy/buzz-server-healthcheck.service" /etc/systemd/system/buzz-server-healthcheck.service
 install -o root -g root -m 0444 "$release/share/deploy/buzz-server-healthcheck.timer" /etc/systemd/system/buzz-server-healthcheck.timer
 systemctl daemon-reload
@@ -226,7 +228,7 @@ wait_for_health() {
   healthy=false
   attempts=0
   while [ "$attempts" -lt 90 ]; do
-    if /usr/local/sbin/buzz-serverctl health >/dev/null 2>&1; then
+    if /usr/local/bin/buzz-server health >/dev/null 2>&1; then
       return 0
     fi
     attempts=$((attempts + 1))

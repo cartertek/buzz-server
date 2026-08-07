@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+self=$(readlink -f "$0" 2>/dev/null || printf '%s\n' "$0")
+release=$(dirname "$self")
+if [ ! -x "$release/buzz-server-daemon" ]; then
+  release=/opt/buzz-server/current
+fi
+
+command=${1:-}
+case "$command" in
+  run)
+    shift
+    exec "$release/buzz-server-daemon" "$@"
+    ;;
+  agent)
+    shift
+    exec "$release/buzz-agentctl" "$@"
+    ;;
+  secrets)
+    shift
+    exec "$release/buzz-secretsctl" "$@"
+    ;;
+  health|check|start|restart|stop|status|redeploy|rollback|backup|restore|rotate-owner)
+    exec "$release/share/deploy/buzz-serverctl" "$@"
+    ;;
+  *)
+    echo "usage: buzz-server {run|agent|secrets|health|check|start|restart|stop|status|redeploy|rollback|backup|restore|rotate-owner}" >&2
+    exit 64
+    ;;
+esac

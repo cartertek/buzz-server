@@ -1,14 +1,18 @@
-# `buzz-agentctl` command reference
+# `buzz-server` command reference
 
-`buzz-agentctl` is the machine-readable same-host client for the Buzz Server
-lifecycle API. It connects to the Unix socket and prints exactly one compact JSON
-response on stdout.
+`buzz-server` is the single operator-facing CLI. Server/service operations are
+top-level commands, agent lifecycle operations live under `agent`, and key
+management operations live under `secrets`.
 
 ```text
-buzz-agentctl [--socket PATH] COMMAND [OPTIONS]
+buzz-server health|status|start|stop|restart|backup|restore|rollback|rotate-owner
+buzz-server agent [--socket PATH] COMMAND [OPTIONS]
+buzz-server secrets COMMAND [OPTIONS]
 ```
 
-The default socket is `/run/buzz-server/lifecycle.sock`.
+The systemd service uses `buzz-server run --config /etc/buzz-server/config.json`.
+The agent client connects to `/run/buzz-server/lifecycle.sock` by default and
+prints exactly one compact JSON response on stdout.
 
 ## Exit status
 
@@ -35,7 +39,7 @@ key for a different request returns a conflict.
 ### `create`
 
 ```sh
-buzz-agentctl create \
+buzz-server agent create \
   --community community_... \
   --display-name 'Build agent' \
   --system-prompt 'Build and verify requested changes.' \
@@ -49,20 +53,20 @@ Returns a durable operation. Poll it with `operation`.
 ### `get`
 
 ```sh
-buzz-agentctl get --agent agent_...
+buzz-server agent get --agent agent_...
 ```
 
 ### `list`
 
 ```sh
-buzz-agentctl list
-buzz-agentctl list --community community_...
+buzz-server agent list
+buzz-server agent list --community community_...
 ```
 
 ### `update`
 
 ```sh
-buzz-agentctl update \
+buzz-server agent update \
   --agent agent_... \
   --display-name 'Primary build agent' \
   --idempotency rename-agent-1 \
@@ -78,7 +82,7 @@ Include at least one of:
 ### `enable`
 
 ```sh
-buzz-agentctl enable \
+buzz-server agent enable \
   --agent agent_... \
   --idempotency enable-agent-1 \
   --correlation maintenance-1
@@ -87,7 +91,7 @@ buzz-agentctl enable \
 ### `disable`
 
 ```sh
-buzz-agentctl disable \
+buzz-server agent disable \
   --agent agent_... \
   --idempotency disable-agent-1 \
   --correlation maintenance-1
@@ -96,9 +100,9 @@ buzz-agentctl disable \
 ### `logs`
 
 ```sh
-buzz-agentctl logs --agent agent_...
-buzz-agentctl logs --agent agent_... --limit 250
-buzz-agentctl logs --agent agent_... --after 42 --limit 250
+buzz-server agent logs --agent agent_...
+buzz-server agent logs --agent agent_... --limit 250
+buzz-server agent logs --agent agent_... --after 42 --limit 250
 ```
 
 The default limit is 100; valid values are 1 through 1000. Continue from the
@@ -107,7 +111,7 @@ returned `next_cursor` with `--after`.
 ### `delete`
 
 ```sh
-buzz-agentctl delete \
+buzz-server agent delete \
   --agent agent_... \
   --idempotency delete-agent-1 \
   --correlation retire-1
@@ -119,7 +123,7 @@ agent and records deleted intent without immediately removing all state.
 ### `purge`
 
 ```sh
-buzz-agentctl purge \
+buzz-server agent purge \
   --agent agent_... \
   --idempotency purge-agent-1 \
   --correlation retire-1
@@ -130,14 +134,14 @@ Purge is immediate and irreversible after the operation succeeds.
 ### `operation`
 
 ```sh
-buzz-agentctl operation --operation operation_...
+buzz-server agent operation --operation operation_...
 ```
 
 Typical polling loop:
 
 ```sh
 while :; do
-  response=$(buzz-agentctl operation --operation operation_...) || exit $?
+  response=$(buzz-server agent operation --operation operation_...) || exit $?
   printf '%s\n' "$response"
   status=$(printf '%s' "$response" | jq -r '.value.value.status')
   case "$status" in
@@ -151,7 +155,7 @@ done
 ### `draft-submit`
 
 ```sh
-buzz-agentctl draft-submit \
+buzz-server agent draft-submit \
   --community community_... \
   --display-name 'Build agent' \
   --system-prompt 'Build and verify requested changes.' \
@@ -166,7 +170,7 @@ start a deployment.
 ### `draft-get`
 
 ```sh
-buzz-agentctl draft-get --draft draft_...
+buzz-server agent draft-get --draft draft_...
 ```
 
 Draft submitters may read only drafts owned by their authenticated Unix UID.
@@ -174,7 +178,7 @@ Draft submitters may read only drafts owned by their authenticated Unix UID.
 ### `draft-promote`
 
 ```sh
-buzz-agentctl draft-promote \
+buzz-server agent draft-promote \
   --draft draft_... \
   --idempotency promote-draft-1 \
   --correlation approval-92
@@ -187,7 +191,7 @@ Promotion is administrator-only and returns the same operation shape as `create`
 Place `--socket` before the command:
 
 ```sh
-buzz-agentctl --socket /custom/run/lifecycle.sock list
+buzz-server agent --socket /custom/run/lifecycle.sock list
 ```
 
 The caller's UID must appear in `administrator_uids` or
