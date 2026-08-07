@@ -9,9 +9,41 @@ if [ ! -x "$release/buzz-server-daemon" ]; then
   release=/opt/buzz-server/current
 fi
 
+help() {
+  cat <<'EOF'
+Buzz Server
+
+Usage:
+  buzz-server <command> [options]
+
+Commands:
+  run            Run the Buzz Server daemon
+  health         Check whether Buzz Server is healthy
+  check          Run the host health check
+  start          Start the system service
+  restart        Restart the system service
+  stop           Stop the system service
+  status         Show service status
+  rollback       Roll back to an installed release
+  backup         Back up Buzz Server state
+  restore        Restore a backup
+  rotate-owner   Rotate the owner secret
+  agent          Manage agents
+  secret         Manage secrets
+  version        Show the installed version
+
+Options:
+  -h, --help     Show this help
+  -V, --version  Show the installed version
+EOF
+}
+
 command=${1:-}
 case "$command" in
-  --version|version)
+  -h|--help|help)
+    help
+    ;;
+  -V|--version|version)
     printf 'buzz-server %s\n' "$version"
     ;;
   run)
