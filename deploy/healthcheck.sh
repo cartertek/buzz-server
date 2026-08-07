@@ -7,7 +7,7 @@ temporary="${metrics}.tmp"
 healthy=1
 reason=ok
 if ! systemctl is-active --quiet buzz-server.service; then healthy=0; reason=service_inactive
-elif ! test -f /run/buzz-server/ready; then healthy=0; reason=not_ready
+elif ! test -f /run/buzz-server/signer/ready; then healthy=0; reason=not_ready
 elif ! test -S /run/buzz-server/lifecycle.sock; then healthy=0; reason=api_socket_missing
 elif ! test -s /var/lib/buzz-server/state.sqlite3; then healthy=0; reason=database_missing
 fi
