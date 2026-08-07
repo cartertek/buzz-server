@@ -22,7 +22,6 @@ bridge between Buzz events and ACP-compatible agent runtimes.
 - Version-pinned runtimes installed from digest-verified immutable packages
 - Multiple isolated Buzz communities and relay connections
 - Authenticated lifecycle API over a Unix socket or TLS with NIP-98
-- Unified `buzz-server` CLI
 - Create, inspect, update, enable, disable, logs, delete, purge, and operation polling
 - Optional draft submission and promotion workflow
 - Trusted `buzz-backend-*` provider discovery and provider compatibility testing
@@ -35,9 +34,9 @@ The packaged host deployment currently targets a systemd-based Linux host with:
 - x86-64 or ARM64 architecture
 - glibc 2.34 or newer
 - root access for installation
-- `curl`, `tar`, `sha256sum`, `systemctl`, `runuser`, AWS CLI, and standard GNU utilities
+- `curl` and `tar`
 - a reachable Buzz relay
-- an owner Nostr secret key; AWS KMS is optional and takes precedence when configured
+- an owner Nostr secret key; AWS KMS is optional and requires the AWS CLI
 - model/runtime credentials such as an OpenAI API key
 - HTTPS URLs and SHA-256 values for the pinned Sprig and Codex ACP runtime packages
 
