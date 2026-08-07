@@ -46,23 +46,41 @@ accounts and installs immutable releases below `/opt/buzz-server`.
 
 ## Installation
 
-Install the latest release:
+Download the latest release for this host, verify it, extract it, and run the
+bundled installer:
 
 ```sh
-curl -fsSL https://github.com/cartertek/buzz-server/releases/latest/download/install.sh | sudo sh
+target="$(uname -m)-unknown-linux-gnu"
+gh release download -R cartertek/buzz-server -p "buzz-server-*-${target}.tar.gz*"
+sha256sum -c *.sha256
+tar -xzf *.tar.gz
+sudo ./buzz-server-*/deploy/install.sh
 ```
 
-Install a specific release:
+To install a specific version, give `gh release download` the release tag:
 
 ```sh
-curl -fsSL https://github.com/cartertek/buzz-server/releases/download/v0.1.4/install.sh | sudo sh
+target="$(uname -m)-unknown-linux-gnu"
+gh release download v0.1.4 -R cartertek/buzz-server -p "buzz-server-*-${target}.tar.gz*"
+sha256sum -c *.sha256
+tar -xzf *.tar.gz
+sudo ./buzz-server-*/deploy/install.sh
 ```
 
-On first install, the installer asks for the required values and creates the Buzz Server configuration and secret files. It detects the host architecture and installs the matching package from the same release.
+On first install, the installer asks for the required values and creates the Buzz
+Server configuration and secret files. The installer is part of the release
+archive and installs that exact extracted build; it does not fetch another copy
+of the release.
 
-The same process is also used for updates. Running an installer from a newer or older release installs that release atomically over the existing installation while preserving configuration, secrets, state, workspaces, and logs. If the new release fails its health check, the previous release is restored automatically.
+The same process is also used for updates. Running the installer from a newer or
+older extracted release installs that release atomically over the existing
+installation while preserving configuration, secrets, state, workspaces, and
+logs. If the new release fails its health check, the previous release is restored
+automatically.
 
-For unattended installation, pass the prompted values as environment variables and add `--non-interactive`. See [host deployment details](deploy/README.md) for the variable names and lower-level deployment contract.
+For unattended installation, pass the prompted values as environment variables
+and add `--non-interactive`. See [host deployment details](deploy/README.md) for
+the variable names and lower-level deployment contract.
 
 Verify the installation with:
 

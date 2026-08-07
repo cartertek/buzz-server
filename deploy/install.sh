@@ -146,7 +146,8 @@ EOF_CONFIG
   fi
 fi
 
-installer_url="https://raw.githubusercontent.com/${repository}/${version}/deploy/install-release.sh"
-curl -fsSL "$installer_url" -o "$temporary/install-release.sh"
-chmod 0755 "$temporary/install-release.sh"
-"$temporary/install-release.sh" "$version" "$target" "$repository"
+script_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+package_directory=$(dirname "$script_directory")
+BUZZ_RELEASE_SOURCE_DIR="$package_directory"
+export BUZZ_RELEASE_SOURCE_DIR
+"$script_directory/install-release.sh" "$version" "$target" "$repository"

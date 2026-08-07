@@ -27,11 +27,6 @@ cleanup() {
   fi
 }
 trap cleanup EXIT HUP INT TERM
-curl --fail --location --proto '=https' --tlsv1.2 --output "$temporary/$asset" "$base/$asset"
-curl --fail --location --proto '=https' --tlsv1.2 --output "$temporary/$asset.sha256" "$base/$asset.sha256"
-(cd "$temporary" && sha256sum -c "$asset.sha256")
-command -v gh >/dev/null 2>&1 || { echo "GitHub CLI is required for release provenance verification" >&2; exit 69; }
-gh attestation verify "$temporary/$asset" --repo "$repository" >/dev/null
 package="buzz-server-${version}-${target}"
 expected_manifest=$(cat <<EOF
 $package/
@@ -58,25 +53,37 @@ $package/deploy/install-release.sh
 $package/deploy/provision-runtimes.sh
 EOF
 )
-actual_manifest=$(tar -tzf "$temporary/$asset" | LC_ALL=C sort)
-[ "$actual_manifest" = "$(printf '%s\n' "$expected_manifest" | LC_ALL=C sort)" ] || {
-  echo "archive manifest does not match the release contract" >&2
-  exit 65
-}
-tar -tzf "$temporary/$asset" | while IFS= read -r member; do
-  case "$member" in
-    "$package"|"$package"/*) ;;
-    *) echo "unsafe archive member: $member" >&2; exit 65;;
-  esac
-  case "/$member/" in */../*) echo "unsafe archive traversal" >&2; exit 65;; esac
-done
-if tar -tvzf "$temporary/$asset" | awk 'substr($1, 1, 1) !~ /^[-d]$/ { found=1 } END { exit found ? 0 : 1 }'; then
-  echo "archive must contain only regular files and directories" >&2
-  exit 65
+if [ -n "${BUZZ_RELEASE_SOURCE_DIR:-}" ]; then
+  source_directory=$(cd "$BUZZ_RELEASE_SOURCE_DIR" && pwd)
+  [ "$(basename "$source_directory")" = "$package" ] || {
+    echo "local package directory must be named $package" >&2
+    exit 65
+  }
+else
+  curl -fsSL -o "$temporary/$asset" "$base/$asset"
+  curl -fsSL -o "$temporary/$asset.sha256" "$base/$asset.sha256"
+  (cd "$temporary" && sha256sum -c "$asset.sha256")
+  command -v gh >/dev/null 2>&1 || { echo "GitHub CLI is required for release provenance verification" >&2; exit 69; }
+  gh attestation verify "$temporary/$asset" --repo "$repository" >/dev/null
+  actual_manifest=$(tar -tzf "$temporary/$asset" | LC_ALL=C sort)
+  [ "$actual_manifest" = "$(printf '%s\n' "$expected_manifest" | LC_ALL=C sort)" ] || {
+    echo "archive manifest does not match the release contract" >&2
+    exit 65
+  }
+  tar -tzf "$temporary/$asset" | while IFS= read -r member; do
+    case "$member" in
+      "$package"|"$package"/*) ;;
+      *) echo "unsafe archive member: $member" >&2; exit 65;;
+    esac
+    case "/$member/" in */../*) echo "unsafe archive traversal" >&2; exit 65;; esac
+  done
+  if tar -tvzf "$temporary/$asset" | awk 'substr($1, 1, 1) !~ /^[-d]$/ { found=1 } END { exit found ? 0 : 1 }'; then
+    echo "archive must contain only regular files and directories" >&2
+    exit 65
+  fi
+  tar --no-same-owner --no-same-permissions -C "$temporary" -xzf "$temporary/$asset"
+  source_directory="$temporary/$package"
 fi
-tar --no-same-owner --no-same-permissions -C "$temporary" -xzf "$temporary/$asset"
-
-source_directory="$temporary/$package"
 test -x "$source_directory/buzz-server"
 test -x "$source_directory/buzz-agentctl"
 test -x "$source_directory/buzz-secretsctl"

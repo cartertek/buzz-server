@@ -103,14 +103,6 @@ jobs:
           pattern: release-*
           path: dist
           merge-multiple: true
-      - name: Extract release installer
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -eu
-          package="buzz-server-${TAG}-x86_64-unknown-linux-gnu"
-          tar -xOf "dist/${package}.tar.gz" "${package}/deploy/install.sh" > dist/install.sh
-          chmod 0755 dist/install.sh
       - name: Verify complete release set
         env:
           TAG: ${{ github.ref_name }}
@@ -120,7 +112,7 @@ jobs:
             test -f "dist/buzz-server-${TAG}-${target}.tar.gz"
             test -f "dist/buzz-server-${TAG}-${target}.tar.gz.sha256"
           done
-          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 5
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 4
           (cd dist && sha256sum -c ./*.tar.gz.sha256)
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with:
@@ -136,7 +128,7 @@ jobs:
             rm -rf remote-assets
             mkdir remote-assets
             gh release download "$tag" --dir remote-assets
-            test "$(find remote-assets -maxdepth 1 -type f | wc -l)" -eq 5
+            test "$(find remote-assets -maxdepth 1 -type f | wc -l)" -eq 4
             for local_asset in dist/*; do
               remote_asset="remote-assets/$(basename "$local_asset")"
               test -f "$remote_asset"
