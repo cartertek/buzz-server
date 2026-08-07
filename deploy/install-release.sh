@@ -1,6 +1,53 @@
 #!/bin/sh
 set -eu
 
+log() { printf '%s\n' "==> $*" >&2; }
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+run_bounded() {
+  seconds=$1
+  description=$2
+  shift 2
+  log "$description"
+  timeout "$seconds" "$@" || {
+    status=$?
+    if [ "$status" -eq 124 ]; then
+      fail "$description timed out after ${seconds}s"
+    fi
+    fail "$description failed (exit $status)"
+  }
+}
+service_diagnostics() {
+  printf '%s\n' '--- buzz-server service status ---' >&2
+  timeout 10 systemctl status --no-pager --lines=20 buzz-server.service >&2 2>&1 || true
+  printf '%s\n' '--- recent buzz-server logs ---' >&2
+  timeout 10 journalctl -u buzz-server.service -n 30 --no-pager >&2 2>&1 || true
+}
+wait_for_health() {
+  controller=$1
+  label=$2
+  limit=${3:-30}
+  elapsed=0
+  while [ "$elapsed" -lt "$limit" ]; do
+    if timeout 5 "$controller" health >/dev/null 2>&1; then
+      log "$label is healthy"
+      return 0
+    fi
+    if timeout 5 systemctl is-failed --quiet buzz-server.service; then
+      printf 'error: %s entered failed state\n' "$label" >&2
+      return 1
+    fi
+    elapsed=$((elapsed + 1))
+    if [ "$elapsed" -eq 1 ] || [ $((elapsed % 5)) -eq 0 ]; then
+      active=$(timeout 5 systemctl show buzz-server.service -p ActiveState --value 2>/dev/null || true)
+      sub=$(timeout 5 systemctl show buzz-server.service -p SubState --value 2>/dev/null || true)
+      printf 'Waiting for %s health (%ss/%ss; %s/%s)...\n' "$label" "$elapsed" "$limit" "${active:-unknown}" "${sub:-unknown}" >&2
+    fi
+    sleep 1
+  done
+  printf 'error: %s did not become healthy within %ss\n' "$label" "$limit" >&2
+  return 1
+}
+
 if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
   echo "usage: install-release.sh VERSION TARGET [OWNER/REPOSITORY]" >&2
   exit 64
@@ -13,6 +60,15 @@ case "$version" in v[0-9]* ) ;; *) echo "version must be an immutable v* tag" >&
 case "$version" in *[!A-Za-z0-9._-]* ) echo "version contains unsafe characters" >&2; exit 64;; esac
 case "$target" in x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;; *) echo "unsupported target" >&2; exit 64;; esac
 case "$repository" in *[!A-Za-z0-9._/-]*|*/*/*|'') echo "invalid repository" >&2; exit 64;; esac
+for command in timeout systemctl journalctl tar sha256sum awk sed find install getent groupadd useradd runuser stat; do
+  command -v "$command" >/dev/null 2>&1 || { echo "required command not found: $command" >&2; exit 69; }
+done
+case "$(uname -m)" in
+  x86_64|amd64) host_target=x86_64-unknown-linux-gnu ;;
+  aarch64|arm64) host_target=aarch64-unknown-linux-gnu ;;
+  *) echo "unsupported host architecture" >&2; exit 64 ;;
+esac
+[ "$target" = "$host_target" ] || { echo "package target $target does not match host $host_target" >&2; exit 65; }
 cargo_version=${version#v}
 [ -n "$cargo_version" ] || { echo "tag has no Cargo version" >&2; exit 64; }
 
@@ -26,7 +82,9 @@ cleanup() {
     rm -rf "$release_staging"
   fi
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
 package="buzz-server"
 expected_manifest=$(cat <<EOF
 $package/
@@ -61,9 +119,12 @@ if [ -n "${BUZZ_RELEASE_SOURCE_DIR:-}" ]; then
     exit 65
   }
 else
-  curl -fsSL -o "$temporary/$asset" "$base/$asset"
-  curl -fsSL -o "$temporary/$asset.sha256" "$base/$asset.sha256"
-  (cd "$temporary" && sha256sum -c "$asset.sha256")
+  command -v curl >/dev/null 2>&1 || { echo "required command not found: curl" >&2; exit 69; }
+  log "Downloading Buzz Server $version for $target"
+  curl --fail --location --connect-timeout 10 --max-time 120 -o "$temporary/$asset" "$base/$asset" || fail "release download failed"
+  curl --fail --location --connect-timeout 10 --max-time 30 -o "$temporary/$asset.sha256" "$base/$asset.sha256" || fail "checksum download failed"
+  log "Verifying release archive"
+  (cd "$temporary" && sha256sum -c "$asset.sha256") || fail "release checksum verification failed"
   actual_manifest=$(tar -tzf "$temporary/$asset" | LC_ALL=C sort)
   [ "$actual_manifest" = "$(printf '%s\n' "$expected_manifest" | LC_ALL=C sort)" ] || {
     echo "archive manifest does not match the release contract" >&2
@@ -83,12 +144,14 @@ else
   tar --no-same-owner --no-same-permissions -C "$temporary" -xzf "$temporary/$asset"
   source_directory="$temporary/$package"
 fi
-test -x "$source_directory/buzz-server"
-test -x "$source_directory/buzz-server-daemon"
-test -x "$source_directory/buzz-agentctl"
-test -x "$source_directory/buzz-secretsctl"
+log "Validating package contents"
+test -x "$source_directory/buzz-server" || fail "package is missing buzz-server"
+test -x "$source_directory/buzz-server-daemon" || fail "package is missing buzz-server-daemon"
+test -x "$source_directory/buzz-agentctl" || fail "package is missing internal agent client"
+test -x "$source_directory/buzz-secretsctl" || fail "package is missing internal secrets client"
 release="/opt/buzz-server/releases/$version-$target"
 previous=$(readlink -f /opt/buzz-server/current 2>/dev/null || true)
+log "Preparing system accounts and directories"
 if ! getent group buzz-server >/dev/null 2>&1; then
   groupadd --system buzz-server
 fi
@@ -116,6 +179,7 @@ install -d -o root -g buzz-server -m 0750 /etc/buzz-server
 install -d -o buzz-server -g buzz-server -m 0755 /var/lib/buzz-server
 install -d -o buzz-server -g buzz-server -m 0700 /var/log/buzz-server
 install -d -o root -g root -m 0755 /usr/libexec/buzz-server
+log "Staging immutable release $version-$target"
 release_staging=$(mktemp -d "/opt/buzz-server/releases/.${version}-${target}.staging.XXXXXX")
 install -o root -g root -m 0555 "$source_directory/buzz-server" "$release_staging/buzz-server"
 install -o root -g root -m 0555 "$source_directory/buzz-server-daemon" "$release_staging/buzz-server-daemon"
@@ -138,6 +202,7 @@ chmod 0555 \
   "$release_staging/share/deploy/healthcheck.sh" \
   "$release_staging/share/deploy/disaster-recovery-exercise.sh"
 chmod 0555 "$release_staging"
+log "Preparing configuration and credentials"
 if [ ! -e /etc/buzz-server/config.json ]; then
   config_source=${BUZZ_CONFIG_FILE:-$source_directory/config/buzz-server.dev.example.json}
   test -f "$config_source"
@@ -172,11 +237,11 @@ if [ ! -e "$owner_envelope" ] && [ ! -e "$owner_key_file" ] && [ ! -e "$owner_ma
       exit 66
     }
     if [ -n "${BUZZ_KMS_KEY_ID:-}" ]; then
-      "$release_staging/buzz-secretsctl" encrypt --kms-key-id "$BUZZ_KMS_KEY_ID" --input "$owner_source" --output "$owner_envelope"
+      run_bounded 60 "Encrypting owner secret with AWS KMS" "$release_staging/buzz-secretsctl" encrypt --kms-key-id "$BUZZ_KMS_KEY_ID" --input "$owner_source" --output "$owner_envelope"
       chown root:root "$owner_envelope"
       chmod 0400 "$owner_envelope"
     else
-      "$release_staging/buzz-secretsctl" persist --input "$owner_source" --key-file "$owner_key_file" --marker "$owner_marker"
+      run_bounded 30 "Persisting owner secret" "$release_staging/buzz-secretsctl" persist --input "$owner_source" --key-file "$owner_key_file" --marker "$owner_marker"
       [ ! -e "$owner_key_file" ] || { chown root:root "$owner_key_file"; chmod 0400 "$owner_key_file"; }
       [ ! -e "$owner_marker" ] || { chown root:root "$owner_marker"; chmod 0600 "$owner_marker"; }
     fi
@@ -196,14 +261,15 @@ runtime_assets_valid() {
 }
 if ! runtime_assets_valid; then
   if [ -n "${BUZZ_HARNESS_URL:-}" ] && [ -n "${BUZZ_HARNESS_SHA256:-}" ] && [ -n "${BUZZ_RUNTIME_URL:-}" ] && [ -n "${BUZZ_RUNTIME_SHA256:-}" ]; then
-    "$release_staging/share/deploy/provision-runtimes.sh" "$BUZZ_HARNESS_URL" "$BUZZ_HARNESS_SHA256" "$BUZZ_RUNTIME_URL" "$BUZZ_RUNTIME_SHA256"
+    run_bounded 300 "Provisioning pinned runtime packages" "$release_staging/share/deploy/provision-runtimes.sh" "$BUZZ_HARNESS_URL" "$BUZZ_HARNESS_SHA256" "$BUZZ_RUNTIME_URL" "$BUZZ_RUNTIME_SHA256"
   else
     echo "pinned runtime assets are absent; provide BUZZ_HARNESS_URL/SHA256 and BUZZ_RUNTIME_URL/SHA256" >&2
     exit 66
   fi
 fi
 runtime_assets_valid || { echo "pinned runtime asset validation failed" >&2; exit 66; }
-/usr/bin/timeout 30s /usr/sbin/runuser --user buzz-agent -- /usr/bin/env -i \
+log "Running isolated runtime preflight"
+timeout 30s runuser --user buzz-agent -- /usr/bin/env -i \
   HOME=/var/lib/buzz-server/runtime/agent \
   CODEX_HOME=/var/lib/buzz-server/runtime/agent/codex-home \
   TMPDIR=/var/lib/buzz-server/runtime/agent/tmp \
@@ -215,58 +281,66 @@ runtime_assets_valid || { echo "pinned runtime asset validation failed" >&2; exi
     exit 66
   }
 unit_backup="$temporary/buzz-server.service.previous"
+health_service_backup="$temporary/buzz-server-healthcheck.service.previous"
+health_timer_backup="$temporary/buzz-server-healthcheck.timer.previous"
 unit_existed=false
-if [ -e /etc/systemd/system/buzz-server.service ] || [ -L /etc/systemd/system/buzz-server.service ]; then
-  cp -L /etc/systemd/system/buzz-server.service "$unit_backup"
-  unit_existed=true
-fi
+health_service_existed=false
+health_timer_existed=false
+[ ! -e /etc/systemd/system/buzz-server.service ] || { cp -L /etc/systemd/system/buzz-server.service "$unit_backup"; unit_existed=true; }
+[ ! -e /etc/systemd/system/buzz-server-healthcheck.service ] || { cp -L /etc/systemd/system/buzz-server-healthcheck.service "$health_service_backup"; health_service_existed=true; }
+[ ! -e /etc/systemd/system/buzz-server-healthcheck.timer ] || { cp -L /etc/systemd/system/buzz-server-healthcheck.timer "$health_timer_backup"; health_timer_existed=true; }
+
+log "Activating release $version-$target"
 mv -T "$release_staging" "$release"
 release_staging=
 ln -sfn "$release" /opt/buzz-server/current.next
 mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
 install -o root -g root -m 0444 "$release/share/deploy/buzz-server.service" /etc/systemd/system/buzz-server.service
+install -o root -g root -m 0444 "$release/share/deploy/buzz-server-healthcheck.service" /etc/systemd/system/buzz-server-healthcheck.service
+install -o root -g root -m 0444 "$release/share/deploy/buzz-server-healthcheck.timer" /etc/systemd/system/buzz-server-healthcheck.timer
 ln -sfn /opt/buzz-server/current/share/deploy/install-release.sh /usr/libexec/buzz-server/install-release.sh
 ln -sfn /opt/buzz-server/current/buzz-server /usr/local/bin/buzz-server
 rm -f /usr/local/sbin/buzz-serverctl /usr/local/bin/buzz-agentctl /usr/local/sbin/buzz-secretsctl
-install -o root -g root -m 0444 "$release/share/deploy/buzz-server-healthcheck.service" /etc/systemd/system/buzz-server-healthcheck.service
-install -o root -g root -m 0444 "$release/share/deploy/buzz-server-healthcheck.timer" /etc/systemd/system/buzz-server-healthcheck.timer
-systemctl daemon-reload
-systemctl enable buzz-server.service buzz-server-healthcheck.timer
-wait_for_health() {
-  healthy=false
-  attempts=0
-  while [ "$attempts" -lt 90 ]; do
-    if /usr/local/bin/buzz-server health >/dev/null 2>&1; then
-      return 0
-    fi
-    attempts=$((attempts + 1))
-    sleep 1
-  done
-  return 1
-}
-systemctl restart buzz-server-healthcheck.timer
-echo "Waiting for Buzz Server to become healthy..."
-if ! systemctl restart buzz-server.service || ! wait_for_health; then
+run_bounded 20 "Reloading systemd configuration" systemctl daemon-reload
+run_bounded 20 "Enabling Buzz Server services" systemctl enable buzz-server.service buzz-server-healthcheck.timer
+run_bounded 20 "Starting health-check timer" systemctl --no-block restart buzz-server-healthcheck.timer
+
+new_controller="$release/share/deploy/buzz-serverctl"
+log "Starting Buzz Server"
+if ! timeout 20 systemctl --no-block restart buzz-server.service; then
+  service_diagnostics
+  deployment_ok=false
+elif wait_for_health "$new_controller" "Buzz Server $version" 30; then
+  deployment_ok=true
+else
+  service_diagnostics
+  deployment_ok=false
+fi
+
+if [ "$deployment_ok" != true ]; then
+  log "Deployment failed; rolling back"
   if [ "$config_migrated" = true ]; then
     install -o root -g buzz-server -m 0640 "$config_backup" /etc/buzz-server/config.json
   fi
   if [ -n "$previous" ] && [ -x "$previous/buzz-server" ]; then
     ln -sfn "$previous" /opt/buzz-server/current.next
     mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
-    if [ "$unit_existed" = true ]; then
-      install -o root -g root -m 0444 "$unit_backup" /etc/systemd/system/buzz-server.service
-    else
-      rm -f /etc/systemd/system/buzz-server.service
+    if [ "$unit_existed" = true ]; then install -o root -g root -m 0444 "$unit_backup" /etc/systemd/system/buzz-server.service; else rm -f /etc/systemd/system/buzz-server.service; fi
+    if [ "$health_service_existed" = true ]; then install -o root -g root -m 0444 "$health_service_backup" /etc/systemd/system/buzz-server-healthcheck.service; else rm -f /etc/systemd/system/buzz-server-healthcheck.service; fi
+    if [ "$health_timer_existed" = true ]; then install -o root -g root -m 0444 "$health_timer_backup" /etc/systemd/system/buzz-server-healthcheck.timer; else rm -f /etc/systemd/system/buzz-server-healthcheck.timer; fi
+    run_bounded 20 "Reloading systemd configuration after rollback" systemctl daemon-reload
+    previous_controller="$previous/share/deploy/buzz-serverctl"
+    log "Restarting previous Buzz Server release"
+    if ! timeout 20 systemctl --no-block restart buzz-server.service || ! wait_for_health "$previous_controller" "previous Buzz Server release" 30; then
+      service_diagnostics
+      fail "deployment failed and previous release could not be restored"
     fi
-    systemctl daemon-reload
-    systemctl restart buzz-server.service && wait_for_health || {
-      echo "deployment and automatic rollback both failed health checks" >&2
-      exit 1
-    }
-  else
-    rm -f /opt/buzz-server/current
-    systemctl stop buzz-server.service >/dev/null 2>&1 || true
+    if [ "$health_timer_existed" = true ]; then timeout 20 systemctl --no-block restart buzz-server-healthcheck.timer >/dev/null 2>&1 || true; fi
+    fail "deployment failed; previous release restored"
   fi
-  echo "deployment failed; previous release restored when available" >&2
-  exit 1
+  rm -f /opt/buzz-server/current
+  timeout 20 systemctl --no-block stop buzz-server.service >/dev/null 2>&1 || true
+  fail "deployment failed; no previous release was available"
 fi
+
+log "Buzz Server $version installed successfully"

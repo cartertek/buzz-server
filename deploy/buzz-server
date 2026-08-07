@@ -25,7 +25,7 @@ case "$command" in
     exec "$release/share/deploy/buzz-serverctl" "$@"
     ;;
   *)
-    echo "usage: buzz-server {run|agent|secrets|health|check|start|restart|stop|status|redeploy|rollback|backup|restore|rotate-owner}" >&2
+    echo "usage: buzz-server {run|agent|secret|health|check|start|restart|stop|status|redeploy|rollback|backup|restore|rotate-owner}" >&2
     exit 64
     ;;
 esac

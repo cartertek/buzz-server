@@ -17,7 +17,10 @@ id buzz-agent >/dev/null 2>&1 || { echo "buzz-agent account must exist before pr
 temporary=$(mktemp -d)
 staging_one=/opt/buzz-server/runtimes/.staging-sprig-0.1.0-$$
 staging_two=/opt/buzz-server/runtimes/.staging-codex-acp-1.1.7-$$
-trap 'rm -rf "$temporary" "$staging_one" "$staging_two"' EXIT HUP INT TERM
+cleanup() { rm -rf "$temporary" "$staging_one" "$staging_two"; }
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
 install -d -o root -g buzz-agent -m 0750 /opt/buzz-server/runtimes
 
 install_archive() {
@@ -35,7 +38,11 @@ install_archive() {
     echo "immutable runtime target already exists but does not match requested archive: $target" >&2
     exit 66
   fi
-  curl --fail --location --proto '=https' --tlsv1.2 -o "$archive" "$url"
+  printf 'Downloading %s...\n' "$name" >&2
+  curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 180 -o "$archive" "$url" || {
+    echo "runtime download failed: $name" >&2
+    exit 69
+  }
   printf '%s  %s.tar.gz\n' "$digest" "$name" > "$temporary/$name.sha256"
   (cd "$temporary" && sha256sum -c "$name.sha256")
   tar -tzf "$archive" | while IFS= read -r member; do

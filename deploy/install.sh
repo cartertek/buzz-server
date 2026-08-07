@@ -72,7 +72,10 @@ new_id() {
 }
 
 temporary=$(mktemp -d)
-trap 'rm -rf "$temporary"' EXIT HUP INT TERM
+cleanup() { rm -rf "$temporary"; }
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
 
 if [ ! -f /etc/buzz-server/config.json ]; then
   if [ -z "${BUZZ_CONFIG_FILE:-}" ]; then
