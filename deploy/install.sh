@@ -97,7 +97,7 @@ if [ ! -f /etc/buzz-server/config.json ]; then
 {
   "state_database": "/var/lib/buzz-server/state.sqlite3",
   "receipt_file": "/var/lib/buzz-server/process-receipt.json",
-  "signer_socket": "/run/buzz-server/signer.sock",
+  "signer_socket": "/run/buzz-server/signer/signer.sock",
   "log_directory": "/var/log/buzz-server/agents",
   "working_directory": "/var/lib/buzz-server",
   "workspace_path": "/var/lib/buzz-server/workspaces/agent",
