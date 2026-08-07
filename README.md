@@ -35,9 +35,9 @@ The packaged host deployment currently targets a systemd-based Linux host with:
 - x86-64 or ARM64 architecture
 - glibc 2.34 or newer
 - root access for installation
-- `curl`, `tar`, `sha256sum`, `systemctl`, `runuser`, and standard GNU utilities
+- `curl`, `tar`, `sha256sum`, `systemctl`, `runuser`, GitHub CLI (`gh`), AWS CLI, and standard GNU utilities
 - a reachable Buzz relay
-- an owner Nostr secret key
+- an owner Nostr secret key; AWS KMS is optional and takes precedence when configured
 - model/runtime credentials such as an OpenAI API key
 - HTTPS URLs and SHA-256 values for the pinned Sprig and Codex ACP runtime packages
 
@@ -102,7 +102,7 @@ EOF_SECRETS
 chmod 0600 /tmp/buzz-server-secrets.env
 ```
 
-Store the owner secret in a separate root-readable file:
+Store the owner secret temporarily in a root-readable import file:
 
 ```sh
 printf '%s\n' '<owner-nsec-or-secret-hex>' > /tmp/buzz-owner-secret
@@ -144,7 +144,14 @@ sudo env \
   "$BUZZ_VERSION" "$BUZZ_TARGET" cartertek/buzz-server
 ```
 
-The installer verifies the release checksum and archive layout, provisions the
+
+To use AWS KMS custody, add the variable to the `sudo env` invocation:
+
+```sh
+BUZZ_KMS_KEY_ID=alias/buzz-server-owner
+```
+
+The installer verifies GitHub build provenance, the release checksum, and archive layout; stores the owner key in KMS when configured or otherwise through the OS keyring/restricted-file fallback; provisions the
 runtime packages, runs the ACP preflight as the isolated `buzz-agent` user,
 installs the systemd service, starts it, and rolls back automatically if the new
 release fails its health check.
@@ -189,7 +196,7 @@ The installed configuration files are:
 ```text
 /etc/buzz-server/config.json
 /etc/buzz-server/secrets.env
-/etc/buzz-server/owner-secret
+/etc/buzz-server/owner-secret.envelope.json
 ```
 
 The JSON schema is available at
@@ -339,7 +346,7 @@ not copying a locally built binary directly into the production filesystem.
 
 ## Security model
 
-- The owner key is loaded through a root-only systemd credential file.
+- The owner key is stored through AWS KMS when configured, otherwise in the OS secret manager with a restricted key-file fallback, and materialized only into a root-only runtime file.
 - Runtime and model credentials are stored separately from JSON configuration.
 - Agent processes run under the restricted `buzz-agent` account.
 - Administrative Unix access is authorized using `SO_PEERCRED` UIDs.
@@ -347,7 +354,7 @@ not copying a locally built binary directly into the production filesystem.
 - Provider binaries require explicit path and digest trust before staged execution.
 - Audit and log records reject credential-shaped material.
 
-See [Security](docs/SECURITY.md) and [Architecture](docs/ARCHITECTURE.md).
+See [Security](docs/SECURITY.md), [Production hardening](docs/PRODUCTION_HARDENING.md), and [Architecture](docs/ARCHITECTURE.md).
 
 ## Documentation
 
@@ -357,6 +364,7 @@ See [Security](docs/SECURITY.md) and [Architecture](docs/ARCHITECTURE.md).
 - [`buzz-agentctl` CLI](docs/CLI.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Security](docs/SECURITY.md)
+- [Production hardening](docs/PRODUCTION_HARDENING.md)
 - [Provider compatibility](docs/PROVIDER_COMPATIBILITY.md)
 - [Compatibility with Buzz](docs/COMPATIBILITY_WITH_BUZZ.md)
 - [Project planning and status](docs/MVP_PLAN.md)

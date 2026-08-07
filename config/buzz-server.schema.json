@@ -19,7 +19,7 @@
     "workspace_path": { "type": "string", "pattern": "^/var/lib/buzz-server(?:/|$)" },
     "runtime_path": { "type": "string", "pattern": "^/var/lib/buzz-server(?:/|$)" },
     "agent_secret_env": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" },
-    "owner_secret_file": { "const": "/run/credentials/buzz-server.service/owner-secret" },
+    "owner_secret_file": { "const": "/run/buzz-server/credentials/owner-secret" },
     "runtime_user": { "const": "buzz-agent" },
     "expected_agent_pubkey": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "signer_conditions": { "type": "string" },

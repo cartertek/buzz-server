@@ -7,16 +7,18 @@ Wants=network-online.target
 Type=simple
 User=root
 Group=buzz-server
+ExecStartPre=+/usr/bin/install -d -o root -g root -m 0700 /run/buzz-server/credentials
+ExecStartPre=+/opt/buzz-server/current/share/deploy/prepare-owner-credential.sh
+ExecStartPre=+/usr/bin/install -d -o root -g buzz-agent -m 0710 /var/lib/buzz-server/workspaces /var/lib/buzz-server/runtime
+ExecStartPre=+/usr/bin/install -d -o buzz-agent -g buzz-agent -m 0700 /var/lib/buzz-server/workspaces/agent /var/lib/buzz-server/runtime/agent
+ExecStartPre=+/usr/bin/chown -R buzz-agent:buzz-agent /var/lib/buzz-server/workspaces/agent /var/lib/buzz-server/runtime/agent
 ExecStart=/opt/buzz-server/current/buzz-server --config /etc/buzz-server/config.json
+ExecStopPost=+/usr/bin/rm -f /run/buzz-server/credentials/owner-secret
 EnvironmentFile=/etc/buzz-server/secrets.env
-LoadCredential=owner-secret:/etc/buzz-server/owner-secret
-UnsetEnvironment=BUZZ_OWNER_SECRET
+UnsetEnvironment=BUZZ_OWNER_SECRET AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=30s
-# The daemon deliberately leaves an adopted agent running across a planned
-# Buzz Server restart. Killing only the main process lets the replacement
-# daemon validate the persisted receipt and adopt that exact child PID.
 KillMode=process
 StateDirectory=buzz-server
 StateDirectoryMode=0755
@@ -24,22 +26,31 @@ RuntimeDirectory=buzz-server
 RuntimeDirectoryMode=0700
 LogsDirectory=buzz-server
 LogsDirectoryMode=0700
-ExecStartPre=+/usr/bin/install -d -o root -g buzz-agent -m 0710 /var/lib/buzz-server/workspaces /var/lib/buzz-server/runtime
-ExecStartPre=+/usr/bin/install -d -o buzz-agent -g buzz-agent -m 0700 /var/lib/buzz-server/workspaces/agent /var/lib/buzz-server/runtime/agent
-# StateDirectory is re-owned to the service account whenever systemd starts the
-# unit. Restore ownership of the two child-only trees, including persisted ACP
-# authentication below runtime/, before the daemon drops privileges.
-ExecStartPre=+/usr/bin/chown -R buzz-agent:buzz-agent /var/lib/buzz-server/workspaces/agent /var/lib/buzz-server/runtime/agent
 UMask=0077
 NoNewPrivileges=true
 CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_SETUID CAP_SETGID
 AmbientCapabilities=
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProcSubset=pid
 ReadWritePaths=/var/lib/buzz-server /run/buzz-server /var/log/buzz-server
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
 LockPersonality=true
+SystemCallArchitectures=native
+TasksMax=512
+LimitNOFILE=8192
+MemoryMax=4G
 
 [Install]
 WantedBy=multi-user.target
