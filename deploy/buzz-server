@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 
+version='@BUZZ_SERVER_VERSION@'
+
 self=$(readlink -f "$0" 2>/dev/null || printf '%s\n' "$0")
 release=$(dirname "$self")
 if [ ! -x "$release/buzz-server-daemon" ]; then
@@ -9,6 +11,9 @@ fi
 
 command=${1:-}
 case "$command" in
+  --version|version)
+    printf 'buzz-server %s\n' "$version"
+    ;;
   run)
     shift
     exec "$release/buzz-server-daemon" "$@"
@@ -25,7 +30,7 @@ case "$command" in
     exec "$release/share/deploy/buzz-serverctl" "$@"
     ;;
   *)
-    echo "usage: buzz-server {run|agent|secret|health|check|start|restart|stop|status|redeploy|rollback|backup|restore|rotate-owner}" >&2
+    echo "usage: buzz-server {run|agent|secret|health|check|start|restart|stop|status|redeploy|rollback|backup|restore|rotate-owner|version}" >&2
     exit 64
     ;;
 esac
