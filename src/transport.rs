@@ -671,6 +671,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unauthorized_unix_client_receives_framed_error_instead_of_connection_reset() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = std::fs::metadata(directory.path()).unwrap().uid();
+        let path = directory.path().join("unauthorized.sock");
+        let server = UnixLifecycleServer::new(
+            &path,
+            UnixAuthorityPolicy {
+                administrator_uids: vec![uid.saturating_add(1)],
+                draft_submitter_uids: Vec::new(),
+            },
+            Arc::new(Echo(Mutex::new(None))),
+        );
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(async move { server.run(shutdown_rx).await });
+        for _ in 0..100 {
+            if path.exists() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let mut client = UnixStream::connect(&path).await.unwrap();
+        client.write_u32(4).await.unwrap();
+        client.write_all(b"ping").await.unwrap();
+        let length = client.read_u32().await.unwrap() as usize;
+        let mut response = vec![0; length];
+        client.read_exact(&mut response).await.unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        assert_eq!(response["status"], "error");
+        assert_eq!(response["value"]["code"], "unauthorized");
+        assert_eq!(response["value"]["message"], "principal is not authorized");
+
+        shutdown_tx.send(true).unwrap();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn idle_clients_do_not_block_accepts_or_shutdown() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
