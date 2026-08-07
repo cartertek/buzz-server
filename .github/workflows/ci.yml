@@ -66,7 +66,7 @@ jobs:
       - name: Package PR artifact
         env:
           TARGET: ${{ matrix.target }}
-          VERSION: v0.0.0-pr
+          VERSION: v0.0.0-pr-${{ github.sha }}
         run: |
           set -eu
           package="buzz-server"
@@ -77,7 +77,7 @@ jobs:
           install -m 0755 "target/${TARGET}/release/buzz-secretsctl" "dist/${package}/buzz-secretsctl"
           install -m 0644 config/buzz-server.dev.example.json config/buzz-server.schema.json "dist/${package}/config/"
           install -m 0644 deploy/buzz-server.service deploy/buzz-server-healthcheck.service deploy/buzz-server-healthcheck.timer deploy/README.md "dist/${package}/deploy/"
-          sed "s/@BUZZ_SERVER_VERSION@/${VERSION}/g" deploy/install.sh > "dist/${package}/deploy/install.sh"
+          sed -e "s/@BUZZ_SERVER_VERSION@/${VERSION}/g" -e "s/@BUZZ_SERVER_TARGET@/${TARGET}/g" deploy/install.sh > "dist/${package}/deploy/install.sh"
           chmod 0755 "dist/${package}/deploy/install.sh"
           install -m 0755 deploy/install-release.sh deploy/buzz-serverctl deploy/provision-runtimes.sh deploy/prepare-owner-credential.sh deploy/backup.sh deploy/restore.sh deploy/rotate-owner.sh deploy/healthcheck.sh deploy/disaster-recovery-exercise.sh "dist/${package}/deploy/"
           asset="buzz-server-${TARGET}.tar.gz"

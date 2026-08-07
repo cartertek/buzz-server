@@ -143,8 +143,12 @@ if [ ! -e /etc/buzz-server/config.json ]; then
   test -f "$config_source"
   install -o root -g buzz-server -m 0640 "$config_source" /etc/buzz-server/config.json
 fi
+config_migrated=false
+config_backup="$temporary/config.json.previous"
 if grep -q '"owner_secret_file": "/run/credentials/buzz-server.service/owner-secret"' /etc/buzz-server/config.json; then
+  cp -p /etc/buzz-server/config.json "$config_backup"
   sed -i 's#"owner_secret_file": "/run/credentials/buzz-server.service/owner-secret"#"owner_secret_file": "/run/buzz-server/credentials/owner-secret"#' /etc/buzz-server/config.json
+  config_migrated=true
 fi
 if [ ! -e /etc/buzz-server/secrets.env ]; then
   secrets_source=${BUZZ_SECRETS_FILE:-/dev/null}
@@ -238,6 +242,9 @@ wait_for_health() {
 }
 systemctl restart buzz-server-healthcheck.timer
 if ! systemctl restart buzz-server.service || ! wait_for_health; then
+  if [ "$config_migrated" = true ]; then
+    install -o root -g buzz-server -m 0640 "$config_backup" /etc/buzz-server/config.json
+  fi
   if [ -n "$previous" ] && [ -x "$previous/buzz-server" ]; then
     ln -sfn "$previous" /opt/buzz-server/current.next
     mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current

@@ -3,7 +3,7 @@ set -eu
 
 repository=${BUZZ_SERVER_REPOSITORY:-cartertek/buzz-server}
 version='@BUZZ_SERVER_VERSION@'
-target=${BUZZ_SERVER_TARGET:-}
+target='@BUZZ_SERVER_TARGET@'
 non_interactive=false
 
 usage() {
@@ -29,13 +29,15 @@ case "$repository" in
   *[!A-Za-z0-9._/-]*|*/*/*|'') echo "invalid BUZZ_SERVER_REPOSITORY" >&2; exit 64 ;;
 esac
 
-if [ -z "$target" ]; then
-  case "$(uname -m)" in
-    x86_64|amd64) target=x86_64-unknown-linux-gnu ;;
-    aarch64|arm64) target=aarch64-unknown-linux-gnu ;;
-    *) echo "unsupported architecture" >&2; exit 64 ;;
-  esac
-fi
+case "$(uname -m)" in
+  x86_64|amd64) host_target=x86_64-unknown-linux-gnu ;;
+  aarch64|arm64) host_target=aarch64-unknown-linux-gnu ;;
+  *) echo "unsupported architecture" >&2; exit 64 ;;
+esac
+[ "$target" = "$host_target" ] || {
+  echo "this package is for $target, but this host is $host_target" >&2
+  exit 65
+}
 
 get_value() {
   printenv "$1" 2>/dev/null || true
