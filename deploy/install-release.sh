@@ -53,6 +53,7 @@ $package/deploy/prepare-owner-credential.sh
 $package/deploy/restore.sh
 $package/deploy/rotate-owner.sh
 $package/deploy/buzz-serverctl
+$package/deploy/install.sh
 $package/deploy/install-release.sh
 $package/deploy/provision-runtimes.sh
 EOF
@@ -119,6 +120,7 @@ find "$release_staging/share" -type d -exec chmod 0555 {} +
 find "$release_staging/share" -type f -exec chmod 0444 {} +
 chmod 0555 \
   "$release_staging/share/deploy/buzz-serverctl" \
+  "$release_staging/share/deploy/install.sh" \
   "$release_staging/share/deploy/install-release.sh" \
   "$release_staging/share/deploy/provision-runtimes.sh" \
   "$release_staging/share/deploy/prepare-owner-credential.sh" \
