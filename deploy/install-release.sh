@@ -63,8 +63,6 @@ else
   curl -fsSL -o "$temporary/$asset" "$base/$asset"
   curl -fsSL -o "$temporary/$asset.sha256" "$base/$asset.sha256"
   (cd "$temporary" && sha256sum -c "$asset.sha256")
-  command -v gh >/dev/null 2>&1 || { echo "GitHub CLI is required for release provenance verification" >&2; exit 69; }
-  gh attestation verify "$temporary/$asset" --repo "$repository" >/dev/null
   actual_manifest=$(tar -tzf "$temporary/$asset" | LC_ALL=C sort)
   [ "$actual_manifest" = "$(printf '%s\n' "$expected_manifest" | LC_ALL=C sort)" ] || {
     echo "archive manifest does not match the release contract" >&2

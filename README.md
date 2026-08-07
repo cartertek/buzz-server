@@ -35,7 +35,7 @@ The packaged host deployment currently targets a systemd-based Linux host with:
 - x86-64 or ARM64 architecture
 - glibc 2.34 or newer
 - root access for installation
-- `curl`, `tar`, `sha256sum`, `systemctl`, `runuser`, GitHub CLI (`gh`), AWS CLI, and standard GNU utilities
+- `curl`, `tar`, `sha256sum`, `systemctl`, `runuser`, AWS CLI, and standard GNU utilities
 - a reachable Buzz relay
 - an owner Nostr secret key; AWS KMS is optional and takes precedence when configured
 - model/runtime credentials such as an OpenAI API key
