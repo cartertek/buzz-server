@@ -1,0 +1,189 @@
+#!/bin/sh
+set -eu
+
+version='@BUZZ_SERVER_VERSION@'
+
+self=$(readlink -f "$0" 2>/dev/null || printf '%s\n' "$0")
+release=$(dirname "$self")
+if [ ! -x "$release/buzz-server-daemon" ]; then
+  release=/opt/buzz-server/current
+fi
+
+help() {
+  cat <<'EOF_HELP'
+Buzz Server
+
+Usage:
+  buzz-server <command> [options]
+
+Commands:
+  run            Run the Buzz Server daemon
+  health         Check whether Buzz Server is healthy
+  check          Run the host health check
+  start          Start the system service
+  restart        Restart the system service
+  stop           Stop the system service
+  status         Show service status
+  redeploy       Deploy a release by version and target
+  rollback       Roll back to an installed release
+  backup         Back up Buzz Server state
+  restore        Restore a backup
+  rotate-owner   Rotate the owner secret
+  agent          Manage agents
+  secret         Manage secrets
+  version        Show the installed version
+
+Options:
+  -h, --help     Show this help
+  -V, --version  Show the installed version
+
+Run `buzz-server <command> --help` for command-specific help.
+EOF_HELP
+}
+
+command_help() {
+  case "$1" in
+    run)          printf '%s\n' 'Usage: buzz-server run --config FILE' 'Run the Buzz Server daemon using FILE as its configuration.' ;;
+    health)       printf '%s\n' 'Usage: buzz-server health' 'Check the service, signer readiness, and state database.' ;;
+    check)        printf '%s\n' 'Usage: buzz-server check' 'Run the host health check and update health metrics.' ;;
+    start)        printf '%s\n' 'Usage: buzz-server start' 'Start the Buzz Server system service.' ;;
+    restart)      printf '%s\n' 'Usage: buzz-server restart' 'Restart the Buzz Server system service.' ;;
+    stop)         printf '%s\n' 'Usage: buzz-server stop' 'Stop the Buzz Server system service.' ;;
+    status)       printf '%s\n' 'Usage: buzz-server status' 'Show the Buzz Server system service status.' ;;
+    redeploy)     printf '%s\n' 'Usage: buzz-server redeploy VERSION TARGET [OWNER/REPOSITORY]' 'Deploy an immutable release by version and Linux target.' ;;
+    rollback)     printf '%s\n' 'Usage: buzz-server rollback VERSION' 'Switch atomically to an already installed release.' ;;
+    backup)       printf '%s\n' 'Usage: buzz-server backup OUTPUT [KMS_KEY_ID]' 'Write a backup to OUTPUT, optionally encrypted with AWS KMS.' ;;
+    restore)      printf '%s\n' 'Usage: buzz-server restore BACKUP' 'Restore Buzz Server state from BACKUP.' ;;
+    rotate-owner) printf '%s\n' 'Usage: buzz-server rotate-owner SECRET_FILE [KMS_KEY_ID]' 'Replace the owner secret, optionally storing it with AWS KMS.' ;;
+    version)      printf '%s\n' 'Usage: buzz-server version' 'Show the installed Buzz Server version.' ;;
+    agent)        agent_help ;;
+    secret)       secret_help ;;
+    *) return 1 ;;
+  esac
+}
+
+agent_help() {
+  cat <<'EOF_HELP'
+Usage: buzz-server agent [--socket PATH] <command> [options]
+
+Commands:
+  create         Create an agent
+  get            Get an agent
+  list           List agents
+  update         Update an agent
+  enable         Enable an agent
+  disable        Disable an agent
+  logs           Read agent logs
+  delete         Recoverably delete an agent
+  purge          Permanently purge an agent
+  operation      Get an operation
+  draft-submit   Submit an agent draft
+  draft-get      Get an agent draft
+  draft-promote  Promote a draft to an agent
+
+Run `buzz-server agent <command> --help` for command-specific help.
+EOF_HELP
+}
+
+agent_command_help() {
+  case "$1" in
+    create)        printf '%s\n' 'Usage: buzz-server agent create --community ID --display-name NAME --system-prompt PROMPT --runtime ID --idempotency KEY --correlation ID' ;;
+    get)           printf '%s\n' 'Usage: buzz-server agent get --agent ID' ;;
+    list)          printf '%s\n' 'Usage: buzz-server agent list [--community ID]' ;;
+    update)        printf '%s\n' 'Usage: buzz-server agent update --agent ID [--display-name NAME] [--system-prompt PROMPT] [--runtime ID] --idempotency KEY --correlation ID' ;;
+    enable)        printf '%s\n' 'Usage: buzz-server agent enable --agent ID --idempotency KEY --correlation ID' ;;
+    disable)       printf '%s\n' 'Usage: buzz-server agent disable --agent ID --idempotency KEY --correlation ID' ;;
+    logs)          printf '%s\n' 'Usage: buzz-server agent logs --agent ID [--after CURSOR] [--limit N]' ;;
+    delete)        printf '%s\n' 'Usage: buzz-server agent delete --agent ID --idempotency KEY --correlation ID' ;;
+    purge)         printf '%s\n' 'Usage: buzz-server agent purge --agent ID --idempotency KEY --correlation ID' ;;
+    operation)     printf '%s\n' 'Usage: buzz-server agent operation --operation ID' ;;
+    draft-submit)  printf '%s\n' 'Usage: buzz-server agent draft-submit --community ID --display-name NAME --system-prompt PROMPT --runtime ID --idempotency KEY --correlation ID' ;;
+    draft-get)     printf '%s\n' 'Usage: buzz-server agent draft-get --draft ID' ;;
+    draft-promote) printf '%s\n' 'Usage: buzz-server agent draft-promote --draft ID --idempotency KEY --correlation ID' ;;
+    *) return 1 ;;
+  esac
+}
+
+secret_help() {
+  cat <<'EOF_HELP'
+Usage: buzz-server secret <command> [options]
+
+Commands:
+  encrypt             Encrypt a secret with AWS KMS
+  decrypt             Decrypt a KMS envelope
+  fingerprint         Print a secret fingerprint
+  encrypt-passphrase  Encrypt a secret with a passphrase
+  decrypt-passphrase  Decrypt a passphrase envelope
+  export-nip49        Export a NIP-49 encrypted secret
+  import-nip49        Import a NIP-49 encrypted secret
+  persist             Persist a secret using the local secure backend
+  materialize         Materialize a persisted secret into a file
+  clear-local         Remove a locally persisted secret
+
+Run `buzz-server secret <command> --help` for command-specific help.
+EOF_HELP
+}
+
+secret_command_help() {
+  case "$1" in
+    encrypt)            printf '%s\n' 'Usage: buzz-server secret encrypt --kms-key-id KEY --input FILE --output FILE [--aws-command PATH]' ;;
+    decrypt)            printf '%s\n' 'Usage: buzz-server secret decrypt --input FILE --output FILE [--aws-command PATH]' ;;
+    fingerprint)        printf '%s\n' 'Usage: buzz-server secret fingerprint --input FILE' ;;
+    encrypt-passphrase) printf '%s\n' 'Usage: buzz-server secret encrypt-passphrase --input FILE --output FILE --passphrase-file FILE' ;;
+    decrypt-passphrase) printf '%s\n' 'Usage: buzz-server secret decrypt-passphrase --input FILE --output FILE --passphrase-file FILE' ;;
+    export-nip49)       printf '%s\n' 'Usage: buzz-server secret export-nip49 --input FILE --output FILE --passphrase-file FILE' ;;
+    import-nip49)       printf '%s\n' 'Usage: buzz-server secret import-nip49 --input FILE --output FILE --passphrase-file FILE' ;;
+    persist)            printf '%s\n' 'Usage: buzz-server secret persist --input FILE --key-file FILE --marker FILE [--service NAME] [--name NAME]' ;;
+    materialize)        printf '%s\n' 'Usage: buzz-server secret materialize --output FILE --key-file FILE --marker FILE [--service NAME] [--name NAME]' ;;
+    clear-local)        printf '%s\n' 'Usage: buzz-server secret clear-local --key-file FILE --marker FILE [--service NAME] [--name NAME]' ;;
+    *) return 1 ;;
+  esac
+}
+
+is_help() {
+  [ "${1:-}" = -h ] || [ "${1:-}" = --help ] || [ "${1:-}" = help ]
+}
+
+command=${1:-}
+case "$command" in
+  -h|--help|help)
+    help
+    ;;
+  -V|--version|version)
+    if is_help "${2:-}"; then command_help version; else printf 'buzz-server %s\n' "$version"; fi
+    ;;
+  agent)
+    shift
+    if is_help "${1:-}" || [ "$#" -eq 0 ]; then
+      agent_help
+    elif [ "$#" -ge 2 ] && is_help "${2:-}"; then
+      agent_command_help "$1" || { agent_help >&2; exit 64; }
+    else
+      exec "$release/buzz-agentctl" "$@"
+    fi
+    ;;
+  secret)
+    shift
+    if is_help "${1:-}" || [ "$#" -eq 0 ]; then
+      secret_help
+    elif [ "$#" -ge 2 ] && is_help "${2:-}"; then
+      secret_command_help "$1" || { secret_help >&2; exit 64; }
+    else
+      exec "$release/buzz-secretsctl" "$@"
+    fi
+    ;;
+  run|health|check|start|restart|stop|status|redeploy|rollback|backup|restore|rotate-owner)
+    if is_help "${2:-}"; then
+      command_help "$command"
+    else
+      case "$command" in
+        run) shift; exec "$release/buzz-server-daemon" "$@" ;;
+        *) exec "$release/share/deploy/buzz-serverctl" "$@" ;;
+      esac
+    fi
+    ;;
+  *)
+    echo "usage: buzz-server {run|agent|secret|health|check|start|restart|stop|status|redeploy|rollback|backup|restore|rotate-owner|version}" >&2
+    exit 64
+    ;;
+esac

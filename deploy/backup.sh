@@ -4,7 +4,7 @@ set -eu
 wait_for_health() {
   attempts=0
   while [ "$attempts" -lt 90 ]; do
-    if /usr/local/sbin/buzz-serverctl health >/dev/null 2>&1; then return 0; fi
+    if /usr/local/bin/buzz-server health >/dev/null 2>&1; then return 0; fi
     attempts=$((attempts + 1))
     sleep 1
   done

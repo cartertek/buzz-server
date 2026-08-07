@@ -241,6 +241,8 @@ impl LocalProcessAdapter {
         let deadline = Instant::now() + Duration::from_secs(u64::from(probe.timeout_seconds));
         loop {
             if let Some(status) = child.try_wait()? {
+                #[cfg(unix)]
+                let _ = Self::signal_group(child.id(), "-KILL");
                 return if status.success() {
                     Ok(())
                 } else {
@@ -248,6 +250,9 @@ impl LocalProcessAdapter {
                 };
             }
             if Instant::now() >= deadline {
+                #[cfg(unix)]
+                Self::signal_group(child.id(), "-KILL")?;
+                #[cfg(not(unix))]
                 child.kill()?;
                 let _ = child.wait();
                 return Err(SupervisorError::Preflight("timed out".to_owned()));

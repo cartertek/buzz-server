@@ -8,7 +8,7 @@ fully compromised root account.
 
 Buzz Server follows Buzz Desktop's identity-storage ordering where practical.
 If `BUZZ_KMS_KEY_ID` or `BUZZ_OWNER_ENVELOPE_FILE` is configured, AWS KMS
-envelope custody takes precedence. `buzz-secretsctl` encrypts the owner secret
+envelope custody takes precedence. `buzz-server secret` encrypts the owner secret
 with an AES-256-GCM data key generated and wrapped by KMS; startup decrypts it
 only into `/run/buzz-server/credentials/owner-secret`.
 
@@ -33,7 +33,7 @@ implementation with literal code reuse.
 For a KMS-backed import:
 
 ```sh
-buzz-secretsctl encrypt \
+buzz-server secret encrypt \
   --kms-key-id alias/buzz-server-owner \
   --input ./owner-secret \
   --output ./owner-secret.envelope.json
@@ -51,13 +51,13 @@ For a portable passphrase backup:
 ```sh
 sudo install -m 0400 /dev/stdin /root/buzz-backup-passphrase
 sudo env BUZZ_BACKUP_PASSPHRASE_FILE=/root/buzz-backup-passphrase \
-  buzz-serverctl backup /secure/buzz-backup.json
+  buzz-server backup /secure/buzz-backup.json
 ```
 
 For KMS-backed encryption:
 
 ```sh
-sudo buzz-serverctl backup /secure/buzz-backup.json alias/buzz-server-backup
+sudo buzz-server backup /secure/buzz-backup.json alias/buzz-server-backup
 ```
 
 When the owner is held in Secret Service, backup materializes it before shutdown and embeds a decrypt-verified NIP-49 `ncryptsec` recovery artifact. Restore imports that artifact through the normal keyring-first, restricted-file-fallback custody path; it never attempts to copy OS keyring internals.
@@ -66,7 +66,7 @@ Restore validates authenticated encryption, archive paths and file types, the ma
 
 ```sh
 sudo env BUZZ_BACKUP_PASSPHRASE_FILE=/root/buzz-backup-passphrase \
-  buzz-serverctl restore /secure/buzz-backup.json
+  buzz-server restore /secure/buzz-backup.json
 ```
 
 Copy encrypted backups off-host and apply an independent retention policy. KMS policy and backup storage policy remain separate controls when KMS is selected.
@@ -74,9 +74,9 @@ Copy encrypted backups off-host and apply an independent retention policy. KMS p
 ## Owner rotation and reauthorization
 
 ```sh
-sudo buzz-serverctl rotate-owner ./new-owner-secret
+sudo buzz-server rotate-owner ./new-owner-secret
 # Or keep/use KMS custody:
-sudo buzz-serverctl rotate-owner ./new-owner-secret alias/buzz-server-owner
+sudo buzz-server rotate-owner ./new-owner-secret alias/buzz-server-owner
 ```
 
 Rotation writes through the selected custody backend, restarts the daemon, and restores the previous owner and custody mode if readiness fails. Startup reissues agent authorization through the
@@ -131,7 +131,7 @@ marker, lifecycle socket, and database, writes Prometheus textfile metrics to
 pager; the command receives `BUZZ_ALERT_REASON`.
 
 ```sh
-sudo buzz-serverctl check
+sudo buzz-server check
 systemctl status buzz-server-healthcheck.timer
 cat /var/lib/buzz-server/metrics.prom
 ```

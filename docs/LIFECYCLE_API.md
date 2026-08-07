@@ -366,7 +366,7 @@ have a 10-second I/O timeout.
 The server authenticates the connection with `SO_PEERCRED`. UIDs are mapped by
 `lifecycle_api.administrator_uids` and `lifecycle_api.draft_submitter_uids`.
 Filesystem ownership is not accepted as identity, and an unlisted UID is rejected.
-The supplied `buzz-agentctl` client implements this framing.
+The supplied `buzz-server agent` client implements this framing.
 
 ## HTTPS and NIP-98 transport
 

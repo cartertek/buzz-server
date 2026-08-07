@@ -1,15 +1,15 @@
 # Buzz Server host deployment
 
-Releases also install `buzz-agentctl`, a machine-readable lifecycle client for
+Releases also install `buzz-server agent`, a machine-readable lifecycle client for
 the authenticated Unix socket. See [`docs/CLI.md`](../docs/CLI.md) for the full
 command reference and [`docs/LIFECYCLE_API.md`](../docs/LIFECYCLE_API.md) for the
 wire and authorization contracts. For example:
 
 ```sh
-buzz-agentctl list
-buzz-agentctl get --agent agent_...
-buzz-agentctl disable --agent agent_... --idempotency disable-1 --correlation maintenance-1
-buzz-agentctl operation --operation operation_...
+buzz-server agent list
+buzz-server agent get --agent agent_...
+buzz-server agent disable --agent agent_... --idempotency disable-1 --correlation maintenance-1
+buzz-server agent operation --operation operation_...
 ```
 
 Create, update, enable, disable, logs, recoverable delete, immediate purge, and
@@ -31,13 +31,13 @@ to replace assets on an existing GitHub Release.
 
 ```sh
 sudo install -D -m 0755 deploy/install-release.sh /usr/libexec/buzz-server/install-release.sh
-sudo install -D -m 0755 deploy/buzz-serverctl /usr/local/sbin/buzz-serverctl
+sudo install -D -m 0755 deploy/buzz-server /usr/local/bin/buzz-server
 sudo install -D -m 0644 deploy/buzz-server.service /etc/systemd/system/buzz-server.service
 sudo install -d -o root -g buzz-server -m 0750 /etc/buzz-server
 sudo install -o root -g buzz-server -m 0640 config/buzz-server.dev.example.json /etc/buzz-server/config.json
 sudo install -o root -g buzz-server -m 0640 /dev/null /etc/buzz-server/secrets.env
 sudo /usr/libexec/buzz-server/install-release.sh v1.0.0 x86_64-unknown-linux-gnu OWNER/REPOSITORY
-sudo buzz-serverctl health
+sudo buzz-server health
 ```
 
 For a viable unattended first install, set `BUZZ_CONFIG_FILE`,
@@ -69,7 +69,7 @@ no secret belongs in `config.json`, the service unit, or a release directory.
 Rollback retains state and selects a previously installed immutable binary:
 
 ```sh
-sudo buzz-serverctl rollback v1.0.0-x86_64-unknown-linux-gnu
+sudo buzz-server rollback v1.0.0-x86_64-unknown-linux-gnu
 ```
 
 The installer enables the service for boot and restarts it after switching the

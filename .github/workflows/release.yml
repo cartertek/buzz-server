@@ -69,16 +69,21 @@ jobs:
           VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.0.0-pr' }}
         run: |
           set -eu
-          package="buzz-server-${VERSION}-${TARGET}"
+          package="buzz-server"
           mkdir -p "dist/${package}/config" "dist/${package}/deploy"
-          install -m 0755 "target/${TARGET}/release/buzz-server" "dist/${package}/buzz-server"
+          install -m 0755 "target/${TARGET}/release/buzz-server" "dist/${package}/buzz-server-daemon"
+          sed "s/@BUZZ_SERVER_VERSION@/${VERSION}/g" deploy/buzz-server > "dist/${package}/buzz-server"
+          chmod 0755 "dist/${package}/buzz-server"
           install -m 0755 "target/${TARGET}/release/buzz-agentctl" "dist/${package}/buzz-agentctl"
           install -m 0755 "target/${TARGET}/release/buzz-secretsctl" "dist/${package}/buzz-secretsctl"
           install -m 0644 config/buzz-server.dev.example.json config/buzz-server.schema.json "dist/${package}/config/"
           install -m 0644 deploy/buzz-server.service deploy/buzz-server-healthcheck.service deploy/buzz-server-healthcheck.timer deploy/README.md "dist/${package}/deploy/"
+          sed -e "s/@BUZZ_SERVER_VERSION@/${VERSION}/g" -e "s/@BUZZ_SERVER_TARGET@/${TARGET}/g" deploy/install.sh > "dist/${package}/deploy/install.sh"
+          chmod 0755 "dist/${package}/deploy/install.sh"
           install -m 0755 deploy/install-release.sh deploy/buzz-serverctl deploy/provision-runtimes.sh deploy/prepare-owner-credential.sh deploy/backup.sh deploy/restore.sh deploy/rotate-owner.sh deploy/healthcheck.sh deploy/disaster-recovery-exercise.sh "dist/${package}/deploy/"
-          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C dist -cf - "${package}" | gzip -n > "dist/${package}.tar.gz"
-          (cd dist && sha256sum "${package}.tar.gz" > "${package}.tar.gz.sha256")
+          asset="buzz-server-${TARGET}.tar.gz"
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C dist -cf - "${package}" | gzip -n > "dist/${asset}"
+          (cd dist && sha256sum "${asset}" > "${asset}.sha256")
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: release-${{ matrix.target }}
@@ -107,8 +112,8 @@ jobs:
         run: |
           set -eu
           for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-            test -f "dist/buzz-server-${TAG}-${target}.tar.gz"
-            test -f "dist/buzz-server-${TAG}-${target}.tar.gz.sha256"
+            test -f "dist/buzz-server-${target}.tar.gz"
+            test -f "dist/buzz-server-${target}.tar.gz.sha256"
           done
           test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 4
           (cd dist && sha256sum -c ./*.tar.gz.sha256)
