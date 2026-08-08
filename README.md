@@ -23,7 +23,7 @@ bridge between Buzz events and ACP-compatible agent runtimes.
 - Multiple isolated Buzz communities and relay connections
 - Authenticated lifecycle API over a Unix socket or TLS with NIP-98
 - Command-line management for server operations, agents, and secrets
-- Create, inspect, update, enable, disable, logs, delete, purge, and operation polling
+- Create, inspect, update, enable, disable, logs, delete, purge, and operation inspection
 - Optional draft submission and promotion workflow
 - Trusted `buzz-backend-*` provider discovery and provider compatibility testing
 - Release artifacts for x86-64 and ARM64 Linux with a glibc 2.34 baseline
@@ -102,8 +102,8 @@ sudo buzz-server agents create \
   --runtime codex-acp
 ```
 
-The CLI waits for the durable create operation to finish and then returns the
-created agent resource, including its new `agent_...` ID. Creating the agent also
+The CLI waits on a server-side completion notification for the durable create operation and then returns the
+created agent resource, including its new `agent_...` ID. It does not poll the lifecycle API. Creating the agent also
 generates and custodies its Buzz/Nostr identity and starts its ACP runtime against
 the selected community relay.
 

@@ -38,7 +38,7 @@ Status: complete. The Unix and TLS/NIP-98 adapters share one application service
 and lifecycle, retention, reconciliation, drafts, and audit contracts pass CI.
 
 - Add authenticated Unix-socket and TLS/NIP-98 adapters over one application service.
-- Implement create, get/list, update, enable, disable, logs, recoverable delete, purge, and durable operation polling.
+- Implement create, get/list, update, enable, disable, logs, recoverable delete, purge, and durable operation inspection.
 - Add fixed administrator and draft-submitter authority classes and redacted audit attribution.
 - Add optional drafts that promote through the same direct-create service.
 

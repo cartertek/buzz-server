@@ -9,7 +9,7 @@ use buzz_server::{AgentId, CommunityConfigId, DesiredAgentState};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UnixStream,
-    time::{sleep, Instant},
+    time::timeout,
 };
 
 #[tokio::main(flavor = "current_thread")]
@@ -42,36 +42,40 @@ async fn run() -> Result<(), String> {
         let operation_id = operation_field(&value, "id")
             .ok_or("mutation response did not contain an operation ID")?
             .to_owned();
-        let deadline = Instant::now() + Duration::from_secs(120);
-        loop {
-            let status = operation_field(&value, "status")
-                .ok_or("operation response did not contain a status")?;
-            match status {
-                "succeeded" => break,
-                "failed" | "cancelled" => {
-                    print_value(&value)?;
-                    std::process::exit(1);
-                }
-                "pending" | "running" => {}
-                other => return Err(format!("unknown operation status: {other}")),
-            }
-            if Instant::now() >= deadline {
-                return Err(format!(
-                    "operation {operation_id} did not finish within 120 seconds; inspect it with `buzz-server agents operation --operation {operation_id}`"
-                ));
-            }
-            sleep(Duration::from_millis(200)).await;
+        let initial_status = operation_field(&value, "status")
+            .ok_or("operation response did not contain a status")?;
+        if matches!(initial_status, "pending" | "running") {
             value = send_request(
                 &socket,
-                &LifecycleRouteRequest::GetOperation {
+                &LifecycleRouteRequest::AwaitOperation {
                     operation_id: parse(&operation_id, "operation ID")?,
                 },
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                format!(
+                    "operation {operation_id} completion wait failed: {error}; inspect it with `buzz-server agents operation --operation {operation_id}`"
+                )
+            })?;
             if wire_error(&value) {
                 print_value(&value)?;
                 std::process::exit(1);
             }
+        }
+        let status = operation_field(&value, "status")
+            .ok_or("operation response did not contain a status")?;
+        match status {
+            "succeeded" => {}
+            "failed" | "cancelled" => {
+                print_value(&value)?;
+                std::process::exit(1);
+            }
+            "pending" | "running" => {
+                return Err(format!(
+                    "operation {operation_id} did not finish within the server wait window; inspect it with `buzz-server agents operation --operation {operation_id}`"
+                ));
+            }
+            other => return Err(format!("unknown operation status: {other}")),
         }
         if command != "purge" {
             if let Some(agent_id) = operation_field(&value, "agent_id") {
@@ -106,26 +110,44 @@ async fn send_request(
     socket: &PathBuf,
     request: &LifecycleRouteRequest,
 ) -> Result<serde_json::Value, String> {
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+    const IO_TIMEOUT: Duration = Duration::from_secs(10);
+    const COMPLETION_TIMEOUT: Duration = Duration::from_secs(125);
+
     let body = serde_json::to_vec(request).map_err(|error| error.to_string())?;
-    let mut stream = UnixStream::connect(socket)
+    let mut stream = timeout(CONNECT_TIMEOUT, UnixStream::connect(socket))
         .await
+        .map_err(|_| format!("timed out connecting to {}", socket.display()))?
         .map_err(|error| format!("cannot connect to {}: {error}", socket.display()))?;
-    stream
-        .write_u32(u32::try_from(body.len()).map_err(|_| "request is too large")?)
+    timeout(IO_TIMEOUT, async {
+        stream
+            .write_u32(u32::try_from(body.len()).map_err(|_| "request is too large")?)
+            .await
+            .map_err(|error| error.to_string())?;
+        stream
+            .write_all(&body)
+            .await
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "timed out sending lifecycle request".to_owned())??;
+
+    let response_timeout = if matches!(request, LifecycleRouteRequest::AwaitOperation { .. }) {
+        COMPLETION_TIMEOUT
+    } else {
+        IO_TIMEOUT
+    };
+    let length = timeout(response_timeout, stream.read_u32())
         .await
-        .map_err(|error| error.to_string())?;
-    stream
-        .write_all(&body)
-        .await
-        .map_err(|error| error.to_string())?;
-    let length = stream.read_u32().await.map_err(|error| error.to_string())? as usize;
+        .map_err(|_| "timed out waiting for lifecycle response".to_owned())?
+        .map_err(|error| error.to_string())? as usize;
     if length > buzz_server::transport::MAX_LIFECYCLE_RESPONSE_BYTES {
         return Err("server response exceeds the lifecycle limit".into());
     }
     let mut response = vec![0; length];
-    stream
-        .read_exact(&mut response)
+    timeout(IO_TIMEOUT, stream.read_exact(&mut response))
         .await
+        .map_err(|_| "timed out reading lifecycle response".to_owned())?
         .map_err(|error| error.to_string())?;
     serde_json::from_slice(&response).map_err(|error| error.to_string())
 }

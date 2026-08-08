@@ -2,6 +2,8 @@
 //!
 //! HTTP/TLS, Unix socket listeners, and NIP-98 verification are adapters outside this module.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -142,6 +144,7 @@ pub enum LifecycleRouteRequest {
     ListAgents(ListAgentsRequest),
     AgentLogs(AgentLogsRequest),
     GetOperation { operation_id: OperationId },
+    AwaitOperation { operation_id: OperationId },
     SubmitDraft(SubmitDraftRequest),
     GetDraft { draft_id: String },
     PromoteDraft(PromoteDraftRequest),
@@ -258,6 +261,13 @@ pub trait LifecycleApplication {
     fn agent_logs(&self, request: &AgentLogsRequest)
         -> Result<AgentLogsResource, ApplicationError>;
     fn get_operation(&self, id: OperationId) -> Result<OperationResource, ApplicationError>;
+    fn wait_operation(
+        &self,
+        id: OperationId,
+        _timeout: Duration,
+    ) -> Result<OperationResource, ApplicationError> {
+        self.get_operation(id)
+    }
     fn submit_draft(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -445,6 +455,17 @@ impl<S: LifecycleApplication> LifecycleHandler<S> {
     ) -> Result<OperationResource, crate::ApiError> {
         authorize(actor, Capability::ReadAgent, None).map_err(api_authorization)?;
         self.application.get_operation(id).map_err(api_application)
+    }
+
+    pub fn await_operation(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        id: OperationId,
+    ) -> Result<OperationResource, crate::ApiError> {
+        authorize(actor, Capability::ReadAgent, None).map_err(api_authorization)?;
+        self.application
+            .wait_operation(id, Duration::from_secs(120))
+            .map_err(api_application)
     }
 
     pub fn submit_draft(

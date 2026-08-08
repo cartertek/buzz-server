@@ -4,7 +4,11 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
+        Arc, Mutex,
+    },
+    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -173,8 +177,15 @@ impl DaemonConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ReconcileWork {
+    Operation(buzz_server::OperationId),
+    StartupAgent(buzz_server::AgentId),
+    Shutdown,
+}
+
 #[derive(Clone)]
-struct LifecycleWake(tokio::sync::mpsc::UnboundedSender<buzz_server::OperationId>);
+struct LifecycleWake(Sender<ReconcileWork>);
 
 impl LifecycleEffects for LifecycleWake {
     fn operation_ready(
@@ -182,7 +193,7 @@ impl LifecycleEffects for LifecycleWake {
         operation: &DurableOperation,
     ) -> Result<(), buzz_server::api::ApplicationError> {
         self.0
-            .send(operation.id)
+            .send(ReconcileWork::Operation(operation.id))
             .map_err(|_| buzz_server::api::ApplicationError::Internal)
     }
 }
@@ -327,7 +338,8 @@ async fn main() -> Result<(), DaemonError> {
         .ok_or_else(|| DaemonError::InvalidConfig("state database has no parent".into()))?
         .join("identities");
     let custody = FilesystemAgentIdentityCustody::new(custody_root, 0);
-    let (operation_tx, mut operation_rx) = tokio::sync::mpsc::unbounded_channel();
+    let config = Arc::new(config);
+    let (operation_tx, operation_rx) = mpsc::channel();
     let lifecycle_application = SqliteLifecycleApplication::new(
         Arc::clone(&store),
         Arc::new(LifecycleWake(operation_tx.clone())),
@@ -335,45 +347,26 @@ async fn main() -> Result<(), DaemonError> {
     )
     .with_retention_seconds(config.lifecycle_api.retention_seconds);
 
+    let worker = spawn_reconciliation_worker(
+        operation_rx,
+        lifecycle_application.clone(),
+        Arc::clone(&store),
+        Arc::clone(&config),
+        owner_keys,
+        custody,
+        supervisor,
+        child_identity,
+    );
+
     for operation in store.nonterminal_operations()? {
-        reconcile_lifecycle_operation(
-            &lifecycle_application,
-            store.as_ref(),
-            operation.id,
-            &config,
-            &owner_keys,
-            &custody,
-            &supervisor,
-            child_identity,
-        )?;
+        operation_tx
+            .send(ReconcileWork::Operation(operation.id))
+            .map_err(|_| DaemonError::Task("reconciliation worker stopped".into()))?;
     }
     for agent in store.list_agents(None)? {
-        let kind = match agent.desired_state {
-            buzz_server::DesiredAgentState::Enabled => buzz_server::OperationKind::EnableAgent,
-            buzz_server::DesiredAgentState::Disabled => buzz_server::OperationKind::DisableAgent,
-            buzz_server::DesiredAgentState::Deleted => buzz_server::OperationKind::DeleteAgent,
-        };
-        let startup = buzz_server::api::OperationResource {
-            id: buzz_server::OperationId::new(),
-            kind,
-            status: buzz_server::OperationStatus::Running,
-            agent_id: Some(agent.id),
-            error_code: None,
-            correlation_id: format!("startup:{}", agent.id),
-            created_at: unix_seconds_i64(),
-            updated_at: unix_seconds_i64(),
-        };
-        reconcile_dynamic_lifecycle_operation(
-            &lifecycle_application,
-            store.as_ref(),
-            &startup,
-            &config,
-            &owner_keys,
-            &custody,
-            &supervisor,
-            child_identity,
-            false,
-        )?;
+        operation_tx
+            .send(ReconcileWork::StartupAgent(agent.id))
+            .map_err(|_| DaemonError::Task("reconciliation worker stopped".into()))?;
     }
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -411,8 +404,6 @@ async fn main() -> Result<(), DaemonError> {
         };
         tokio::spawn(async move { server.run(lifecycle_shutdown).await })
     });
-    let mut process_tick = tokio::time::interval(Duration::from_secs(1));
-    process_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut retention_tick = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
     retention_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -427,21 +418,6 @@ async fn main() -> Result<(), DaemonError> {
             result = async { tls_lifecycle_task.as_mut().expect("guarded").await }, if tls_lifecycle_task.is_some() => break Completion::Lifecycle(result.map_err(|error| buzz_server::transport::TransportError::Task(error.to_string()))?),
             signal = tokio::signal::ctrl_c() => { signal?; break Completion::Signal },
             _ = terminate.recv() => break Completion::Signal,
-            Some(operation_id) = operation_rx.recv() => {
-                reconcile_lifecycle_operation(
-                    &lifecycle_application,
-                    store.as_ref(),
-                    operation_id,
-                    &config,
-                    &owner_keys,
-                    &custody,
-                    &supervisor,
-                    child_identity,
-                )?;
-            }
-            _ = process_tick.tick() => {
-                observe_dynamic_agents(store.as_ref(), &supervisor, &config)?;
-            },
             _ = retention_tick.tick() => {
                 enqueue_expired_purges(&lifecycle_application)?;
             },
@@ -456,7 +432,148 @@ async fn main() -> Result<(), DaemonError> {
     if let Some(task) = tls_lifecycle_task {
         task.abort();
     }
+    let _ = operation_tx.send(ReconcileWork::Shutdown);
+    worker
+        .join()
+        .map_err(|_| DaemonError::Task("reconciliation worker panicked".into()))?;
     Ok(())
+}
+
+fn spawn_reconciliation_worker(
+    receiver: Receiver<ReconcileWork>,
+    application: SqliteLifecycleApplication<LifecycleWake>,
+    store: Arc<SqliteStore>,
+    config: Arc<DaemonConfig>,
+    owner_keys: Keys,
+    custody: FilesystemAgentIdentityCustody,
+    supervisor: LocalProcessAdapter,
+    child_identity: (u32, u32),
+) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name("buzz-reconciler".into())
+        .spawn(move || loop {
+            match receiver.recv_timeout(Duration::from_secs(1)) {
+                Ok(ReconcileWork::Operation(operation_id)) => {
+                    reconcile_operation_contained(
+                        &application,
+                        store.as_ref(),
+                        operation_id,
+                        config.as_ref(),
+                        &owner_keys,
+                        &custody,
+                        &supervisor,
+                        child_identity,
+                    );
+                }
+                Ok(ReconcileWork::StartupAgent(agent_id)) => {
+                    if let Err(error) = reconcile_startup_agent(
+                        &application,
+                        store.as_ref(),
+                        agent_id,
+                        config.as_ref(),
+                        &owner_keys,
+                        &custody,
+                        &supervisor,
+                        child_identity,
+                    ) {
+                        eprintln!("startup reconciliation failed for {agent_id}: {error}");
+                    }
+                }
+                Ok(ReconcileWork::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {
+                    if let Err(error) =
+                        observe_dynamic_agents(store.as_ref(), &supervisor, config.as_ref())
+                    {
+                        eprintln!("agent observation failed: {error}");
+                    }
+                }
+            }
+        })
+        .expect("failed to spawn reconciliation worker")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reconcile_operation_contained(
+    application: &SqliteLifecycleApplication<LifecycleWake>,
+    store: &SqliteStore,
+    operation_id: buzz_server::OperationId,
+    config: &DaemonConfig,
+    owner_keys: &Keys,
+    custody: &FilesystemAgentIdentityCustody,
+    supervisor: &LocalProcessAdapter,
+    child_identity: (u32, u32),
+) {
+    if let Err(error) = reconcile_lifecycle_operation(
+        application,
+        store,
+        operation_id,
+        config,
+        owner_keys,
+        custody,
+        supervisor,
+        child_identity,
+    ) {
+        eprintln!("lifecycle operation {operation_id} failed: {error}");
+        let terminal_result = (|| -> Result<(), buzz_server::api::ApplicationError> {
+            let operation = application.get_operation(operation_id)?;
+            if operation.status.is_terminal() {
+                return Ok(());
+            }
+            if operation.status == buzz_server::OperationStatus::Pending {
+                application.start_operation(operation_id)?;
+            }
+            application.complete_operation(
+                operation_id,
+                buzz_server::OperationStatus::Failed,
+                Some(buzz_server::ErrorCode::Internal),
+            )
+        })();
+        if let Err(persist_error) = terminal_result {
+            eprintln!(
+                "failed to persist terminal state for lifecycle operation {operation_id}: {persist_error}"
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reconcile_startup_agent(
+    application: &SqliteLifecycleApplication<LifecycleWake>,
+    store: &SqliteStore,
+    agent_id: buzz_server::AgentId,
+    config: &DaemonConfig,
+    owner_keys: &Keys,
+    custody: &FilesystemAgentIdentityCustody,
+    supervisor: &LocalProcessAdapter,
+    child_identity: (u32, u32),
+) -> Result<(), DaemonError> {
+    let agent = store.get_agent(agent_id)?.ok_or(StorageError::NotFound)?;
+    let kind = match agent.desired_state {
+        buzz_server::DesiredAgentState::Enabled => buzz_server::OperationKind::EnableAgent,
+        buzz_server::DesiredAgentState::Disabled => buzz_server::OperationKind::DisableAgent,
+        buzz_server::DesiredAgentState::Deleted => buzz_server::OperationKind::DeleteAgent,
+    };
+    let startup = buzz_server::api::OperationResource {
+        id: buzz_server::OperationId::new(),
+        kind,
+        status: buzz_server::OperationStatus::Running,
+        agent_id: Some(agent.id),
+        error_code: None,
+        correlation_id: format!("startup:{}", agent.id),
+        created_at: unix_seconds_i64(),
+        updated_at: unix_seconds_i64(),
+    };
+    reconcile_dynamic_lifecycle_operation(
+        application,
+        store,
+        &startup,
+        config,
+        owner_keys,
+        custody,
+        supervisor,
+        child_identity,
+        false,
+    )
 }
 
 fn parse_args() -> Result<PathBuf, DaemonError> {

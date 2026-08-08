@@ -134,6 +134,10 @@ impl<S: LifecycleApplication + Send + Sync + 'static> AuthenticatedRequestHandle
                     .0
                     .get_operation(actor, operation_id)
                     .map(LifecycleRouteResource::Operation),
+                LifecycleRouteRequest::AwaitOperation { operation_id } => self
+                    .0
+                    .await_operation(actor, operation_id)
+                    .map(LifecycleRouteResource::Operation),
                 LifecycleRouteRequest::SubmitDraft(request) => self
                     .0
                     .submit_draft(actor, &request)
@@ -208,7 +212,7 @@ impl<H: AuthenticatedRequestHandler> UnixLifecycleServer<H> {
                     let authority = self.authority.clone();
                     let handler = Arc::clone(&self.handler);
                     connections.spawn(async move {
-                        timeout(UNIX_IO_TIMEOUT, serve_connection(stream, &authority, handler.as_ref())).await
+                        serve_connection(stream, authority, handler).await
                     });
                 }
                 completed = connections.join_next(), if !connections.is_empty() => {
@@ -226,14 +230,16 @@ impl<H: AuthenticatedRequestHandler> UnixLifecycleServer<H> {
 
 async fn serve_connection<H: AuthenticatedRequestHandler>(
     mut stream: UnixStream,
-    authority: &UnixAuthorityPolicy,
-    handler: &H,
+    authority: UnixAuthorityPolicy,
+    handler: Arc<H>,
 ) -> Result<(), TransportError> {
     let credentials = stream.peer_cred()?;
     // Consume the bounded request before deciding authorization. If we close a Unix socket while
     // the client still has unread request bytes queued, Linux may report ECONNRESET to the client
     // instead of the authorization failure that caused the close.
-    let request = read_frame(&mut stream).await?;
+    let request = timeout(UNIX_IO_TIMEOUT, read_frame(&mut stream))
+        .await
+        .map_err(|_| TransportError::IoTimeout)??;
     let actor = match authority.authenticate(UnixPeerCredentials {
         uid: credentials.uid(),
         gid: credentials.gid(),
@@ -253,12 +259,18 @@ async fn serve_connection<H: AuthenticatedRequestHandler>(
             return Ok(());
         }
     };
-    let response = handler.handle(&actor, &request);
+    let response = tokio::task::spawn_blocking(move || handler.handle(&actor, &request))
+        .await
+        .map_err(|error| TransportError::Task(error.to_string()))?;
     if response.body.len() > MAX_LIFECYCLE_RESPONSE_BYTES {
         return Err(TransportError::ResponseTooLarge);
     }
-    write_frame(&mut stream, &response.body).await?;
-    stream.shutdown().await?;
+    timeout(UNIX_IO_TIMEOUT, write_frame(&mut stream, &response.body))
+        .await
+        .map_err(|_| TransportError::IoTimeout)??;
+    timeout(UNIX_IO_TIMEOUT, stream.shutdown())
+        .await
+        .map_err(|_| TransportError::IoTimeout)??;
     Ok(())
 }
 
@@ -419,7 +431,15 @@ where
             return (StatusCode::UNAUTHORIZED, "invalid NIP-98 authorization").into_response()
         }
     };
-    let response = state.handler.handle(&actor, &body);
+    let handler = Arc::clone(&state.handler);
+    let request = body.to_vec();
+    let response = match tokio::task::spawn_blocking(move || handler.handle(&actor, &request)).await
+    {
+        Ok(response) => response,
+        Err(_) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "request handler failed").into_response()
+        }
+    };
     if response.body.len() > MAX_LIFECYCLE_RESPONSE_BYTES {
         return (StatusCode::INTERNAL_SERVER_ERROR, "response exceeds limit").into_response();
     }
@@ -483,6 +503,8 @@ pub enum TransportError {
     ResponseTooLarge,
     #[error("transport connection task failed: {0}")]
     Task(String),
+    #[error("transport I/O timed out")]
+    IoTimeout,
     #[error("TLS certificate or key configuration is invalid: {0}")]
     TlsConfiguration(String),
     #[error(transparent)]
@@ -624,6 +646,14 @@ mod tests {
         ) -> Result<OperationResource, ApplicationError> {
             Err(ApplicationError::Unsupported)
         }
+        fn wait_operation(
+            &self,
+            _: crate::OperationId,
+            _: Duration,
+        ) -> Result<OperationResource, ApplicationError> {
+            std::thread::sleep(Duration::from_millis(300));
+            Err(ApplicationError::Unsupported)
+        }
         fn submit_draft(
             &self,
             _: &AuthenticatedPrincipal,
@@ -691,6 +721,71 @@ mod tests {
         assert_eq!(malformed.status, 400);
         let malformed: serde_json::Value = serde_json::from_slice(&malformed.body).unwrap();
         assert_eq!(malformed["value"]["code"], "invalid_request");
+    }
+
+    async fn round_trip_route(path: &Path, request: &LifecycleRouteRequest) -> serde_json::Value {
+        let body = serde_json::to_vec(request).unwrap();
+        let mut client = UnixStream::connect(path).await.unwrap();
+        client.write_u32(body.len() as u32).await.unwrap();
+        client.write_all(&body).await.unwrap();
+        let length = client.read_u32().await.unwrap() as usize;
+        let mut response = vec![0; length];
+        client.read_exact(&mut response).await.unwrap();
+        serde_json::from_slice(&response).unwrap()
+    }
+
+    #[tokio::test]
+    async fn blocking_operation_wait_does_not_block_unrelated_lifecycle_reads() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let uid = std::fs::metadata(directory.path()).unwrap().uid();
+        let path = directory.path().join("lifecycle.sock");
+        let server = UnixLifecycleServer::new(
+            &path,
+            UnixAuthorityPolicy {
+                administrator_uids: vec![uid],
+                draft_submitter_uids: Vec::new(),
+            },
+            Arc::new(LifecycleJsonRouter::new(RouterApplication::default())),
+        );
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(async move { server.run(shutdown_rx).await });
+        for _ in 0..100 {
+            if path.exists() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let waiting_path = path.clone();
+        let waiting = tokio::spawn(async move {
+            round_trip_route(
+                &waiting_path,
+                &LifecycleRouteRequest::AwaitOperation {
+                    operation_id: crate::OperationId::new(),
+                },
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let listed = tokio::time::timeout(
+            Duration::from_millis(150),
+            round_trip_route(
+                &path,
+                &LifecycleRouteRequest::ListAgents(ListAgentsRequest {
+                    community_config_id: None,
+                }),
+            ),
+        )
+        .await
+        .expect("list request was blocked behind operation wait");
+        assert_eq!(listed["status"], "ok");
+        assert_eq!(listed["value"]["resource"], "agents");
+
+        let waited = waiting.await.unwrap();
+        assert_eq!(waited["status"], "error");
+        shutdown_tx.send(true).unwrap();
+        task.await.unwrap().unwrap();
     }
 
     #[tokio::test]

@@ -1,7 +1,10 @@
 //! SQLite-backed lifecycle application service.
 
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::{
+    sync::{Arc, Condvar, Mutex},
+    time::{Duration, Instant},
+};
 
 use crate::{
     api::{
@@ -29,6 +32,47 @@ pub struct SqliteLifecycleApplication<E> {
     effects: Arc<E>,
     now: fn() -> i64,
     retention_seconds: i64,
+    completion: Arc<OperationCompletionSignal>,
+}
+
+#[derive(Default)]
+struct OperationCompletionSignal {
+    generation: Mutex<u64>,
+    changed: Condvar,
+}
+
+impl OperationCompletionSignal {
+    fn snapshot(&self) -> Result<u64, ApplicationError> {
+        self.generation
+            .lock()
+            .map(|generation| *generation)
+            .map_err(|_| ApplicationError::Internal)
+    }
+
+    fn notify(&self) -> Result<(), ApplicationError> {
+        let mut generation = self
+            .generation
+            .lock()
+            .map_err(|_| ApplicationError::Internal)?;
+        *generation = generation.wrapping_add(1);
+        self.changed.notify_all();
+        Ok(())
+    }
+
+    fn wait_for_change(&self, snapshot: u64, timeout: Duration) -> Result<(), ApplicationError> {
+        let generation = self
+            .generation
+            .lock()
+            .map_err(|_| ApplicationError::Internal)?;
+        if *generation != snapshot {
+            return Ok(());
+        }
+        let _ = self
+            .changed
+            .wait_timeout_while(generation, timeout, |generation| *generation == snapshot)
+            .map_err(|_| ApplicationError::Internal)?;
+        Ok(())
+    }
 }
 
 struct ExecutionPlan<'a> {
@@ -47,6 +91,7 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
             effects,
             now,
             retention_seconds: DEFAULT_RETENTION_SECONDS,
+            completion: Arc::new(OperationCompletionSignal::default()),
         }
     }
 
@@ -54,6 +99,23 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
     pub const fn with_retention_seconds(mut self, retention_seconds: i64) -> Self {
         self.retention_seconds = retention_seconds;
         self
+    }
+
+    fn wait_for_operation_terminal(
+        &self,
+        id: OperationId,
+        timeout: Duration,
+    ) -> Result<OperationResource, ApplicationError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let snapshot = self.completion.snapshot()?;
+            let operation = self.get_operation(id)?;
+            if operation.status.is_terminal() || Instant::now() >= deadline {
+                return Ok(operation);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            self.completion.wait_for_change(snapshot, remaining)?;
+        }
     }
 
     pub fn expired_retained_agents(&self) -> Result<Vec<AgentId>, ApplicationError> {
@@ -195,6 +257,7 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
                     redacted_detail: None,
                 },
             )?;
+            self.completion.notify()?;
             return Ok(());
         }
         self.store
@@ -208,6 +271,7 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
                 "failed"
             },
         )?;
+        self.completion.notify()?;
         Ok(())
     }
 
@@ -444,6 +508,14 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
             .ok_or(ApplicationError::NotFound)
     }
 
+    fn wait_operation(
+        &self,
+        id: OperationId,
+        timeout: Duration,
+    ) -> Result<OperationResource, ApplicationError> {
+        self.wait_for_operation_terminal(id, timeout)
+    }
+
     fn submit_draft(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -652,6 +724,47 @@ mod tests {
             idempotency_key: key.into(),
             correlation_id: format!("correlation-{key}"),
         }
+    }
+
+    #[test]
+    fn wait_operation_wakes_on_terminal_completion() {
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let community = CommunityConfig::new(
+            "Engineering",
+            Url::parse("wss://relay.example.test").unwrap(),
+        )
+        .unwrap();
+        store.put_community(&community, 1).unwrap();
+        let effects = Arc::new(Effects::default());
+        let service =
+            SqliteLifecycleApplication::new(Arc::clone(&store), Arc::clone(&effects), || 10);
+        let operation = service
+            .create_agent(
+                &actor(),
+                &metadata("event-wait"),
+                &CreateAgentInput {
+                    community_config_id: community.id,
+                    display_name: "Builder".into(),
+                    system_prompt: "Build safely.".into(),
+                    runtime_id: "codex-acp".parse().unwrap(),
+                },
+            )
+            .unwrap();
+        service.start_operation(operation.id).unwrap();
+
+        let waiter = service.clone();
+        let operation_id = operation.id;
+        let waiting = std::thread::spawn(move || {
+            waiter
+                .wait_operation(operation_id, Duration::from_secs(2))
+                .unwrap()
+        });
+        std::thread::sleep(Duration::from_millis(25));
+        service
+            .complete_operation(operation.id, OperationStatus::Succeeded, None)
+            .unwrap();
+
+        assert_eq!(waiting.join().unwrap().status, OperationStatus::Succeeded);
     }
 
     #[test]

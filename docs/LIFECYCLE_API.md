@@ -106,6 +106,17 @@ Community display names are local server labels. Removal returns `conflict` whil
 an agent still references the community. Community state is stored only in the
 Buzz Server state database.
 
+### Await an operation
+
+```json
+{"route":"await_operation","request":{"operation_id":"operation_..."}}
+```
+
+The request returns immediately if the operation is already terminal. Otherwise the
+server waits for an in-process completion notification and then returns the terminal
+operation. If the daemon exits, the connection closes so clients can report the transport
+failure instead of silently waiting on stale state.
+
 ### Create an agent
 
 ```json
@@ -126,8 +137,10 @@ Buzz Server state database.
 }
 ```
 
-Returns an `operation` resource. Creation is asynchronous; poll the operation
-until it becomes terminal.
+Returns an `operation` resource. Creation is durable and asynchronous. Clients that want
+synchronous command behavior should send one `await_operation` request for the returned
+operation ID; the server holds that request until the operation becomes terminal or the
+server-side wait window expires. Repeated polling is not required.
 
 ### Get an agent
 

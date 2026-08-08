@@ -20,6 +20,13 @@ use crate::{
     LaunchSpec, ObservedProcessState, ProcessReceipt, ValidationError,
 };
 
+#[cfg(unix)]
+use nix::{
+    errno::Errno,
+    sys::signal::{kill, killpg, Signal},
+    unistd::Pid,
+};
+
 const LAUNCH_MARKER: &str = "BUZZ_SERVER_LAUNCH_ID";
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -304,18 +311,28 @@ impl LocalProcessAdapter {
     fn signal_group(pid: u32, signal: &str) -> Result<(), SupervisorError> {
         #[cfg(unix)]
         {
-            let status = Command::new("/bin/kill")
-                .args([signal, "--", &format!("-{pid}")])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()?;
-            if !status.success() && Self::process_exists(pid)? {
-                return Err(SupervisorError::Io(io::Error::other(
-                    "failed to signal process group",
-                )));
+            let signal = match signal {
+                "-TERM" => Signal::SIGTERM,
+                "-KILL" => Signal::SIGKILL,
+                _ => {
+                    return Err(SupervisorError::Io(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "unsupported process-group signal",
+                    )))
+                }
+            };
+            let pid = i32::try_from(pid).map_err(|_| {
+                SupervisorError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "process id exceeds platform range",
+                ))
+            })?;
+            match killpg(Pid::from_raw(pid), signal) {
+                Ok(()) | Err(Errno::ESRCH) => Ok(()),
+                Err(error) => Err(SupervisorError::Io(io::Error::from_raw_os_error(
+                    error as i32,
+                ))),
             }
-            Ok(())
         }
         #[cfg(not(unix))]
         {
@@ -328,19 +345,21 @@ impl LocalProcessAdapter {
     }
 
     fn process_exists(pid: u32) -> Result<bool, SupervisorError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
-            Ok(Path::new(&format!("/proc/{pid}")).exists())
-        }
-        #[cfg(all(unix, not(target_os = "linux")))]
-        {
-            let status = Command::new("/bin/kill")
-                .args(["-0", &pid.to_string()])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()?;
-            Ok(status.success())
+            let pid = i32::try_from(pid).map_err(|_| {
+                SupervisorError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "process id exceeds platform range",
+                ))
+            })?;
+            match kill(Pid::from_raw(pid), None) {
+                Ok(()) | Err(Errno::EPERM) => Ok(true),
+                Err(Errno::ESRCH) => Ok(false),
+                Err(error) => Err(SupervisorError::Io(io::Error::from_raw_os_error(
+                    error as i32,
+                ))),
+            }
         }
         #[cfg(not(unix))]
         {

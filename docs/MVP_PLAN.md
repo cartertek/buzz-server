@@ -19,7 +19,7 @@ Milestones 1 through 4 are implemented. The repository currently includes:
 - authenticated Unix-socket and TLS/NIP-98 lifecycle API adapters;
 - the `buzz-server agents` lifecycle CLI;
 - create, get/list, update, enable, disable, logs, recoverable delete, purge,
-  operation polling, drafts, and draft promotion;
+  operation inspection, drafts, and draft promotion;
 - trusted `buzz-backend-*` discovery, staged provider negotiation and deployment,
   capability validation, and pinned Kubernetes-provider compatibility fixtures;
 - x86-64 and ARM64 release builds with a glibc 2.34 deployment baseline.

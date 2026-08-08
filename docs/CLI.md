@@ -64,11 +64,13 @@ Mutating hosted-agent commands generate idempotency and correlation identifiers
 automatically. Scripts may pass `--idempotency KEY` to make retries deterministic
 and `--correlation ID` to supply a trace identifier; either option may be omitted.
 
-The underlying control plane remains asynchronous and durable. The CLI hides the
-normal polling step: it waits up to 120 seconds for the operation to reach a
-terminal state. On success, commands that leave an agent resource return the final
-agent resource. `purge` returns its terminal operation because the agent no longer
-exists. `agents operation` remains available for explicit inspection or recovery.
+The underlying control plane remains asynchronous and durable. The CLI uses a single
+event-driven completion wait: after submitting a mutation it opens one `await_operation`
+request, which the server completes when the durable operation becomes terminal. It does
+not poll. On success, commands that leave an agent resource return the final agent
+resource. `purge` returns its terminal operation because the agent no longer exists.
+`agents operation` remains available for explicit inspection or recovery after a daemon
+restart, transport failure, or operator interruption.
 
 ### `create`
 
