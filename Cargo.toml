@@ -16,7 +16,7 @@ axum = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 aes-gcm = "0.10"
 base64 = "0.22"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 nix = { version = "0.30", features = ["fs", "process", "signal"] }
 nostr = { version = "0.44", features = ["nip44", "nip49", "nip98"] }
 serde = { version = "1.0.229", features = ["derive"] }
