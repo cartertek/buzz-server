@@ -248,20 +248,56 @@ if [ ! -e /etc/buzz-server/config.json ]; then
 fi
 config_migrated=false
 config_backup="$temporary/config.json.previous"
-if grep -q '"owner_secret_file": "/run/credentials/buzz-server.service/owner-secret"' /etc/buzz-server/config.json ||
-   grep -q '"signer_socket": "/run/buzz-server/signer.sock"' /etc/buzz-server/config.json ||
-   grep -q '"arguments": \["models", "--json", "--agent-command", "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp", "--agent-args", "acp"\]' /etc/buzz-server/config.json ||
-   grep -q '"arguments": \["--version"\]' /etc/buzz-server/config.json; then
-  cp -p /etc/buzz-server/config.json "$config_backup"
-  sed -i \
-    -e 's#"owner_secret_file": "/run/credentials/buzz-server.service/owner-secret"#"owner_secret_file": "/run/buzz-server/credentials/owner-secret"#' \
-    -e 's#"signer_socket": "/run/buzz-server/signer.sock"#"signer_socket": "/run/buzz-server/signer/signer.sock"#' \
-    -e '/"preflight": {/,/}/ s#"command": "/opt/buzz-server/runtimes/sprig-0.1.0/bin/buzz-acp"#"command": "/opt/buzz-server/current/buzz-runtime-probe"#' \
-    -e '/"preflight": {/,/}/ s#"command": "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp"#"command": "/opt/buzz-server/current/buzz-runtime-probe"#' \
-    -e '/"preflight": {/,/}/ s#"arguments": \["models", "--json", "--agent-command", "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp", "--agent-args", "acp"\]#"arguments": ["codex-acp-version", "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp"]#' \
-    -e '/"preflight": {/,/}/ s#"arguments": \["--version"\]#"arguments": ["codex-acp-version", "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp"]#' \
-    /etc/buzz-server/config.json
+cp -p /etc/buzz-server/config.json "$config_backup"
+if python3 - /etc/buzz-server/config.json <<'PYMIGRATE'
+import json
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+config = json.loads(path.read_text())
+changed = False
+
+if config.get("owner_secret_file") == "/run/credentials/buzz-server.service/owner-secret":
+    config["owner_secret_file"] = "/run/buzz-server/credentials/owner-secret"
+    changed = True
+if config.get("signer_socket") == "/run/buzz-server/signer.sock":
+    config["signer_socket"] = "/run/buzz-server/signer/signer.sock"
+    changed = True
+
+probe = {
+    "timeout_seconds": 15,
+    "command": "/opt/buzz-server/current/buzz-runtime-probe",
+    "arguments": [
+        "codex-acp-version",
+        "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp",
+    ],
+}
+for runtime in config.get("runtime_catalog", {}).get("runtimes", []):
+    if runtime.get("id") == "codex-acp" and runtime.get("preflight") != probe:
+        runtime["preflight"] = probe
+        changed = True
+
+if not changed:
+    raise SystemExit(3)
+
+temporary = path.with_name(path.name + ".migrating")
+temporary.write_text(json.dumps(config, indent=2) + "\n")
+os.chmod(temporary, 0o640)
+os.replace(temporary, path)
+PYMIGRATE
+then
+  chown root:buzz-server /etc/buzz-server/config.json
+  chmod 0640 /etc/buzz-server/config.json
   config_migrated=true
+else
+  migration_status=$?
+  [ "$migration_status" -eq 3 ] || {
+    install -o root -g buzz-server -m 0640 "$config_backup" /etc/buzz-server/config.json
+    fail "failed to migrate Buzz Server configuration"
+  }
+  rm -f "$config_backup"
 fi
 if [ ! -e /etc/buzz-server/secrets.env ]; then
   secrets_source=${BUZZ_SECRETS_FILE:-/dev/null}
