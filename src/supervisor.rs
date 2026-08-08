@@ -755,7 +755,7 @@ mod tests {
         .unwrap();
 
         let environment = adapter.resolve_environment(&desired, &TestSecrets).unwrap();
-        assert_eq!(environment.get("HOME"), home.to_str());
+        assert_eq!(environment.get("HOME").map(String::as_str), home.to_str());
         assert!(!environment.contains_key("CODEX_HOME"));
 
         let mut explicit = desired;
