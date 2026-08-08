@@ -210,7 +210,7 @@ install -d -o root -g root -m 0755 /opt/buzz-server /opt/buzz-server/releases
   exit 73
 }
 install -d -o root -g buzz-server -m 0750 /etc/buzz-server
-install -d -o buzz-server -g buzz-server -m 0755 /var/lib/buzz-server
+install -d -o root -g buzz-server -m 0755 /var/lib/buzz-server
 install -d -o buzz-server -g buzz-server -m 0700 /var/log/buzz-server
 install -d -o root -g root -m 0755 /usr/libexec/buzz-server
 log "Staging immutable release $version-$target"

@@ -11,7 +11,7 @@ elif ! test -f /run/buzz-server/signer/ready; then healthy=0; reason=not_ready
 elif ! test -S /run/buzz-server/lifecycle.sock; then healthy=0; reason=api_socket_missing
 elif ! test -s /var/lib/buzz-server/state.sqlite3; then healthy=0; reason=database_missing
 fi
-install -d -o buzz-server -g buzz-server -m 0755 "$(dirname "$metrics")"
+install -d -o root -g buzz-server -m 0755 "$(dirname "$metrics")"
 {
   echo '# HELP buzz_server_healthy Whether the daemon passed host health checks.'
   echo '# TYPE buzz_server_healthy gauge'
