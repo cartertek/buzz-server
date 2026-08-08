@@ -23,8 +23,11 @@ then attaches the tarballs and SHA-256 files to a GitHub Release. The `current`
 symlink is the only mutable host release pointer. Release tarballs are the first
 deployment format; a GHCR image can be added later without changing this gate.
 Each release is assembled in a same-filesystem staging directory, made
-root-owned and non-writable, and renamed into place atomically. Reinstalling an
-existing version is rejected rather than mutating its directory.
+root-owned and non-writable, and renamed into place atomically. Running the
+installer from a newer or older release switches to that release while preserving
+configuration, secrets, state, workspaces, and logs. If that immutable release is
+already present, the installer verifies that its contents exactly match the supplied
+package and reuses it rather than overwriting it.
 Protect `master` with the CI check, restrict creation/deletion of `v*`
 tags, and grant the release workflow `contents:write` only. Release reruns refuse
 to replace assets on an existing GitHub Release.
@@ -65,11 +68,10 @@ must contain stable, distinct owner and agent secrets plus runtime API secrets.
 The constrained signer derives and verifies the NIP-OA tag at every start;
 no secret belongs in `config.json`, the service unit, or a release directory.
 
-Rollback retains state and selects a previously installed immutable binary:
-
-```sh
-sudo buzz-server rollback v1.0.0-x86_64-unknown-linux-gnu
-```
+Updates and rollbacks use the same installer procedure: extract the desired newer
+or older release artifact and run its `deploy/install.sh`. The release pointer is
+switched atomically; if the selected release fails its health check, the previously
+active release is restored automatically.
 
 The installer enables the service for boot and restarts it after switching the
 release pointer. The unit uses `KillMode=process` so a planned service restart

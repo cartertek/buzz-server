@@ -207,10 +207,6 @@ install -d -o buzz-agent -g buzz-agent -m 0700 \
   /var/lib/buzz-server/runtime/agent/tmp
 install -d -o buzz-agent -g buzz-server -m 0710 /var/lib/buzz-server/runtime
 install -d -o root -g root -m 0755 /opt/buzz-server /opt/buzz-server/releases
-[ ! -e "$release" ] && [ ! -L "$release" ] || {
-  echo "release $version-$target is already installed; immutable releases are never overwritten" >&2
-  exit 73
-}
 install -d -o root -g buzz-server -m 0750 /etc/buzz-server
 install -d -o root -g buzz-server -m 0755 /var/lib/buzz-server
 install -d -o buzz-server -g buzz-server -m 0700 /var/log/buzz-server
@@ -240,6 +236,15 @@ chmod 0555 \
   "$release_staging/share/deploy/healthcheck.sh" \
   "$release_staging/share/deploy/disaster-recovery-exercise.sh"
 chmod 0555 "$release_staging"
+if [ -e "$release" ] || [ -L "$release" ]; then
+  [ -d "$release" ] && [ ! -L "$release" ] || fail "installed release path is not an immutable directory: $release"
+  if ! diff -qr "$release_staging" "$release" >/dev/null 2>&1; then
+    fail "installed release $version-$target does not match this package"
+  fi
+  log "Reusing already installed immutable release $version-$target"
+  rm -rf "$release_staging"
+  release_staging=
+fi
 log "Preparing configuration and credentials"
 if [ ! -e /etc/buzz-server/config.json ]; then
   config_source=${BUZZ_CONFIG_FILE:-$source_directory/config/buzz-server.dev.example.json}
@@ -394,8 +399,10 @@ chown -R buzz-agent:buzz-agent "$new_codex_home"
 chmod 0700 "$new_codex_home"
 
 log "Activating release $version-$target"
-mv -T "$release_staging" "$release"
-release_staging=
+if [ -n "$release_staging" ]; then
+  mv -T "$release_staging" "$release"
+  release_staging=
+fi
 ln -sfn "$release" /opt/buzz-server/current.next
 mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
 install -o root -g root -m 0444 "$release/share/deploy/buzz-server.service" /etc/systemd/system/buzz-server.service
