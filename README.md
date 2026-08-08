@@ -82,7 +82,7 @@ the variable names and lower-level deployment contract.
 
 ## Getting started
 
-After installation, create an agent in one of the communities configured on this
+Create an agent in one of the communities configured on this
 server. The community ID is the `community.id` value in
 `/etc/buzz-server/config.json`.
 
