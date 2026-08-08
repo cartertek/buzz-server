@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=root
 Group=buzz-server
+SupplementaryGroups=buzz-agent
 ExecStartPre=+/usr/bin/install -d -o root -g root -m 0700 /run/buzz-server/credentials
 ExecStartPre=+/opt/buzz-server/current/share/deploy/prepare-owner-credential.sh
 ExecStartPre=+/usr/bin/install -d -o buzz-agent -g buzz-server -m 0710 /var/lib/buzz-server/runtime

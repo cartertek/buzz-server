@@ -639,7 +639,7 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
         {
             use std::os::unix::fs::{chown, PermissionsExt};
             chown(directory, Some(child_identity.0), Some(child_identity.1))?;
-            fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o770))?;
         }
     }
     let identity = custody.provision(agent_id)?;
