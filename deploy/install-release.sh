@@ -236,6 +236,7 @@ chmod 0555 \
   "$release_staging/share/deploy/healthcheck.sh" \
   "$release_staging/share/deploy/disaster-recovery-exercise.sh"
 chmod 0555 "$release_staging"
+release_source="$release_staging"
 if [ -e "$release" ] || [ -L "$release" ]; then
   [ -d "$release" ] && [ ! -L "$release" ] || fail "installed release path is not an immutable directory: $release"
   if ! diff -qr "$release_staging" "$release" >/dev/null 2>&1; then
@@ -244,6 +245,7 @@ if [ -e "$release" ] || [ -L "$release" ]; then
   log "Reusing already installed immutable release $version-$target"
   rm -rf "$release_staging"
   release_staging=
+  release_source="$release"
 fi
 log "Preparing configuration and credentials"
 if [ ! -e /etc/buzz-server/config.json ]; then
@@ -322,11 +324,11 @@ if [ ! -e "$owner_envelope" ] && [ ! -e "$owner_key_file" ] && [ ! -e "$owner_ma
       exit 66
     }
     if [ -n "${BUZZ_KMS_KEY_ID:-}" ]; then
-      run_bounded 60 "Encrypting owner secret with AWS KMS" "$release_staging/buzz-secretsctl" encrypt --kms-key-id "$BUZZ_KMS_KEY_ID" --input "$owner_source" --output "$owner_envelope"
+      run_bounded 60 "Encrypting owner secret with AWS KMS" "$release_source/buzz-secretsctl" encrypt --kms-key-id "$BUZZ_KMS_KEY_ID" --input "$owner_source" --output "$owner_envelope"
       chown root:root "$owner_envelope"
       chmod 0400 "$owner_envelope"
     else
-      run_bounded 30 "Persisting owner secret" "$release_staging/buzz-secretsctl" persist --input "$owner_source" --key-file "$owner_key_file" --marker "$owner_marker"
+      run_bounded 30 "Persisting owner secret" "$release_source/buzz-secretsctl" persist --input "$owner_source" --key-file "$owner_key_file" --marker "$owner_marker"
       [ ! -e "$owner_key_file" ] || { chown root:root "$owner_key_file"; chmod 0400 "$owner_key_file"; }
       [ ! -e "$owner_marker" ] || { chown root:root "$owner_marker"; chmod 0600 "$owner_marker"; }
     fi
@@ -346,7 +348,7 @@ runtime_assets_valid() {
 }
 if ! runtime_assets_valid; then
   if [ -n "${BUZZ_HARNESS_URL:-}" ] && [ -n "${BUZZ_HARNESS_SHA256:-}" ] && [ -n "${BUZZ_RUNTIME_URL:-}" ] && [ -n "${BUZZ_RUNTIME_SHA256:-}" ]; then
-    run_bounded 300 "Provisioning pinned runtime packages" "$release_staging/share/deploy/provision-runtimes.sh" "$BUZZ_HARNESS_URL" "$BUZZ_HARNESS_SHA256" "$BUZZ_RUNTIME_URL" "$BUZZ_RUNTIME_SHA256"
+    run_bounded 300 "Provisioning pinned runtime packages" "$release_source/share/deploy/provision-runtimes.sh" "$BUZZ_HARNESS_URL" "$BUZZ_HARNESS_SHA256" "$BUZZ_RUNTIME_URL" "$BUZZ_RUNTIME_SHA256"
   else
     echo "pinned runtime assets are absent; provide BUZZ_HARNESS_URL/SHA256 and BUZZ_RUNTIME_URL/SHA256" >&2
     exit 66
@@ -358,7 +360,7 @@ timeout --kill-after=5s 15s runuser --user buzz-agent -- /usr/bin/env -i \
   HOME=/var/lib/buzz-server/runtime \
   TMPDIR=/var/lib/buzz-server/runtime/agent/tmp \
   PATH=/usr/local/bin:/usr/bin:/bin \
-  "$release_staging/buzz-runtime-probe" codex-acp-version \
+  "$release_source/buzz-runtime-probe" codex-acp-version \
   /opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp >/dev/null || {
     echo "pinned Codex ACP runtime failed the availability/version preflight" >&2
     exit 66
