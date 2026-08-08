@@ -200,11 +200,6 @@ if ! getent group buzz-agent >/dev/null 2>&1; then
 fi
 if ! id buzz-agent >/dev/null 2>&1; then
   useradd --system --gid buzz-agent --home-dir /var/lib/buzz-server/runtime --shell /usr/sbin/nologin buzz-agent
-else
-  buzz_agent_home=$(getent passwd buzz-agent | cut -d: -f6)
-  if [ "$buzz_agent_home" != /var/lib/buzz-server/runtime ]; then
-    usermod --home /var/lib/buzz-server/runtime buzz-agent
-  fi
 fi
 install -d -o buzz-agent -g buzz-agent -m 0700 \
   /var/lib/buzz-server/workspaces \
@@ -375,6 +370,10 @@ health_timer_existed=false
 
 if timeout 5 systemctl cat buzz-server.service >/dev/null 2>&1; then
   drain_service "Stopping existing Buzz Server process tree"
+fi
+buzz_agent_home=$(getent passwd buzz-agent | cut -d: -f6)
+if [ "$buzz_agent_home" != /var/lib/buzz-server/runtime ]; then
+  usermod --home /var/lib/buzz-server/runtime buzz-agent
 fi
 
 log "Activating release $version-$target"
