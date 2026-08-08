@@ -277,7 +277,7 @@ impl SqliteStore {
             let agent: AgentSpec = serde_json::from_str(&document)?;
             if agent.desired_state != crate::DesiredAgentState::Deleted {
                 return Err(StorageError::Conflict(format!(
-                    "community {id} still has non-deleted agent {agent_id}"
+                    "community {id} cannot be deleted while it still has active agents; delete the remaining agents first"
                 )));
             }
             let completed_delete: Option<String> = transaction
