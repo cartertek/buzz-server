@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn descendant_holding_stdout_does_not_block_probe() {
         let (_dir, path) =
-            script("(sleep 20) &\necho '@agentclientprotocol/codex-acp 1.1.7'\nexit 0");
+            script("echo '@agentclientprotocol/codex-acp 1.1.7'\nsleep 60 &\nexit 0");
         let started = Instant::now();
         assert_eq!(probe_codex_acp_version(&path), Some((1, 1, 7)));
         assert!(started.elapsed() < Duration::from_secs(2));
