@@ -376,6 +376,23 @@ if [ "$buzz_agent_home" != /var/lib/buzz-server/runtime ]; then
   usermod --home /var/lib/buzz-server/runtime buzz-agent
 fi
 
+# Older Buzz Server releases used either an explicit CODEX_HOME under
+# runtime/agent/codex-home or HOME=runtime/agent. Preserve portable Codex
+# login/config files while moving to the account-home behavior used by Desktop.
+new_codex_home=/var/lib/buzz-server/runtime/.codex
+install -d -o buzz-agent -g buzz-agent -m 0700 "$new_codex_home"
+for legacy_codex_home in   /var/lib/buzz-server/runtime/agent/codex-home   /var/lib/buzz-server/runtime/agent/.codex
+do
+  [ -d "$legacy_codex_home" ] || continue
+  for portable in auth.json config.toml; do
+    if [ -f "$legacy_codex_home/$portable" ] && [ ! -e "$new_codex_home/$portable" ]; then
+      install -o buzz-agent -g buzz-agent -m 0600         "$legacy_codex_home/$portable" "$new_codex_home/$portable"
+    fi
+  done
+done
+chown -R buzz-agent:buzz-agent "$new_codex_home"
+chmod 0700 "$new_codex_home"
+
 log "Activating release $version-$target"
 mv -T "$release_staging" "$release"
 release_staging=
