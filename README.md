@@ -131,6 +131,8 @@ Once the relay records the membership, `buzz-acp` discovers the channel and
 subscribes according to its configured subscription behavior. No Buzz Server
 restart or separate subscribe command is required.
 
+Normal `buzz-server agents list` output excludes recoverably deleted agents; use `buzz-server agents list --include-deleted` to inspect retained deleted records.
+
 Use `buzz-server agents list`, `buzz-server agents get --agent agent_...`, and
 `buzz-server agents logs --agent agent_...` to inspect the hosted agent. See
 [`docs/CLI.md`](docs/CLI.md) for the complete Buzz Server command reference.

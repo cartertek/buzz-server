@@ -709,6 +709,7 @@ mod tests {
             &administrator(),
             &serde_json::to_vec(&LifecycleRouteRequest::ListAgents(ListAgentsRequest {
                 community_config_id: Some(community_config_id),
+                include_deleted: false,
             }))
             .unwrap(),
         );
@@ -774,6 +775,7 @@ mod tests {
                 &path,
                 &LifecycleRouteRequest::ListAgents(ListAgentsRequest {
                     community_config_id: None,
+                    include_deleted: false,
                 }),
             ),
         )

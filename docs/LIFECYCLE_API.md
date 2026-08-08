@@ -102,9 +102,7 @@ configuration changes are synchronous and administrator-only.
 {"route":"remove_community","request":{"community_id":"community_..."}}
 ```
 
-Community display names are local server labels. Removal returns `conflict` while
-an agent still references the community. Community state is stored only in the
-Buzz Server state database.
+Community display names are local server labels. Removal returns `conflict` while any enabled or disabled agent still references the community, or while a deleted agent has not completed shutdown. If every remaining agent is successfully deleted, removal purges those retained deleted-agent records before removing the community. Community state is stored only in the Buzz Server state database.
 
 ### Await an operation
 
@@ -159,12 +157,13 @@ server-side wait window expires. Repeated polling is not required.
 {
   "route": "list_agents",
   "request": {
-    "community_config_id": null
+    "community_config_id": null,
+    "include_deleted": false
   }
 }
 ```
 
-Set `community_config_id` to restrict results to one configured community.
+Set `community_config_id` to restrict results to one configured community. Recoverably deleted agents are excluded by default; set `include_deleted` to `true` to include them.
 
 ### Update an agent
 

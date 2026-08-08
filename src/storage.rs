@@ -242,6 +242,99 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn delete_community_with_deleted_agents(
+        &self,
+        id: CommunityConfigId,
+        now: i64,
+    ) -> Result<Vec<AgentId>, StorageError> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exists = transaction
+            .query_row(
+                "SELECT 1 FROM community_configs WHERE id=?1",
+                [id.to_string()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !exists {
+            return Err(StorageError::NotFound);
+        }
+
+        let agents = {
+            let mut statement = transaction.prepare(
+                "SELECT id, document FROM agent_specs WHERE community_config_id=?1 ORDER BY id",
+            )?;
+            let rows = statement.query_map([id.to_string()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        let mut deleted_agents = Vec::with_capacity(agents.len());
+        for (agent_id, document) in agents {
+            let agent_id: AgentId = parse_id(&agent_id)?;
+            let agent: AgentSpec = serde_json::from_str(&document)?;
+            if agent.desired_state != crate::DesiredAgentState::Deleted {
+                return Err(StorageError::Conflict(format!(
+                    "community {id} still has non-deleted agent {agent_id}"
+                )));
+            }
+            let completed_delete: Option<String> = transaction
+                .query_row(
+                    "SELECT status FROM operations WHERE agent_id=?1 AND kind IN ('delete_agent','purge_agent') ORDER BY created_at DESC, id DESC LIMIT 1",
+                    [agent_id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if completed_delete.as_deref() != Some("succeeded") {
+                return Err(StorageError::Conflict(format!(
+                    "deleted agent {agent_id} has not completed shutdown; retry its delete first"
+                )));
+            }
+            deleted_agents.push(agent_id);
+        }
+
+        for agent_id in &deleted_agents {
+            let purge_operation = OperationId::new();
+            transaction.execute(
+                "INSERT INTO operations(id, kind, status, agent_id, error_code, created_at, updated_at, correlation_id) VALUES(?1, 'purge_agent', 'succeeded', ?2, NULL, ?3, ?3, ?4)",
+                params![
+                    purge_operation.to_string(),
+                    agent_id.to_string(),
+                    now,
+                    format!("community-delete:{id}")
+                ],
+            )?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO purged_agent_tombstones(agent_id, purged_at, purge_operation_id) VALUES(?1, ?2, ?3)",
+                params![agent_id.to_string(), now, purge_operation.to_string()],
+            )?;
+            transaction.execute(
+                "DELETE FROM agent_specs WHERE id=?1",
+                [agent_id.to_string()],
+            )?;
+        }
+
+        transaction.execute(
+            "DELETE FROM community_configs WHERE id=?1",
+            [id.to_string()],
+        )?;
+        transaction.commit()?;
+        Ok(deleted_agents)
+    }
+
+    pub fn list_purged_agent_ids(&self) -> Result<Vec<AgentId>, StorageError> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare("SELECT agent_id FROM purged_agent_tombstones ORDER BY purged_at, agent_id")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|value| parse_id(&value))
+            .collect()
+    }
+
     pub fn put_agent(&self, spec: &AgentSpec, now: i64) -> Result<(), StorageError> {
         spec.validate()
             .map_err(|e| StorageError::InvalidData(e.to_string()))?;
@@ -1072,6 +1165,47 @@ mod tests {
             },
             desired_state: DesiredAgentState::Enabled,
         }
+    }
+
+    #[test]
+    fn community_delete_requires_completed_agent_deletes_and_purges_retained_agents() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let config = community();
+        store.put_community(&config, 1).unwrap();
+        let mut spec = agent(config.id);
+        store.put_agent(&spec, 1).unwrap();
+
+        assert!(matches!(
+            store.delete_community_with_deleted_agents(config.id, 10),
+            Err(StorageError::Conflict(message)) if message.contains("non-deleted agent")
+        ));
+
+        spec.desired_state = DesiredAgentState::Deleted;
+        store.put_agent(&spec, 2).unwrap();
+        assert!(matches!(
+            store.delete_community_with_deleted_agents(config.id, 10),
+            Err(StorageError::Conflict(message)) if message.contains("has not completed shutdown")
+        ));
+
+        let operation = DurableOperation {
+            id: OperationId::new(),
+            kind: OperationKind::DeleteAgent,
+            status: OperationStatus::Succeeded,
+            agent_id: Some(spec.id),
+            error_code: None,
+            created_at: 3,
+            updated_at: 3,
+            correlation_id: "delete-complete".into(),
+        };
+        store.create_operation(&operation).unwrap();
+        let removed = store
+            .delete_community_with_deleted_agents(config.id, 10)
+            .unwrap();
+        assert_eq!(removed, vec![spec.id]);
+        assert!(store.get_community(config.id).unwrap().is_none());
+        assert!(store.get_agent(spec.id).unwrap().is_none());
+        assert!(store.is_agent_purged(spec.id).unwrap());
+        assert_eq!(store.list_purged_agent_ids().unwrap(), vec![spec.id]);
     }
 
     #[test]

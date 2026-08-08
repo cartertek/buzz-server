@@ -165,6 +165,8 @@ pub enum LifecycleRouteResource {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ListAgentsRequest {
     pub community_config_id: Option<CommunityConfigId>,
+    #[serde(default)]
+    pub include_deleted: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -193,8 +195,8 @@ pub struct AgentLogsResource {
 pub enum ApplicationError {
     #[error("resource not found")]
     NotFound,
-    #[error("resource conflict")]
-    Conflict,
+    #[error("resource conflict: {0}")]
+    Conflict(String),
     #[error("request is invalid: {0}")]
     Invalid(ValidationError),
     #[error("operation is unsupported")]
@@ -207,7 +209,7 @@ impl From<StorageError> for ApplicationError {
     fn from(error: StorageError) -> Self {
         match error {
             StorageError::NotFound => Self::NotFound,
-            StorageError::Conflict(_) => Self::Conflict,
+            StorageError::Conflict(message) => Self::Conflict(message),
             StorageError::InvalidData(_)
             | StorageError::Database(_)
             | StorageError::LockPoisoned => Self::Internal,
@@ -541,17 +543,25 @@ fn api_authorization(error: AuthorizationError) -> crate::ApiError {
 
 fn api_application(error: ApplicationError) -> crate::ApiError {
     let (code, message, field) = match error {
-        ApplicationError::NotFound => (ErrorCode::NotFound, "resource not found", None),
-        ApplicationError::Conflict => (ErrorCode::Conflict, "resource conflict", None),
+        ApplicationError::NotFound => (ErrorCode::NotFound, "resource not found".to_owned(), None),
+        ApplicationError::Conflict(message) => (ErrorCode::Conflict, message, None),
         ApplicationError::Invalid(error) => {
             return crate::ApiError::validation(error);
         }
-        ApplicationError::Unsupported => (ErrorCode::Unsupported, "operation is unsupported", None),
-        ApplicationError::Internal => (ErrorCode::Internal, "internal service error", None),
+        ApplicationError::Unsupported => (
+            ErrorCode::Unsupported,
+            "operation is unsupported".to_owned(),
+            None,
+        ),
+        ApplicationError::Internal => (
+            ErrorCode::Internal,
+            "internal service error".to_owned(),
+            None,
+        ),
     };
     crate::ApiError {
         code,
-        message: message.into(),
+        message,
         field,
     }
 }

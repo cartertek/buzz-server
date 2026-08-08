@@ -124,7 +124,7 @@ agents_command_help() {
   case "$1" in
     create)       printf '%s\n' 'Usage: buzz-server agents create --community ID --display-name NAME --system-prompt PROMPT --runtime ID [--idempotency KEY] [--correlation ID]' ;;
     get)          printf '%s\n' 'Usage: buzz-server agents get --agent ID' ;;
-    list)         printf '%s\n' 'Usage: buzz-server agents list [--community ID]' ;;
+    list)         printf '%s\n' 'Usage: buzz-server agents list [--community ID] [--include-deleted]' ;;
     update)       printf '%s\n' 'Usage: buzz-server agents update --agent ID [--display-name NAME] [--system-prompt PROMPT] [--runtime ID] [--idempotency KEY] [--correlation ID]' ;;
     enable)       printf '%s\n' 'Usage: buzz-server agents enable --agent ID [--idempotency KEY] [--correlation ID]' ;;
     disable)      printf '%s\n' 'Usage: buzz-server agents disable --agent ID [--idempotency KEY] [--correlation ID]' ;;

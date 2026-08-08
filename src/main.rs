@@ -472,6 +472,9 @@ fn spawn_reconciliation_worker(
                     if let Err(error) = observe_dynamic_agents(&context) {
                         eprintln!("agent observation failed: {error}");
                     }
+                    if let Err(error) = cleanup_purged_agent_artifacts(&context) {
+                        eprintln!("purged-agent artifact cleanup failed: {error}");
+                    }
                 }
             }
         })
@@ -844,6 +847,27 @@ fn purge_agent_paths(
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_purged_agent_artifacts(context: &ReconcileContext) -> Result<(), DaemonError> {
+    for agent_id in context.store.list_purged_agent_ids()? {
+        let layout = dynamic_agent_layout(context.config.as_ref(), agent_id)?;
+        purge_agent_paths(
+            &layout.workspace,
+            &layout.runtime,
+            &context.config.log_directory,
+            &layout.launch_id,
+        )?;
+        context.custody.purge(agent_id)?;
+        if let Some(state_root) = layout.receipt.parent() {
+            match fs::remove_dir_all(state_root) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
         }
     }
     Ok(())

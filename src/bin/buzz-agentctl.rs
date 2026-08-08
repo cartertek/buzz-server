@@ -184,9 +184,13 @@ fn parse_options(arguments: Vec<String>) -> Result<BTreeMap<String, String>, Str
         if !name.starts_with("--") {
             return Err(format!("unexpected argument {name}\n{}", usage()));
         }
-        let value = arguments
-            .next()
-            .ok_or_else(|| format!("missing value for {name}"))?;
+        let value = if name == "--include-deleted" {
+            "true".to_owned()
+        } else {
+            arguments
+                .next()
+                .ok_or_else(|| format!("missing value for {name}"))?
+        };
         if options.insert(name, value).is_some() {
             return Err("an option was provided more than once".into());
         }
@@ -248,6 +252,7 @@ fn route(
         }),
         "list" => Ok(LifecycleRouteRequest::ListAgents(ListAgentsRequest {
             community_config_id: optional_parse(options, "--community", "community ID")?,
+            include_deleted: options.contains_key("--include-deleted"),
         })),
         "update" => Ok(LifecycleRouteRequest::UpdateAgent(UpdateAgentRequest {
             metadata: metadata()?,

@@ -56,7 +56,7 @@ Updates the local display label. The relay URL is unchanged.
 sudo buzz-server communities delete --community community_...
 ```
 
-Deletion fails with a conflict while hosted agents still reference the community.
+Deletion fails with a conflict while any enabled or disabled agent still references the community. If every remaining agent is already successfully deleted, deleting the community also permanently purges those retained deleted-agent records and their local artifacts.
 
 ## Hosted agent lifecycle
 
@@ -88,7 +88,12 @@ sudo buzz-server agents create \
 sudo buzz-server agents get --agent agent_...
 sudo buzz-server agents list
 sudo buzz-server agents list --community community_...
+sudo buzz-server agents list --include-deleted
 ```
+
+Normal lists exclude recoverably deleted agents. Use `--include-deleted` to inspect
+retained deleted agents during their recovery window. `get --agent ...` continues to
+address a retained deleted agent directly.
 
 ### `update`
 
@@ -123,8 +128,10 @@ sudo buzz-server agents delete --agent agent_...
 sudo buzz-server agents purge --agent agent_...
 ```
 
-Delete is recoverable until the configured retention deadline. Purge is irreversible
-after its operation succeeds.
+Delete stops the agent and retains its record for recovery until the configured
+retention deadline. Repeating delete does not extend that deadline. Recoverably deleted
+agents are hidden from normal `list` output. Purge is irreversible after its operation
+succeeds.
 
 ### `operation`
 

@@ -242,7 +242,9 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
             .get_operation(id)?
             .ok_or(ApplicationError::NotFound)?;
         if status == OperationStatus::Succeeded && operation.kind == OperationKind::PurgeAgent {
-            let agent_id = operation.agent_id.ok_or(ApplicationError::Conflict)?;
+            let agent_id = operation
+                .agent_id
+                .ok_or_else(|| ApplicationError::Conflict("purge operation has no agent".into()))?;
             let community = self
                 .store
                 .get_agent(agent_id)?
@@ -352,7 +354,8 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
 
     fn remove_community(&self, id: CommunityConfigId) -> Result<CommunityConfig, ApplicationError> {
         let community = self.get_community(id)?;
-        self.store.delete_community(id)?;
+        self.store
+            .delete_community_with_deleted_agents(id, (self.now)())?;
         Ok(community)
     }
 
@@ -484,6 +487,9 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
             .store
             .list_agents(request.community_config_id)?
             .into_iter()
+            .filter(|agent| {
+                request.include_deleted || agent.desired_state != DesiredAgentState::Deleted
+            })
             .map(|agent| {
                 let purge_after = self
                     .store
@@ -611,7 +617,23 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
         request: &AgentCommandRequest,
         kind: OperationKind,
     ) -> Result<OperationResource, ApplicationError> {
-        let community = self.existing_community(request.agent_id)?;
+        let agent = self
+            .store
+            .get_agent(request.agent_id)?
+            .ok_or(ApplicationError::NotFound)?;
+        let community = agent.community_config_id;
+        let retention_deadline = if kind == OperationKind::DeleteAgent {
+            if agent.desired_state == DesiredAgentState::Deleted {
+                self.store
+                    .agent_retention(request.agent_id)?
+                    .map(|retention| retention.purge_after)
+                    .or_else(|| Some((self.now)().saturating_add(self.retention_seconds.max(0))))
+            } else {
+                Some((self.now)().saturating_add(self.retention_seconds.max(0)))
+            }
+        } else {
+            None
+        };
         self.execute(
             actor,
             &request.metadata,
@@ -623,8 +645,7 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
                 mutation: AgentCommandMutation::SetState {
                     id: request.agent_id,
                     desired_state: DesiredAgentState::Deleted,
-                    retention_deadline: (kind == OperationKind::DeleteAgent)
-                        .then(|| (self.now)().saturating_add(self.retention_seconds.max(0))),
+                    retention_deadline,
                 },
                 promoted_draft_id: None,
             },
@@ -918,7 +939,7 @@ mod tests {
                     draft_id: draft.id,
                 },
             ),
-            Err(ApplicationError::Conflict)
+            Err(ApplicationError::Conflict(_))
         ));
         assert_eq!(store.list_agents(Some(community.id)).unwrap().len(), 1);
         assert_eq!(effects.0.load(Ordering::SeqCst), 1);
@@ -984,7 +1005,8 @@ mod tests {
         assert_eq!(
             service
                 .list_agents(&ListAgentsRequest {
-                    community_config_id: Some(community.id)
+                    community_config_id: Some(community.id),
+                    include_deleted: false,
                 })
                 .unwrap()
                 .len(),
@@ -1051,6 +1073,23 @@ mod tests {
         let retained = service.get_agent(agent_id).unwrap();
         assert_eq!(retained.desired_state, DesiredAgentState::Deleted);
         assert_eq!(retained.purge_after, Some(150));
+        assert!(service
+            .list_agents(&ListAgentsRequest {
+                community_config_id: Some(community.id),
+                include_deleted: false,
+            })
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            service
+                .list_agents(&ListAgentsRequest {
+                    community_config_id: Some(community.id),
+                    include_deleted: true,
+                })
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(service.expired_retained_agents().unwrap().is_empty());
         assert_eq!(store.expired_retained_agents(150).unwrap(), vec![agent_id]);
         service
@@ -1075,6 +1114,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(store.expired_retained_agents(150).unwrap(), vec![agent_id]);
+        assert_eq!(service.get_agent(agent_id).unwrap().purge_after, Some(150));
+        service
+            .delete_agent(
+                &actor(),
+                &AgentCommandRequest {
+                    metadata: metadata("repeat-delete-preserves-deadline"),
+                    agent_id,
+                },
+            )
+            .unwrap();
+        assert_eq!(service.get_agent(agent_id).unwrap().purge_after, Some(150));
 
         let audits = store
             .audit_for_subject("agent", &agent_id.to_string())
