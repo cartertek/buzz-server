@@ -349,13 +349,15 @@ async fn main() -> Result<(), DaemonError> {
 
     let worker = spawn_reconciliation_worker(
         operation_rx,
-        lifecycle_application.clone(),
-        Arc::clone(&store),
-        Arc::clone(&config),
-        owner_keys,
-        custody,
-        supervisor,
-        child_identity,
+        ReconcileContext {
+            application: lifecycle_application.clone(),
+            store: Arc::clone(&store),
+            config: Arc::clone(&config),
+            owner_keys,
+            custody,
+            supervisor,
+            child_identity,
+        },
     );
 
     for operation in store.nonterminal_operations()? {
@@ -439,8 +441,7 @@ async fn main() -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn spawn_reconciliation_worker(
-    receiver: Receiver<ReconcileWork>,
+struct ReconcileContext {
     application: SqliteLifecycleApplication<LifecycleWake>,
     store: Arc<SqliteStore>,
     config: Arc<DaemonConfig>,
@@ -448,42 +449,27 @@ fn spawn_reconciliation_worker(
     custody: FilesystemAgentIdentityCustody,
     supervisor: LocalProcessAdapter,
     child_identity: (u32, u32),
+}
+
+fn spawn_reconciliation_worker(
+    receiver: Receiver<ReconcileWork>,
+    context: ReconcileContext,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("buzz-reconciler".into())
         .spawn(move || loop {
             match receiver.recv_timeout(Duration::from_secs(1)) {
                 Ok(ReconcileWork::Operation(operation_id)) => {
-                    reconcile_operation_contained(
-                        &application,
-                        store.as_ref(),
-                        operation_id,
-                        config.as_ref(),
-                        &owner_keys,
-                        &custody,
-                        &supervisor,
-                        child_identity,
-                    );
+                    reconcile_operation_contained(&context, operation_id);
                 }
                 Ok(ReconcileWork::StartupAgent(agent_id)) => {
-                    if let Err(error) = reconcile_startup_agent(
-                        &application,
-                        store.as_ref(),
-                        agent_id,
-                        config.as_ref(),
-                        &owner_keys,
-                        &custody,
-                        &supervisor,
-                        child_identity,
-                    ) {
+                    if let Err(error) = reconcile_startup_agent(&context, agent_id) {
                         eprintln!("startup reconciliation failed for {agent_id}: {error}");
                     }
                 }
                 Ok(ReconcileWork::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) => {
-                    if let Err(error) =
-                        observe_dynamic_agents(store.as_ref(), &supervisor, config.as_ref())
-                    {
+                    if let Err(error) = observe_dynamic_agents(&context) {
                         eprintln!("agent observation failed: {error}");
                     }
                 }
@@ -492,37 +478,21 @@ fn spawn_reconciliation_worker(
         .expect("failed to spawn reconciliation worker")
 }
 
-#[allow(clippy::too_many_arguments)]
 fn reconcile_operation_contained(
-    application: &SqliteLifecycleApplication<LifecycleWake>,
-    store: &SqliteStore,
+    context: &ReconcileContext,
     operation_id: buzz_server::OperationId,
-    config: &DaemonConfig,
-    owner_keys: &Keys,
-    custody: &FilesystemAgentIdentityCustody,
-    supervisor: &LocalProcessAdapter,
-    child_identity: (u32, u32),
 ) {
-    if let Err(error) = reconcile_lifecycle_operation(
-        application,
-        store,
-        operation_id,
-        config,
-        owner_keys,
-        custody,
-        supervisor,
-        child_identity,
-    ) {
+    if let Err(error) = reconcile_lifecycle_operation(context, operation_id) {
         eprintln!("lifecycle operation {operation_id} failed: {error}");
         let terminal_result = (|| -> Result<(), buzz_server::api::ApplicationError> {
-            let operation = application.get_operation(operation_id)?;
+            let operation = context.application.get_operation(operation_id)?;
             if operation.status.is_terminal() {
                 return Ok(());
             }
             if operation.status == buzz_server::OperationStatus::Pending {
-                application.start_operation(operation_id)?;
+                context.application.start_operation(operation_id)?;
             }
-            application.complete_operation(
+            context.application.complete_operation(
                 operation_id,
                 buzz_server::OperationStatus::Failed,
                 Some(buzz_server::ErrorCode::Internal),
@@ -536,18 +506,14 @@ fn reconcile_operation_contained(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn reconcile_startup_agent(
-    application: &SqliteLifecycleApplication<LifecycleWake>,
-    store: &SqliteStore,
+    context: &ReconcileContext,
     agent_id: buzz_server::AgentId,
-    config: &DaemonConfig,
-    owner_keys: &Keys,
-    custody: &FilesystemAgentIdentityCustody,
-    supervisor: &LocalProcessAdapter,
-    child_identity: (u32, u32),
 ) -> Result<(), DaemonError> {
-    let agent = store.get_agent(agent_id)?.ok_or(StorageError::NotFound)?;
+    let agent = context
+        .store
+        .get_agent(agent_id)?
+        .ok_or(StorageError::NotFound)?;
     let kind = match agent.desired_state {
         buzz_server::DesiredAgentState::Enabled => buzz_server::OperationKind::EnableAgent,
         buzz_server::DesiredAgentState::Disabled => buzz_server::OperationKind::DisableAgent,
@@ -563,17 +529,7 @@ fn reconcile_startup_agent(
         created_at: unix_seconds_i64(),
         updated_at: unix_seconds_i64(),
     };
-    reconcile_dynamic_lifecycle_operation(
-        application,
-        store,
-        &startup,
-        config,
-        owner_keys,
-        custody,
-        supervisor,
-        child_identity,
-        false,
-    )
+    reconcile_dynamic_lifecycle_operation(context, &startup, false)
 }
 
 fn parse_args() -> Result<PathBuf, DaemonError> {
@@ -662,36 +618,19 @@ fn unix_seconds_unchecked() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn reconcile_lifecycle_operation<E: LifecycleEffects>(
-    application: &SqliteLifecycleApplication<E>,
-    store: &SqliteStore,
+fn reconcile_lifecycle_operation(
+    context: &ReconcileContext,
     operation_id: buzz_server::OperationId,
-    config: &DaemonConfig,
-    owner_keys: &Keys,
-    custody: &FilesystemAgentIdentityCustody,
-    supervisor: &LocalProcessAdapter,
-    child_identity: (u32, u32),
 ) -> Result<(), DaemonError> {
-    let operation = application.get_operation(operation_id)?;
+    let operation = context.application.get_operation(operation_id)?;
     if operation.status == buzz_server::OperationStatus::Pending {
-        application.start_operation(operation_id)?;
+        context.application.start_operation(operation_id)?;
     }
-    let durable = application.get_operation(operation_id)?;
+    let durable = context.application.get_operation(operation_id)?;
     if durable.status != buzz_server::OperationStatus::Running {
         return Ok(());
     }
-    reconcile_dynamic_lifecycle_operation(
-        application,
-        store,
-        &durable,
-        config,
-        owner_keys,
-        custody,
-        supervisor,
-        child_identity,
-        true,
-    )
+    reconcile_dynamic_lifecycle_operation(context, &durable, true)
 }
 
 #[derive(Clone, Debug)]
@@ -720,24 +659,21 @@ fn dynamic_agent_layout(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
-    application: &SqliteLifecycleApplication<E>,
-    store: &SqliteStore,
+fn reconcile_dynamic_lifecycle_operation(
+    context: &ReconcileContext,
     operation: &buzz_server::api::OperationResource,
-    config: &DaemonConfig,
-    owner_keys: &Keys,
-    custody: &FilesystemAgentIdentityCustody,
-    supervisor: &LocalProcessAdapter,
-    child_identity: (u32, u32),
     finish_operation: bool,
 ) -> Result<(), DaemonError> {
     let agent_id = operation.agent_id.ok_or(StorageError::NotFound)?;
-    let agent = store.get_agent(agent_id)?.ok_or(StorageError::NotFound)?;
-    let community = store
+    let agent = context
+        .store
+        .get_agent(agent_id)?
+        .ok_or(StorageError::NotFound)?;
+    let community = context
+        .store
         .get_community(agent.community_config_id)?
         .ok_or(StorageError::NotFound)?;
-    let layout = dynamic_agent_layout(config, agent_id)?;
+    let layout = dynamic_agent_layout(context.config.as_ref(), agent_id)?;
     let state_root = layout
         .receipt
         .parent()
@@ -746,7 +682,7 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
     #[cfg(unix)]
     {
         use std::os::unix::fs::{chown, PermissionsExt};
-        chown(state_root, Some(0), Some(child_identity.1))?;
+        chown(state_root, Some(0), Some(context.child_identity.1))?;
         fs::set_permissions(state_root, fs::Permissions::from_mode(0o710))?;
     }
     let runtime_tmp = layout.runtime.join("tmp");
@@ -755,19 +691,23 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
         #[cfg(unix)]
         {
             use std::os::unix::fs::{chown, PermissionsExt};
-            chown(directory, Some(child_identity.0), Some(child_identity.1))?;
+            chown(
+                directory,
+                Some(context.child_identity.0),
+                Some(context.child_identity.1),
+            )?;
             fs::set_permissions(directory, fs::Permissions::from_mode(0o770))?;
         }
     }
-    let identity = custody.provision(agent_id)?;
-    let agent_keys = custody.load(agent_id)?;
+    let identity = context.custody.provision(agent_id)?;
+    let agent_keys = context.custody.load(agent_id)?;
     let signer = DisposableSigner::from_owner_keys(
-        owner_keys.clone(),
+        context.owner_keys.clone(),
         buzz_server::signer::SignerPolicy {
             community_config_id: community.id,
             relay_url: community.relay_url.clone(),
             agent_pubkey: identity.public_key.clone(),
-            conditions: config.signer_conditions.clone(),
+            conditions: context.config.signer_conditions.clone(),
         },
     )?;
     let authorization = signer
@@ -776,30 +716,30 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
             community_config_id: community.id,
             relay_url: community.relay_url.clone(),
             agent_pubkey: identity.public_key,
-            conditions: config.signer_conditions.clone(),
+            conditions: context.config.signer_conditions.clone(),
         })?
         .auth_tag;
     let authorization_generation = secret_generation(&format!(
         "owner={}|community={}|relay={}|agent={}|conditions={}",
-        owner_keys.public_key().to_hex(),
+        context.owner_keys.public_key().to_hex(),
         community.id,
         community.relay_url,
         agent_keys.public_key().to_hex(),
-        config.signer_conditions,
+        context.config.signer_conditions,
     ));
     let mut dynamic_launch = LaunchSpec::resolve_local(
         &agent,
-        &config.runtime_catalog,
+        &context.config.runtime_catalog,
         LocalLaunchContext {
             launch_id: layout.launch_id.clone(),
-            harness: config.harness.clone(),
-            harness_arguments: config.harness_arguments.clone(),
-            working_directory: path_string(&config.working_directory)?,
+            harness: context.config.harness.clone(),
+            harness_arguments: context.config.harness_arguments.clone(),
+            working_directory: path_string(&context.config.working_directory)?,
             workspace_path: path_string(&layout.workspace)?,
             runtime_path: path_string(&layout.runtime)?,
             process_group_id: layout.launch_id.clone(),
-            restart: config.restart.clone(),
-            health: config.health.clone(),
+            restart: context.config.restart.clone(),
+            health: context.config.health.clone(),
         },
     )?;
     dynamic_launch.environment.insert(
@@ -828,7 +768,12 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
         authorization,
         agent_private_key: Some(agent_keys.secret_key().to_secret_hex()),
     };
-    let reconciler = Reconciler::new(store, &receipts, supervisor, &secrets);
+    let reconciler = Reconciler::new(
+        context.store.as_ref(),
+        &receipts,
+        &context.supervisor,
+        &secrets,
+    );
     let stored_operation = store_operation(operation);
     let outcome = reconciler.reconcile(agent_id, &stored_operation, Some(&dynamic_launch));
     let (mut status, mut error_code) = match outcome {
@@ -854,18 +799,24 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
         if let Err(error) = purge_agent_paths(
             &layout.workspace,
             &layout.runtime,
-            &config.log_directory,
+            &context.config.log_directory,
             &layout.launch_id,
         )
-        .and_then(|()| custody.purge(agent_id).map_err(std::io::Error::other))
-        {
+        .and_then(|()| {
+            context
+                .custody
+                .purge(agent_id)
+                .map_err(std::io::Error::other)
+        }) {
             eprintln!("dynamic purge cleanup failed: {error}");
             status = buzz_server::OperationStatus::Failed;
             error_code = Some(buzz_server::ErrorCode::Internal);
         }
     }
     if finish_operation {
-        application.complete_operation(operation.id, status, error_code)?;
+        context
+            .application
+            .complete_operation(operation.id, status, error_code)?;
     } else if status == buzz_server::OperationStatus::Failed {
         return Err(DaemonError::Task(format!(
             "startup reconciliation failed for dynamic agent {agent_id}: {error_code:?}"
@@ -960,18 +911,19 @@ fn sync_supervisor_logs(
     Ok(())
 }
 
-fn observe_dynamic_agents(
-    store: &SqliteStore,
-    supervisor: &LocalProcessAdapter,
-    config: &DaemonConfig,
-) -> Result<(), DaemonError> {
-    for agent in store.list_agents(None)? {
-        let layout = dynamic_agent_layout(config, agent.id)?;
+fn observe_dynamic_agents(context: &ReconcileContext) -> Result<(), DaemonError> {
+    for agent in context.store.list_agents(None)? {
+        let layout = dynamic_agent_layout(context.config.as_ref(), agent.id)?;
         let receipts = ReceiptFile::new(layout.receipt);
         if let Some(receipt) = receipts.get_receipt(agent.id)? {
-            let observed = supervisor.inspect(&receipt)?;
+            let observed = context.supervisor.inspect(&receipt)?;
             receipts.put_receipt(&observed)?;
-            sync_supervisor_logs(store, supervisor, agent.id, &layout.launch_id)?;
+            sync_supervisor_logs(
+                context.store.as_ref(),
+                &context.supervisor,
+                agent.id,
+                &layout.launch_id,
+            )?;
         }
     }
     Ok(())
