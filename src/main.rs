@@ -621,6 +621,17 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
         .get_community(agent.community_config_id)?
         .ok_or(StorageError::NotFound)?;
     let layout = dynamic_agent_layout(config, agent_id)?;
+    let state_root = layout
+        .receipt
+        .parent()
+        .ok_or_else(|| DaemonError::InvalidConfig("agent receipt path has no parent".into()))?;
+    fs::create_dir_all(state_root)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{chown, PermissionsExt};
+        chown(state_root, Some(0), Some(child_identity.1))?;
+        fs::set_permissions(state_root, fs::Permissions::from_mode(0o710))?;
+    }
     let runtime_tmp = layout.runtime.join("tmp");
     for directory in [&layout.workspace, &layout.runtime, &runtime_tmp] {
         fs::create_dir_all(directory)?;
