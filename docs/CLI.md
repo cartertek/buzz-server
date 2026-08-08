@@ -17,7 +17,7 @@ Lifecycle commands connect to `/run/buzz-server/lifecycle.sock` by default.
 
 ## Communities
 
-### `add`
+### `join`
 
 ```sh
 sudo buzz-server communities join \
@@ -25,8 +25,7 @@ sudo buzz-server communities join \
   --relay-url 'wss://relay.example.com/'
 ```
 
-Creates a durable community configuration and returns its generated `community_...`
-ID. Relay URLs must use `ws://` or `wss://`.
+The command prompts for the Nostr private key without echoing it. For automation, pass `--secret-file FILE` instead. Buzz Server derives the public key, verifies the relay using the same NIP-43 membership semantics as Buzz Desktop, securely custodies/deduplicates the secret by pubkey, and persists the community only after verification succeeds. Relay URLs must use `ws://` or `wss://`.
 
 ### `get`
 
@@ -155,7 +154,7 @@ root-only custodied identity without printing the private key.
 
 Buzz Server's `agents` namespace also includes the compatible upstream Buzz identity
 commands `archive`, `unarchive`, and `archived`. These execute against the selected
-community with the Buzz Server owner identity:
+community with that community's associated identity:
 
 ```sh
 sudo buzz-server agents archive --community community_... <PUBKEY> --reason retired
@@ -183,7 +182,7 @@ created until the owner saves it.
 
 Buzz Server bundles the `buzz` CLI from the exact Buzz revision pinned by this
 release and exposes its `channels` namespace. The wrapper selects a durable Buzz
-Server community and supplies the root-only owner identity to the child process.
+Server community and supplies that community's root-only associated identity to the child process.
 The bundled binary is internal; no separate public `buzz` executable is installed.
 
 ```sh

@@ -39,15 +39,11 @@ sudo install -D -m 0644 deploy/buzz-server.service /etc/systemd/system/buzz-serv
 sudo install -d -o root -g buzz-server -m 0750 /etc/buzz-server
 sudo BUZZ_CONFIG_FILE=/path/to/config.json \
   BUZZ_SECRETS_FILE=/path/to/secrets.env \
-  BUZZ_OWNER_SECRET_FILE=/path/to/owner-secret \
   /usr/libexec/buzz-server/install-release.sh v1.0.0 x86_64-unknown-linux-gnu OWNER/REPOSITORY
 sudo buzz-server health
 ```
 
-For a viable unattended first install, set `BUZZ_CONFIG_FILE`,
-`BUZZ_SECRETS_FILE`, and `BUZZ_OWNER_SECRET_FILE` to operator-prepared files;
-the owner secret is installed root-only for systemd `LoadCredential`, and none is overwritten on later
-deployments. The first install must also provision the two immutable executables referenced
+For a viable unattended first install, set `BUZZ_CONFIG_FILE` and `BUZZ_SECRETS_FILE` to operator-prepared files; neither is overwritten on later deployments. Community Nostr identities are supplied later through `buzz-server communities join`. The first install must also provision the two immutable executables referenced
 by the example configuration. Either install complete packages at those exact
 paths before deployment, including their `.package.tar.gz` and
 `.package.sha256` records, or pass `BUZZ_HARNESS_URL`, `BUZZ_HARNESS_SHA256`,
@@ -64,10 +60,7 @@ Before changing the live release pointer, the installer runs the exact
 `buzz-runtime-probe codex-acp-version` availability/version preflight, copied from Buzz Desktop's bounded `codex-acp --version` probe, as the isolated `buzz-agent` account. This catches missing
 Node, modules, loaders, and execute/read permissions.
 
-`secrets.env` supplies runtime API secrets referenced by configuration. Hosted-agent
-Nostr identities are generated and held in the server's root-only identity custody;
-the owner secret is stored separately and materialized only for the service. No
-secret belongs in `config.json`, the service unit, or a release directory.
+`secrets.env` supplies runtime API secrets referenced by configuration. Hosted-agent Nostr identities are generated and held in the server's root-only identity custody. Community identities supplied during `communities join` are separately custodied by pubkey under `/var/lib/buzz-server/community-identities`; no community private key belongs in `config.json`, the lifecycle API, the service unit, or a release directory.
 
 Updates and rollbacks use the same installer procedure: extract the desired newer
 or older release artifact and run its `deploy/install.sh`. The release pointer is

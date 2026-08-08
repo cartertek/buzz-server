@@ -112,4 +112,4 @@ cargo build --release
 ```
 
 Use fake relays/signers and disposable identities in automated tests. Never place
-the production owner identity in development or CI.
+production community identity keys in development or CI.

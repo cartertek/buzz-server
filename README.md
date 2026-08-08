@@ -83,13 +83,13 @@ the variable names and lower-level deployment contract.
 ## Getting started
 
 Buzz Server keeps community and hosted-agent state in its durable state database.
-A clean installation starts with no communities or agents. Add the community you
-want this server to use:
+A clean installation starts with no communities or agents. Join an existing community using the Nostr identity that this server should use for that community:
 
 ```sh
 sudo buzz-server communities join \
   --display-name 'Engineering' \
   --relay-url 'wss://relay.example.com/'
+# The CLI prompts for the Nostr private key without echoing it.
 ```
 
 Create an agent in the target community using the returned `community_...` ID:
@@ -125,8 +125,7 @@ sudo buzz-server channels add-member \
   --role bot
 ```
 
-The channel command uses the Buzz Server owner identity and the selected
-community's relay URL; no separate Buzz CLI installation or login is required.
+The channel command uses the identity associated with the selected community and that community's relay URL; no separate Buzz CLI installation or login is required.
 Once the relay records the membership, `buzz-acp` discovers the channel and
 subscribes according to its configured subscription behavior. No Buzz Server
 restart or separate subscribe command is required.

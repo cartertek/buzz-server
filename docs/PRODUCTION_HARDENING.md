@@ -4,43 +4,13 @@ Milestone 5 adds production host controls around the lifecycle implementation. I
 still assumes a single trusted Linux host and does not claim protection from a
 fully compromised root account.
 
-## Tiered owner custody
+## Community identity custody
 
-Buzz Server follows Buzz Desktop's identity-storage ordering where practical.
-If `BUZZ_KMS_KEY_ID` or `BUZZ_OWNER_ENVELOPE_FILE` is configured, AWS KMS
-envelope custody takes precedence. `buzz-server secrets` encrypts the owner secret
-with an AES-256-GCM data key generated and wrapped by KMS; startup decrypts it
-only into `/run/buzz-server/credentials/owner-secret`.
+Clean installs do not create or require a global Buzz owner identity. Each `buzz-server communities join` operation accepts the identity for that community through a hidden terminal prompt or `--secret-file FILE`. The root CLI derives the pubkey, stores a canonical private key under `/var/lib/buzz-server/community-identities/<pubkey>.secret` with owner-only permissions, and sends only the pubkey through the lifecycle API. Multiple communities using the same pubkey share one custodied secret. Deleting the last community reference removes that secret.
 
-Without KMS configuration, installation tries the Linux Secret Service keyring
-using service `buzz-server` and entry `owner-identity`. It performs a direct
-read-back verification before treating the write as durable. If the keyring is
-unavailable, it atomically stores the same owner secret in
-`/etc/buzz-server/owner-secret`, owned by root with mode `0400`, and verifies the
-file contents after writing.
+The daemon uses the associated community identity for Desktop-compatible NIP-43 join verification, channel administration, and NIP-OA authorization of hosted agents. There is no public active/current identity concept.
 
-A successful keyring-only write creates `/etc/buzz-server/owner-secret.keyring`.
-If that marker exists but the keyring entry later cannot be loaded and no
-fallback file exists, startup fails closed rather than silently rotating the
-owner identity. This mirrors Buzz Desktop's lost/locked identity behavior.
-
-Desktop's implementation is currently a private Tauri module rather than an
-exported Buzz crate. Buzz Server therefore uses the same `keyring` crate and
-Linux backend, persistence ordering, read-back verification, and recovery
-invariants. A future upstream shared secret-store crate could replace this local
-implementation with literal code reuse.
-
-For a KMS-backed import:
-
-```sh
-buzz-server secrets encrypt \
-  --kms-key-id alias/buzz-server-owner \
-  --input ./owner-secret \
-  --output ./owner-secret.envelope.json
-```
-
-For normal installation, provide `BUZZ_OWNER_SECRET_FILE`; add
-`BUZZ_KMS_KEY_ID` only when KMS custody is desired.
+Upgraded installations may still contain the former `/etc/buzz-server/owner-secret*` credential and `owner_secret_file` configuration. It is retained only as a migration/compatibility fallback for community records created before per-community identity association; new communities never depend on it.
 
 ## Encrypted backup and restore
 

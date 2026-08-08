@@ -27,6 +27,9 @@ pub trait LifecycleEffects: Send + Sync {
         Ok(())
     }
 
+    /// Called after the last community reference to an internally custodied identity is removed.
+    fn community_identity_unreferenced(&self, _pubkey: &str) {}
+
     /// Wakes the reconciler after the complete durable command transaction commits.
     fn operation_ready(&self, operation: &DurableOperation) -> Result<(), ApplicationError>;
 }
@@ -365,6 +368,16 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
         let community = self.get_community(id)?;
         self.store
             .delete_community_with_deleted_agents(id, (self.now)())?;
+        if let Some(pubkey) = community.identity_pubkey.as_deref() {
+            let still_referenced = self
+                .store
+                .list_communities()?
+                .iter()
+                .any(|candidate| candidate.identity_pubkey.as_deref() == Some(pubkey));
+            if !still_referenced {
+                self.effects.community_identity_unreferenced(pubkey);
+            }
+        }
         Ok(community)
     }
 

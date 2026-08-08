@@ -8,34 +8,24 @@
   from its least-privilege headless process supervisor, never arbitrary commands.
 - The signer is isolated from the local backend, the API daemon, the relay,
   supervised agent processes, and workspaces as far as the host permits.
-- Supervised agent processes never receive the owner private key or Server
-  administrative credentials.
+- Supervised agent processes never receive a community identity private key or Server administrative credentials.
 - Every agent belongs to exactly one configured community and receives only that
   community's relay URL and owner authorization.
 
 ## Owner signing
 
-Server-native creation requires the owner identity because each authorization is
-bound to a newly generated agent public key. Authorization construction and
+Server-native creation resolves the identity associated with the agent's community because each authorization is bound to a newly generated agent public key. Authorization construction and
 verification call Buzz's shared `buzz-sdk` NIP-OA implementation so Desktop and
 Server remain byte-for-byte compatible. The signer exposes only a structured,
 policy-limited “authorize agent” operation—never arbitrary Nostr signing.
 
-Production owner import uses the KMS envelope workflow documented in
-[PRODUCTION_HARDENING.md](PRODUCTION_HARDENING.md). The encrypted envelope is
-persistent; plaintext exists only in a root-only runtime path while the daemon is
-running.
-
-Envelope encryption with KMS protects offline ciphertext, backups, and snapshots;
-provides audit records and a kill switch; and limits decrypt permission to the
-signer. It does not protect against a fully compromised live host that can invoke
-or inspect the authorized signer.
+Community identities enter through `buzz-server communities join`. The CLI never places a private key in argv and never sends it through the lifecycle JSON API: interactive input is hidden, `--secret-file` is available for automation, and the root CLI stores a canonical secret under `/var/lib/buzz-server/community-identities/<pubkey>.secret` with owner-only permissions before sending only the public key to the daemon. Identical pubkeys are deduplicated across communities; the secret is removed when the last referencing community is deleted. Legacy installations may retain the old installation owner credential only as a compatibility fallback for pre-association community records.
 
 ## Required controls
 
 - secret redaction in API, local-backend, process-supervisor, runtime, and audit
   logs;
-- no plaintext owner key, agent key, auth tag, or model credential in command
+- no plaintext community identity key, agent key, auth tag, or model credential in command
   arguments, Server-wide or ambient inherited environments, launch receipts,
   registry metadata, logs, or audit records;
 - construct each supervised process environment from an explicit allowlist;

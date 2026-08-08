@@ -78,20 +78,20 @@ operations and audit records for tracing.
 
 Requests are tagged JSON objects with `route` and `request` fields.
 
-### Add a community
+### Join a community
 
 ```json
 {
   "route": "join_community",
   "request": {
     "display_name": "Engineering",
-    "relay_url": "wss://relay.example.com/"
+    "relay_url": "wss://relay.example.com/",
+    "identity_pubkey": "<64-character hex pubkey>"
   }
 }
 ```
 
-Returns a `community` resource with a generated `community_...` ID. Community
-configuration changes are synchronous and administrator-only.
+Returns a `community` resource with a generated `community_...` ID. The private key never crosses this lifecycle JSON API: the root CLI custodies it locally first and sends only `identity_pubkey`. The daemon authenticates to the relay with the corresponding custodied key and applies Buzz Desktop-compatible membership checks before persistence. Community configuration changes are synchronous and administrator-only.
 
 ### Update, get, list, or remove communities
 
@@ -260,7 +260,7 @@ Purge stops the deployment and atomically removes retained state after successfu
 reconciliation. Purged agent IDs are tombstoned and are not recreated by stale
 operations.
 
-### Poll an operation
+### Inspect an operation
 
 ```json
 {

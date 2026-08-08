@@ -191,9 +191,21 @@ enum ReconcileWork {
 struct LifecycleWake {
     sender: Sender<ReconcileWork>,
     community_join: buzz_server::community_join::DesktopCommunityJoinVerifier,
+    community_identity_root: PathBuf,
 }
 
 impl LifecycleEffects for LifecycleWake {
+    fn community_identity_unreferenced(&self, pubkey: &str) {
+        let path = self
+            .community_identity_root
+            .join(format!("{pubkey}.secret"));
+        if let Err(error) = fs::remove_file(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("community identity cleanup failed for {pubkey}: {error}");
+            }
+        }
+    }
+
     fn verify_community_join(
         &self,
         community: &buzz_server::CommunityConfig,
@@ -375,14 +387,16 @@ async fn main() -> Result<(), DaemonError> {
         .parent()
         .ok_or_else(|| DaemonError::InvalidConfig("state database has no parent".into()))?
         .join("community-identities");
-    let community_join =
-        buzz_server::community_join::DesktopCommunityJoinVerifier::new(community_identity_root)
-            .map_err(|error| DaemonError::Task(format!("community join verifier: {error}")))?;
+    let community_join = buzz_server::community_join::DesktopCommunityJoinVerifier::new(
+        community_identity_root.clone(),
+    )
+    .map_err(|error| DaemonError::Task(format!("community join verifier: {error}")))?;
     let lifecycle_application = SqliteLifecycleApplication::new(
         Arc::clone(&store),
         Arc::new(LifecycleWake {
             sender: operation_tx.clone(),
             community_join,
+            community_identity_root,
         }),
         unix_seconds_i64,
     )
