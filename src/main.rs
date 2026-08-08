@@ -45,7 +45,8 @@ struct DaemonConfig {
     state_database: PathBuf,
     log_directory: PathBuf,
     working_directory: PathBuf,
-    owner_secret_file: PathBuf,
+    #[serde(default)]
+    owner_secret_file: Option<PathBuf>,
     runtime_user: String,
     signer_conditions: String,
     runtime_catalog: RuntimeCatalog,
@@ -139,10 +140,12 @@ impl DaemonConfig {
                 ));
             }
         }
-        if self.owner_secret_file != Path::new("/run/buzz-server/credentials/owner-secret") {
-            return Err(DaemonError::InvalidConfig(
-                "owner_secret_file must be the ephemeral materialized credential path".into(),
-            ));
+        if let Some(owner_secret_file) = &self.owner_secret_file {
+            if owner_secret_file != Path::new("/run/buzz-server/credentials/owner-secret") {
+                return Err(DaemonError::InvalidConfig(
+                    "owner_secret_file must be the ephemeral materialized credential path".into(),
+                ));
+            }
         }
         if self.runtime_user != "buzz-agent" {
             return Err(DaemonError::InvalidConfig(
@@ -185,14 +188,36 @@ enum ReconcileWork {
 }
 
 #[derive(Clone)]
-struct LifecycleWake(Sender<ReconcileWork>);
+struct LifecycleWake {
+    sender: Sender<ReconcileWork>,
+    community_join: buzz_server::community_join::DesktopCommunityJoinVerifier,
+}
 
 impl LifecycleEffects for LifecycleWake {
+    fn verify_community_join(
+        &self,
+        community: &buzz_server::CommunityConfig,
+    ) -> Result<(), buzz_server::api::ApplicationError> {
+        self.community_join
+            .verify(community)
+            .map_err(|error| match error {
+                buzz_server::community_join::CommunityJoinError::MembershipDenied => {
+                    buzz_server::api::ApplicationError::Forbidden(error.to_string())
+                }
+                buzz_server::community_join::CommunityJoinError::Unreachable(_) => {
+                    buzz_server::api::ApplicationError::Unavailable(error.to_string())
+                }
+                buzz_server::community_join::CommunityJoinError::InvalidResponse => {
+                    buzz_server::api::ApplicationError::Unavailable(error.to_string())
+                }
+            })
+    }
+
     fn operation_ready(
         &self,
         operation: &DurableOperation,
     ) -> Result<(), buzz_server::api::ApplicationError> {
-        self.0
+        self.sender
             .send(ReconcileWork::Operation(operation.id))
             .map_err(|_| buzz_server::api::ApplicationError::Internal)
     }
@@ -317,9 +342,14 @@ async fn main() -> Result<(), DaemonError> {
         }
     }
 
-    let owner_secret = read_secret_file(&config.owner_secret_file)?;
-    let owner_keys = Keys::parse(&owner_secret).map_err(|_| DaemonError::InvalidOwnerSecret)?;
-    drop(owner_secret);
+    let legacy_owner_keys = if let Some(owner_secret_file) = &config.owner_secret_file {
+        let owner_secret = read_secret_file(owner_secret_file)?;
+        let keys = Keys::parse(&owner_secret).map_err(|_| DaemonError::InvalidOwnerSecret)?;
+        drop(owner_secret);
+        Some(keys)
+    } else {
+        None
+    };
 
     let store = Arc::new(SqliteStore::open(&config.state_database)?);
     let supervisor = LocalProcessAdapter::new(
@@ -340,9 +370,20 @@ async fn main() -> Result<(), DaemonError> {
     let custody = FilesystemAgentIdentityCustody::new(custody_root, 0);
     let config = Arc::new(config);
     let (operation_tx, operation_rx) = mpsc::channel();
+    let community_identity_root = config
+        .state_database
+        .parent()
+        .ok_or_else(|| DaemonError::InvalidConfig("state database has no parent".into()))?
+        .join("community-identities");
+    let community_join =
+        buzz_server::community_join::DesktopCommunityJoinVerifier::new(community_identity_root)
+            .map_err(|error| DaemonError::Task(format!("community join verifier: {error}")))?;
     let lifecycle_application = SqliteLifecycleApplication::new(
         Arc::clone(&store),
-        Arc::new(LifecycleWake(operation_tx.clone())),
+        Arc::new(LifecycleWake {
+            sender: operation_tx.clone(),
+            community_join,
+        }),
         unix_seconds_i64,
     )
     .with_retention_seconds(config.lifecycle_api.retention_seconds);
@@ -353,7 +394,7 @@ async fn main() -> Result<(), DaemonError> {
             application: lifecycle_application.clone(),
             store: Arc::clone(&store),
             config: Arc::clone(&config),
-            owner_keys,
+            legacy_owner_keys,
             custody,
             supervisor,
             child_identity,
@@ -445,7 +486,7 @@ struct ReconcileContext {
     application: SqliteLifecycleApplication<LifecycleWake>,
     store: Arc<SqliteStore>,
     config: Arc<DaemonConfig>,
-    owner_keys: Keys,
+    legacy_owner_keys: Option<Keys>,
     custody: FilesystemAgentIdentityCustody,
     supervisor: LocalProcessAdapter,
     child_identity: (u32, u32),
@@ -662,6 +703,32 @@ fn dynamic_agent_layout(
     })
 }
 
+fn community_owner_keys(
+    context: &ReconcileContext,
+    community: &buzz_server::CommunityConfig,
+) -> Result<Keys, DaemonError> {
+    let Some(pubkey) = community.identity_pubkey.as_deref() else {
+        return context.legacy_owner_keys.clone().ok_or_else(|| {
+            DaemonError::InvalidConfig(
+                "legacy community has no associated identity; rejoin the community".into(),
+            )
+        });
+    };
+    let root = context
+        .config
+        .state_database
+        .parent()
+        .ok_or_else(|| DaemonError::InvalidConfig("state database has no parent".into()))?
+        .join("community-identities");
+    let path = root.join(format!("{pubkey}.secret"));
+    let secret = fs::read_to_string(path)?;
+    let keys = Keys::parse(secret.trim()).map_err(|_| DaemonError::InvalidOwnerSecret)?;
+    if !keys.public_key().to_hex().eq_ignore_ascii_case(pubkey) {
+        return Err(DaemonError::InvalidOwnerSecret);
+    }
+    Ok(keys)
+}
+
 fn reconcile_dynamic_lifecycle_operation(
     context: &ReconcileContext,
     operation: &buzz_server::api::OperationResource,
@@ -705,7 +772,7 @@ fn reconcile_dynamic_lifecycle_operation(
     let identity = context.custody.provision(agent_id)?;
     let agent_keys = context.custody.load(agent_id)?;
     let signer = DisposableSigner::from_owner_keys(
-        context.owner_keys.clone(),
+        community_owner_keys(context, &community)?,
         buzz_server::signer::SignerPolicy {
             community_config_id: community.id,
             relay_url: community.relay_url.clone(),
@@ -724,7 +791,9 @@ fn reconcile_dynamic_lifecycle_operation(
         .auth_tag;
     let authorization_generation = secret_generation(&format!(
         "owner={}|community={}|relay={}|agent={}|conditions={}",
-        context.owner_keys.public_key().to_hex(),
+        community_owner_keys(context, &community)?
+            .public_key()
+            .to_hex(),
         community.id,
         community.relay_url,
         agent_keys.public_key().to_hex(),

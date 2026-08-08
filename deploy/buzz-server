@@ -28,7 +28,6 @@ Commands:
   rollback       Roll back to an installed release
   backup         Back up Buzz Server state
   restore        Restore a backup
-  rotate-owner   Rotate the owner secret
   communities    Manage Buzz communities
   agents         Manage agent identities and hosted agents
   channels       Manage Buzz channels
@@ -56,7 +55,6 @@ command_help() {
     rollback)     printf '%s\n' 'Usage: buzz-server rollback VERSION' 'Switch atomically to an already installed release.' ;;
     backup)       printf '%s\n' 'Usage: buzz-server backup OUTPUT [KMS_KEY_ID]' 'Write a backup to OUTPUT, optionally encrypted with AWS KMS.' ;;
     restore)      printf '%s\n' 'Usage: buzz-server restore BACKUP' 'Restore Buzz Server state from BACKUP.' ;;
-    rotate-owner) printf '%s\n' 'Usage: buzz-server rotate-owner SECRET_FILE [KMS_KEY_ID]' 'Replace the owner secret, optionally storing it with AWS KMS.' ;;
     version)      printf '%s\n' 'Usage: buzz-server version' 'Show the installed Buzz Server version.' ;;
     communities)  communities_help ;;
     agents)       agents_help ;;
@@ -71,7 +69,7 @@ communities_help() {
 Usage: buzz-server communities <command> [options]
 
 Commands:
-  add            Add a community
+  join           Join an existing community
   get            Get a community
   list           List communities
   update         Update a community
@@ -83,7 +81,7 @@ EOF_HELP
 
 communities_command_help() {
   case "$1" in
-    add)    printf '%s\n' 'Usage: buzz-server communities add --display-name NAME --relay-url URL' ;;
+    join)   printf '%s\n' 'Usage: buzz-server communities join --display-name NAME --relay-url URL [--secret-file FILE]' 'Without --secret-file, the Nostr private key is read from a hidden terminal prompt.' ;;
     get)    printf '%s\n' 'Usage: buzz-server communities get --community ID' ;;
     list)   printf '%s\n' 'Usage: buzz-server communities list' ;;
     update) printf '%s\n' 'Usage: buzz-server communities update --community ID --display-name NAME' ;;
@@ -197,17 +195,78 @@ community_relay() {
   "$release/buzz-agentctl" community-relay --community "$1"
 }
 
+community_identity_secret() {
+  community=$1
+  if pubkey=$("$release/buzz-agentctl" community-identity-pubkey --community "$community" 2>/dev/null); then
+    secret="/var/lib/buzz-server/community-identities/${pubkey}.secret"
+    [ -r "$secret" ] || { echo "Community identity credential is unavailable for $community" >&2; return 77; }
+    printf '%s\n' "$secret"
+    return 0
+  fi
+  # Legacy pre-join records used the installation owner identity.
+  secret=/run/buzz-server/credentials/owner-secret
+  [ -r "$secret" ] || { echo "Legacy Buzz Server owner credential is unavailable" >&2; return 77; }
+  printf '%s\n' "$secret"
+}
+
+join_community() {
+  display_name=
+  relay_url=
+  secret_file=
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --display-name) [ "$#" -ge 2 ] || { communities_command_help join >&2; return 64; }; display_name=$2; shift 2 ;;
+      --relay-url) [ "$#" -ge 2 ] || { communities_command_help join >&2; return 64; }; relay_url=$2; shift 2 ;;
+      --secret-file) [ "$#" -ge 2 ] || { communities_command_help join >&2; return 64; }; secret_file=$2; shift 2 ;;
+      *) communities_command_help join >&2; return 64 ;;
+    esac
+  done
+  [ -n "$display_name" ] && [ -n "$relay_url" ] || { communities_command_help join >&2; return 64; }
+
+  temporary=
+  if [ -z "$secret_file" ]; then
+    [ -r /dev/tty ] || { echo "No terminal is available; use --secret-file FILE" >&2; return 64; }
+    temporary=$(mktemp /run/buzz-server/community-join-secret.XXXXXX)
+    chmod 0600 "$temporary"
+    printf 'Nostr private key: ' >/dev/tty
+    stty -echo </dev/tty
+    IFS= read -r secret_value </dev/tty || { stty echo </dev/tty; rm -f "$temporary"; return 1; }
+    stty echo </dev/tty
+    printf '\n' >/dev/tty
+    printf '%s' "$secret_value" >"$temporary"
+    unset secret_value
+    secret_file=$temporary
+  fi
+
+  [ -r "$secret_file" ] || { [ -z "$temporary" ] || rm -f "$temporary"; echo "Cannot read secret file: $secret_file" >&2; return 66; }
+  custody_root=/var/lib/buzz-server/community-identities
+  custody_result=$("$release/buzz-secretsctl" custody-community --input "$secret_file" --directory "$custody_root") || {
+    [ -z "$temporary" ] || rm -f "$temporary"
+    return 1
+  }
+  [ -z "$temporary" ] || rm -f "$temporary"
+  set -- $custody_result
+  pubkey=$1
+  disposition=$2
+
+  if "$release/buzz-agentctl" community-join --display-name "$display_name" --relay-url "$relay_url" --identity-pubkey "$pubkey"; then
+    return 0
+  else
+    status=$?
+  fi
+  if [ "$disposition" = created ]; then
+    rm -f "$custody_root/${pubkey}.secret"
+  fi
+  return "$status"
+}
+
 run_owner_buzz() {
   group=$1
   subcommand=$2
   community=$3
   shift 3
   relay_url=$(community_relay "$community")
-  owner_secret=/run/buzz-server/credentials/owner-secret
-  [ -r "$owner_secret" ] || {
-    echo "Buzz Server owner credential is unavailable; start the service and run this command as root" >&2
-    exit 77
-  }
+  owner_secret=$(community_identity_secret "$community") || exit $?
   BUZZ_RELAY_URL=$relay_url BUZZ_PRIVATE_KEY=$(cat "$owner_secret") \
     exec "$release/buzz-cli" "$group" "$subcommand" "$@"
 }
@@ -242,7 +301,8 @@ case "$command" in
       subcommand=$1
       shift
       case "$subcommand" in
-        add|get|list|update|delete) exec "$release/buzz-agentctl" "community-$subcommand" "$@" ;;
+        join) join_community "$@" ;;
+        get|list|update|delete) exec "$release/buzz-agentctl" "community-$subcommand" "$@" ;;
         *) communities_help >&2; exit 64 ;;
       esac
     fi
@@ -306,7 +366,7 @@ case "$command" in
       exec "$release/buzz-secretsctl" "$@"
     fi
     ;;
-  run|health|check|start|restart|stop|status|redeploy|rollback|backup|restore|rotate-owner)
+  run|health|check|start|restart|stop|status|redeploy|rollback|backup|restore)
     if is_help "${2:-}"; then
       command_help "$command"
     else
@@ -317,7 +377,7 @@ case "$command" in
     fi
     ;;
   *)
-    echo "usage: buzz-server {run|communities|agents|channels|secrets|health|check|start|restart|stop|status|redeploy|rollback|backup|restore|rotate-owner|version}" >&2
+    echo "usage: buzz-server {run|communities|agents|channels|secrets|health|check|start|restart|stop|status|redeploy|rollback|backup|restore|version}" >&2
     exit 64
     ;;
 esac

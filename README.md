@@ -87,7 +87,7 @@ A clean installation starts with no communities or agents. Add the community you
 want this server to use:
 
 ```sh
-sudo buzz-server communities add \
+sudo buzz-server communities join \
   --display-name 'Engineering' \
   --relay-url 'wss://relay.example.com/'
 ```

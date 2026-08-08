@@ -13,9 +13,10 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct AddCommunityRequest {
+pub struct JoinCommunityRequest {
     pub display_name: String,
     pub relay_url: url::Url,
+    pub identity_pubkey: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -130,7 +131,7 @@ pub struct OperationResource {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "route", content = "request", rename_all = "snake_case")]
 pub enum LifecycleRouteRequest {
-    AddCommunity(AddCommunityRequest),
+    JoinCommunity(JoinCommunityRequest),
     UpdateCommunity(UpdateCommunityRequest),
     GetCommunity { community_id: CommunityConfigId },
     ListCommunities,
@@ -195,6 +196,10 @@ pub struct AgentLogsResource {
 pub enum ApplicationError {
     #[error("resource not found")]
     NotFound,
+    #[error("request is forbidden: {0}")]
+    Forbidden(String),
+    #[error("service unavailable: {0}")]
+    Unavailable(String),
     #[error("resource conflict: {0}")]
     Conflict(String),
     #[error("request is invalid: {0}")]
@@ -218,9 +223,9 @@ impl From<StorageError> for ApplicationError {
 }
 
 pub trait LifecycleApplication {
-    fn add_community(
+    fn join_community(
         &self,
-        request: &AddCommunityRequest,
+        request: &JoinCommunityRequest,
     ) -> Result<CommunityConfig, ApplicationError>;
     fn update_community(
         &self,
@@ -293,18 +298,21 @@ impl<S: LifecycleApplication> LifecycleHandler<S> {
         Self { application }
     }
 
-    pub fn add_community(
+    pub fn join_community(
         &self,
         actor: &AuthenticatedPrincipal,
-        request: &AddCommunityRequest,
+        request: &JoinCommunityRequest,
     ) -> Result<CommunityConfig, crate::ApiError> {
         authorize(actor, Capability::ManageCommunity, None).map_err(api_authorization)?;
         let candidate =
             CommunityConfig::new(request.display_name.clone(), request.relay_url.clone())
+                .and_then(|community| {
+                    community.with_identity_pubkey(request.identity_pubkey.clone())
+                })
                 .map_err(api_validation)?;
         candidate.validate().map_err(api_validation)?;
         self.application
-            .add_community(request)
+            .join_community(request)
             .map_err(api_application)
     }
 
@@ -544,6 +552,8 @@ fn api_authorization(error: AuthorizationError) -> crate::ApiError {
 fn api_application(error: ApplicationError) -> crate::ApiError {
     let (code, message, field) = match error {
         ApplicationError::NotFound => (ErrorCode::NotFound, "resource not found".to_owned(), None),
+        ApplicationError::Forbidden(message) => (ErrorCode::Forbidden, message, None),
+        ApplicationError::Unavailable(message) => (ErrorCode::Unavailable, message, None),
         ApplicationError::Conflict(message) => (ErrorCode::Conflict, message, None),
         ApplicationError::Invalid(error) => {
             return crate::ApiError::validation(error);
@@ -611,9 +621,9 @@ mod tests {
     }
 
     impl LifecycleApplication for FakeApplication {
-        fn add_community(
+        fn join_community(
             &self,
-            _: &AddCommunityRequest,
+            _: &JoinCommunityRequest,
         ) -> Result<CommunityConfig, ApplicationError> {
             Err(ApplicationError::Unsupported)
         }

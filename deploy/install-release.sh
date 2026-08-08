@@ -390,17 +390,13 @@ if [ ! -e "$owner_envelope" ] && [ ! -e "$owner_key_file" ] && [ ! -e "$owner_ma
   owner_source=${BUZZ_OWNER_SECRET_FILE:-}
   if [ -n "${BUZZ_OWNER_ENVELOPE_FILE:-}" ] && [ -f "$BUZZ_OWNER_ENVELOPE_FILE" ]; then
     install -o root -g root -m 0400 "$BUZZ_OWNER_ENVELOPE_FILE" "$owner_envelope"
-  else
-    [ -n "$owner_source" ] && [ -f "$owner_source" ] || {
-      echo "first install requires BUZZ_OWNER_ENVELOPE_FILE or BUZZ_OWNER_SECRET_FILE" >&2
-      exit 66
-    }
+  elif [ -n "$owner_source" ] && [ -f "$owner_source" ]; then
     if [ -n "${BUZZ_KMS_KEY_ID:-}" ]; then
-      run_bounded 60 "Encrypting owner secret with AWS KMS" "$release_source/buzz-secretsctl" encrypt --kms-key-id "$BUZZ_KMS_KEY_ID" --input "$owner_source" --output "$owner_envelope"
+      run_bounded 60 "Encrypting legacy owner secret with AWS KMS" "$release_source/buzz-secretsctl" encrypt --kms-key-id "$BUZZ_KMS_KEY_ID" --input "$owner_source" --output "$owner_envelope"
       chown root:root "$owner_envelope"
       chmod 0400 "$owner_envelope"
     else
-      run_bounded 30 "Persisting owner secret" "$release_source/buzz-secretsctl" persist --input "$owner_source" --key-file "$owner_key_file" --marker "$owner_marker"
+      run_bounded 30 "Persisting legacy owner secret" "$release_source/buzz-secretsctl" persist --input "$owner_source" --key-file "$owner_key_file" --marker "$owner_marker"
       [ ! -e "$owner_key_file" ] || { chown root:root "$owner_key_file"; chmod 0400 "$owner_key_file"; }
       [ ! -e "$owner_marker" ] || { chown root:root "$owner_marker"; chmod 0600 "$owner_marker"; }
     fi

@@ -57,6 +57,8 @@ fn run() -> Result<(), String> {
         Some("decrypt") => decrypt_command(&args[1..]),
         Some("fingerprint") => fingerprint_command(&args[1..]),
         Some("public-key") => public_key_command(&args[1..]),
+        Some("public-id") => public_id_command(&args[1..]),
+        Some("custody-community") => custody_community_command(&args[1..]),
         Some("encrypt-passphrase") => encrypt_passphrase_command(&args[1..]),
         Some("decrypt-passphrase") => decrypt_passphrase_command(&args[1..]),
         Some("export-nip49") => export_nip49_command(&args[1..]),
@@ -76,6 +78,60 @@ fn public_key_command(args: &[String]) -> Result<(), String> {
     );
     let keys = Keys::parse(secret.trim()).map_err(|_| "input is not a valid Nostr secret")?;
     println!("{}", keys.public_key().to_hex());
+    Ok(())
+}
+
+fn public_id_command(args: &[String]) -> Result<(), String> {
+    let input = required(args, "--input")?;
+    let secret = Zeroizing::new(
+        String::from_utf8(read_bounded(Path::new(input))?)
+            .map_err(|_| "Nostr secret is not valid UTF-8")?,
+    );
+    let keys = Keys::parse(secret.trim()).map_err(|_| "input is not a valid Nostr secret")?;
+    println!(
+        "{}",
+        keys.public_key().to_bech32().map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
+fn custody_community_command(args: &[String]) -> Result<(), String> {
+    let input = Path::new(required(args, "--input")?);
+    let directory = Path::new(required(args, "--directory")?);
+    let secret = Zeroizing::new(
+        String::from_utf8(read_bounded(input)?).map_err(|_| "Nostr secret is not valid UTF-8")?,
+    );
+    let keys = Keys::parse(secret.trim()).map_err(|_| "input is not a valid Nostr secret")?;
+    let pubkey = keys.public_key().to_hex();
+    let canonical = keys.secret_key().to_secret_hex();
+    fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+    }
+    let path = directory.join(format!("{pubkey}.secret"));
+    let created = if path.exists() {
+        let existing = Zeroizing::new(
+            String::from_utf8(read_bounded(&path)?)
+                .map_err(|_| "custodied community identity is not valid UTF-8")?,
+        );
+        let existing_keys =
+            Keys::parse(existing.trim()).map_err(|_| "custodied community identity is invalid")?;
+        if existing_keys.public_key() != keys.public_key() {
+            return Err("custodied community identity pubkey mismatch".into());
+        }
+        false
+    } else {
+        atomic_write(&path, canonical.as_bytes(), 0o400)?;
+        true
+    };
+    println!(
+        "{} {}",
+        pubkey,
+        if created { "created" } else { "existing" }
+    );
     Ok(())
 }
 
@@ -488,5 +544,5 @@ fn optional<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
         .map(|pair| pair[1].as_str())
 }
 fn usage() -> String {
-    "usage: buzz-secretsctl encrypt --kms-key-id KEY --input FILE --output FILE [--aws-command PATH]\n       buzz-secretsctl decrypt --input FILE --output FILE [--aws-command PATH]\n       buzz-secretsctl fingerprint --input FILE\n       buzz-secretsctl public-key --input FILE\n       buzz-secretsctl encrypt-passphrase --input FILE --output FILE --passphrase-file FILE\n       buzz-secretsctl decrypt-passphrase --input FILE --output FILE --passphrase-file FILE\n       buzz-secretsctl export-nip49 --input FILE --output FILE --passphrase-file FILE\n       buzz-secretsctl import-nip49 --input FILE --output FILE --passphrase-file FILE\n       buzz-secretsctl persist --input FILE --key-file FILE --marker FILE [--service NAME] [--name NAME]\n       buzz-secretsctl materialize --output FILE --key-file FILE --marker FILE [--service NAME] [--name NAME]\n       buzz-secretsctl clear-local --key-file FILE --marker FILE [--service NAME] [--name NAME]".into()
+    "usage: buzz-secretsctl encrypt --kms-key-id KEY --input FILE --output FILE [--aws-command PATH]\n       buzz-secretsctl decrypt --input FILE --output FILE [--aws-command PATH]\n       buzz-secretsctl fingerprint --input FILE\n       buzz-secretsctl public-key --input FILE\n       buzz-secretsctl custody-community --input FILE --directory DIR\n       buzz-secretsctl public-id --input FILE\n       buzz-secretsctl encrypt-passphrase --input FILE --output FILE --passphrase-file FILE\n       buzz-secretsctl decrypt-passphrase --input FILE --output FILE --passphrase-file FILE\n       buzz-secretsctl export-nip49 --input FILE --output FILE --passphrase-file FILE\n       buzz-secretsctl import-nip49 --input FILE --output FILE --passphrase-file FILE\n       buzz-secretsctl persist --input FILE --key-file FILE --marker FILE [--service NAME] [--name NAME]\n       buzz-secretsctl materialize --output FILE --key-file FILE --marker FILE [--service NAME] [--name NAME]\n       buzz-secretsctl clear-local --key-file FILE --marker FILE [--service NAME] [--name NAME]".into()
 }

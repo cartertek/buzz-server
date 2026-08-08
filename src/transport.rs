@@ -78,9 +78,9 @@ impl<S: LifecycleApplication + Send + Sync + 'static> AuthenticatedRequestHandle
                 field: None,
             })
             .and_then(|request| match request {
-                LifecycleRouteRequest::AddCommunity(request) => self
+                LifecycleRouteRequest::JoinCommunity(request) => self
                     .0
-                    .add_community(actor, &request)
+                    .join_community(actor, &request)
                     .map(LifecycleRouteResource::Community),
                 LifecycleRouteRequest::UpdateCommunity(request) => self
                     .0
@@ -170,6 +170,7 @@ const fn api_status(code: ErrorCode) -> u16 {
         ErrorCode::NotFound => 404,
         ErrorCode::Conflict => 409,
         ErrorCode::Unsupported => 501,
+        ErrorCode::Unavailable => 503,
         ErrorCode::Internal => 500,
     }
 }
@@ -540,9 +541,9 @@ mod tests {
     struct RouterApplication(Mutex<Option<AgentResource>>);
 
     impl LifecycleApplication for RouterApplication {
-        fn add_community(
+        fn join_community(
             &self,
-            _: &AddCommunityRequest,
+            _: &JoinCommunityRequest,
         ) -> Result<crate::CommunityConfig, ApplicationError> {
             Err(ApplicationError::Unsupported)
         }

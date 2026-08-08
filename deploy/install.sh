@@ -79,7 +79,6 @@ trap 'exit 143' HUP TERM
 
 if [ ! -f /etc/buzz-server/config.json ]; then
   if [ -z "${BUZZ_CONFIG_FILE:-}" ]; then
-    prompt BUZZ_OWNER_SECRET "Owner Nostr secret" true
     prompt BUZZ_OPENAI_API_KEY "OpenAI API key" true
     prompt BUZZ_HARNESS_URL "Sprig package URL"
     prompt BUZZ_HARNESS_SHA256 "Sprig package SHA-256"
@@ -88,15 +87,13 @@ if [ ! -f /etc/buzz-server/config.json ]; then
 
     BUZZ_CONFIG_FILE="$temporary/config.json"
     BUZZ_SECRETS_FILE="$temporary/secrets.env"
-    BUZZ_OWNER_SECRET_FILE="$temporary/owner-secret"
-    export BUZZ_CONFIG_FILE BUZZ_SECRETS_FILE BUZZ_OWNER_SECRET_FILE
+    export BUZZ_CONFIG_FILE BUZZ_SECRETS_FILE
 
     cat >"$BUZZ_CONFIG_FILE" <<EOF_CONFIG
 {
   "state_database": "/var/lib/buzz-server/state.sqlite3",
   "log_directory": "/var/log/buzz-server/agents",
   "working_directory": "/var/lib/buzz-server",
-  "owner_secret_file": "/run/buzz-server/credentials/owner-secret",
   "runtime_user": "buzz-agent",
   "signer_conditions": "kind=9",
   "runtime_catalog": {
@@ -122,8 +119,7 @@ if [ ! -f /etc/buzz-server/config.json ]; then
 }
 EOF_CONFIG
     printf 'BUZZ_SECRET_OPENAI_API_KEY=%s\n' "$BUZZ_OPENAI_API_KEY" >"$BUZZ_SECRETS_FILE"
-    printf '%s\n' "$BUZZ_OWNER_SECRET" >"$BUZZ_OWNER_SECRET_FILE"
-    chmod 0600 "$BUZZ_CONFIG_FILE" "$BUZZ_SECRETS_FILE" "$BUZZ_OWNER_SECRET_FILE"
+    chmod 0600 "$BUZZ_CONFIG_FILE" "$BUZZ_SECRETS_FILE"
   fi
 fi
 

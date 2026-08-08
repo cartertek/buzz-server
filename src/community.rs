@@ -10,6 +10,9 @@ pub struct CommunityConfig {
     pub id: CommunityConfigId,
     pub display_name: String,
     pub relay_url: Url,
+    /// Public key of the human identity used to join this community.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_pubkey: Option<String>,
 }
 
 impl CommunityConfig {
@@ -18,9 +21,25 @@ impl CommunityConfig {
             id: CommunityConfigId::new(),
             display_name: display_name.into(),
             relay_url,
+            identity_pubkey: None,
         };
         config.validate()?;
         Ok(config)
+    }
+
+    pub fn with_identity_pubkey(
+        mut self,
+        pubkey: impl Into<String>,
+    ) -> Result<Self, ValidationError> {
+        let pubkey = pubkey.into().trim().to_ascii_lowercase();
+        if pubkey.len() != 64 || !pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(ValidationError::new(
+                "identity_pubkey",
+                "must be a 64-character hex Nostr public key",
+            ));
+        }
+        self.identity_pubkey = Some(pubkey);
+        Ok(self)
     }
 
     pub fn validate(&self) -> Result<(), ValidationError> {

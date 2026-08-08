@@ -8,10 +8,10 @@ use std::{
 
 use crate::{
     api::{
-        AddCommunityRequest, AgentCommandRequest, AgentLogsRequest, AgentLogsResource,
-        AgentResource, ApplicationError, ChangeAgentStateRequest, CommandMetadata,
-        CreateAgentInput, DraftResource, LifecycleApplication, ListAgentsRequest,
-        OperationResource, SubmitDraftRequest, UpdateAgentRequest,
+        AgentCommandRequest, AgentLogsRequest, AgentLogsResource, AgentResource, ApplicationError,
+        ChangeAgentStateRequest, CommandMetadata, CreateAgentInput, DraftResource,
+        JoinCommunityRequest, LifecycleApplication, ListAgentsRequest, OperationResource,
+        SubmitDraftRequest, UpdateAgentRequest,
     },
     auth::{AuthenticatedPrincipal, Principal},
     storage::{AgentCommandMutation, DurableOperation, IdempotencyRecord, NewAuditRecord},
@@ -22,6 +22,11 @@ use crate::{
 pub const DEFAULT_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 pub trait LifecycleEffects: Send + Sync {
+    /// Verify that the Buzz Server identity can join an existing community before persistence.
+    fn verify_community_join(&self, _community: &CommunityConfig) -> Result<(), ApplicationError> {
+        Ok(())
+    }
+
     /// Wakes the reconciler after the complete durable command transaction commits.
     fn operation_ready(&self, operation: &DurableOperation) -> Result<(), ApplicationError>;
 }
@@ -318,13 +323,17 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
 }
 
 impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E> {
-    fn add_community(
+    fn join_community(
         &self,
-        request: &AddCommunityRequest,
+        request: &JoinCommunityRequest,
     ) -> Result<CommunityConfig, ApplicationError> {
         let community =
             CommunityConfig::new(request.display_name.clone(), request.relay_url.clone())
+                .and_then(|community| {
+                    community.with_identity_pubkey(request.identity_pubkey.clone())
+                })
                 .map_err(ApplicationError::Invalid)?;
+        self.effects.verify_community_join(&community)?;
         self.store.put_community(&community, (self.now)())?;
         Ok(community)
     }

@@ -82,7 +82,7 @@ Requests are tagged JSON objects with `route` and `request` fields.
 
 ```json
 {
-  "route": "add_community",
+  "route": "join_community",
   "request": {
     "display_name": "Engineering",
     "relay_url": "wss://relay.example.com/"

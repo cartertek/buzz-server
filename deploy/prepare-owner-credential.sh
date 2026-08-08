@@ -9,6 +9,9 @@ output=${BUZZ_OWNER_RUNTIME_SECRET:-/run/buzz-server/credentials/owner-secret}
 
 install -d -o root -g root -m 0700 "$(dirname "$output")"
 rm -f "$output"
+if [ ! -f "$envelope" ] && [ ! -f "$key_file" ] && [ ! -f "$marker" ]; then
+  exit 0
+fi
 if [ -f "$envelope" ]; then
   timeout 60 "$secretsctl" decrypt --input "$envelope" --output "$output" || { echo "owner credential decryption failed or timed out" >&2; exit 1; }
 else

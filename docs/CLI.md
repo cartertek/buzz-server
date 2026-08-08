@@ -20,7 +20,7 @@ Lifecycle commands connect to `/run/buzz-server/lifecycle.sock` by default.
 ### `add`
 
 ```sh
-sudo buzz-server communities add \
+sudo buzz-server communities join \
   --display-name 'Engineering' \
   --relay-url 'wss://relay.example.com/'
 ```

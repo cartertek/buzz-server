@@ -5,6 +5,7 @@ pub mod api;
 pub mod application;
 pub mod auth;
 pub mod community;
+pub mod community_join;
 pub mod community_session;
 pub mod custody;
 pub mod error;
