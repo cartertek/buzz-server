@@ -201,9 +201,9 @@ if ! id buzz-agent >/dev/null 2>&1; then
 fi
 install -d -o buzz-agent -g buzz-agent -m 0700 \
   /var/lib/buzz-server/workspaces \
-  /var/lib/buzz-server/runtime \
   /var/lib/buzz-server/runtime/agent \
   /var/lib/buzz-server/runtime/agent/tmp
+install -d -o buzz-agent -g buzz-server -m 0710 /var/lib/buzz-server/runtime
 install -d -o root -g root -m 0755 /opt/buzz-server /opt/buzz-server/releases
 [ ! -e "$release" ] && [ ! -L "$release" ] || {
   echo "release $version-$target is already installed; immutable releases are never overwritten" >&2
