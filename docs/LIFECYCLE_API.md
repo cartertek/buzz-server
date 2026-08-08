@@ -93,17 +93,18 @@ Requests are tagged JSON objects with `route` and `request` fields.
 Returns a `community` resource with a generated `community_...` ID. Community
 configuration changes are synchronous and administrator-only.
 
-### Get, list, or remove communities
+### Update, get, list, or remove communities
 
 ```json
+{"route":"update_community","request":{"community_id":"community_...","display_name":"Platform Engineering"}}
 {"route":"get_community","request":{"community_id":"community_..."}}
 {"route":"list_communities"}
 {"route":"remove_community","request":{"community_id":"community_..."}}
 ```
 
-Removal returns `conflict` while an agent still references the community. The
-community configured in `/etc/buzz-server/config.json` is the installation
-bootstrap community and is reloaded when the daemon starts.
+Community display names are local server labels. Removal returns `conflict` while
+an agent still references the community. Community state is stored only in the
+Buzz Server state database.
 
 ### Create an agent
 

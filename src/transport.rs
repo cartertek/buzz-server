@@ -82,6 +82,10 @@ impl<S: LifecycleApplication + Send + Sync + 'static> AuthenticatedRequestHandle
                     .0
                     .add_community(actor, &request)
                     .map(LifecycleRouteResource::Community),
+                LifecycleRouteRequest::UpdateCommunity(request) => self
+                    .0
+                    .update_community(actor, &request)
+                    .map(LifecycleRouteResource::Community),
                 LifecycleRouteRequest::GetCommunity { community_id } => self
                     .0
                     .get_community(actor, community_id)
@@ -517,6 +521,12 @@ mod tests {
         fn add_community(
             &self,
             _: &AddCommunityRequest,
+        ) -> Result<crate::CommunityConfig, ApplicationError> {
+            Err(ApplicationError::Unsupported)
+        }
+        fn update_community(
+            &self,
+            _: &UpdateCommunityRequest,
         ) -> Result<crate::CommunityConfig, ApplicationError> {
             Err(ApplicationError::Unsupported)
         }

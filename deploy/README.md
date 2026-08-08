@@ -8,7 +8,7 @@ wire and authorization contracts. For example:
 ```sh
 buzz-server agents list
 buzz-server agents get --agent agent_...
-buzz-server agents disable --agent agent_... --idempotency disable-1 --correlation maintenance-1
+buzz-server agents disable --agent agent_...
 buzz-server agents operation --operation operation_...
 ```
 
@@ -37,9 +37,10 @@ sudo install -D -m 0755 deploy/install-release.sh /usr/libexec/buzz-server/insta
 sudo install -D -m 0755 deploy/buzz-server /usr/local/bin/buzz-server
 sudo install -D -m 0644 deploy/buzz-server.service /etc/systemd/system/buzz-server.service
 sudo install -d -o root -g buzz-server -m 0750 /etc/buzz-server
-sudo install -o root -g buzz-server -m 0640 config/buzz-server.dev.example.json /etc/buzz-server/config.json
-sudo install -o root -g buzz-server -m 0640 /dev/null /etc/buzz-server/secrets.env
-sudo /usr/libexec/buzz-server/install-release.sh v1.0.0 x86_64-unknown-linux-gnu OWNER/REPOSITORY
+sudo BUZZ_CONFIG_FILE=/path/to/config.json \
+  BUZZ_SECRETS_FILE=/path/to/secrets.env \
+  BUZZ_OWNER_SECRET_FILE=/path/to/owner-secret \
+  /usr/libexec/buzz-server/install-release.sh v1.0.0 x86_64-unknown-linux-gnu OWNER/REPOSITORY
 sudo buzz-server health
 ```
 
@@ -63,10 +64,10 @@ Before changing the live release pointer, the installer runs the exact
 `buzz-runtime-probe codex-acp-version` availability/version preflight, copied from Buzz Desktop's bounded `codex-acp --version` probe, as the isolated `buzz-agent` account. This catches missing
 Node, modules, loaders, and execute/read permissions.
 
-`secrets.env` supplies the environment names referenced by configuration. It
-must contain stable, distinct owner and agent secrets plus runtime API secrets.
-The constrained signer derives and verifies the NIP-OA tag at every start;
-no secret belongs in `config.json`, the service unit, or a release directory.
+`secrets.env` supplies runtime API secrets referenced by configuration. Hosted-agent
+Nostr identities are generated and held in the server's root-only identity custody;
+the owner secret is stored separately and materialized only for the service. No
+secret belongs in `config.json`, the service unit, or a release directory.
 
 Updates and rollbacks use the same installer procedure: extract the desired newer
 or older release artifact and run its `deploy/install.sh`. The release pointer is
@@ -74,13 +75,13 @@ switched atomically; if the selected release fails its health check, the previou
 active release is restored automatically.
 
 The installer enables the service for boot and restarts it after switching the
-release pointer. The unit uses `KillMode=process` so a planned service restart
-stops Buzz Server itself while leaving its receipt-bound agent child available
-for validation and adoption by the replacement daemon. Unexpected relay or
-signer failure remains fail-closed in the daemon and terminates the child.
+release pointer. The systemd service uses `KillMode=control-group`; the daemon
+reconciles every hosted agent from durable database state after startup.
 
-Before a live deployment, replace all example IDs, relay, public key, artifact
-paths, versions, and checksums. Install the pinned Sprig/Buzz harness and ACP
-runtime artifacts at those immutable paths. Validate relay reachability, NIP-42
-authentication, NIP-OA authorization, model credentials, writable state paths,
-and the harness preflight command in the service account's restricted context.
+Before a live deployment, replace example artifact paths, versions, and checksums.
+Install the pinned Sprig/Buzz harness and ACP runtime artifacts at those immutable
+paths. After the service is healthy, add communities and hosted agents through
+`buzz-server communities` and `buzz-server agents`. Validate relay reachability,
+NIP-42 authentication, NIP-OA authorization, model credentials, writable state
+paths, and the harness preflight command in the service account's restricted
+context.

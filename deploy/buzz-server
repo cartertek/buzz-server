@@ -74,7 +74,8 @@ Commands:
   add            Add a community
   get            Get a community
   list           List communities
-  remove         Remove a community
+  update         Update a community
+  delete         Delete a community
 
 Run `buzz-server communities <command> --help` for command-specific help.
 EOF_HELP
@@ -85,7 +86,8 @@ communities_command_help() {
     add)    printf '%s\n' 'Usage: buzz-server communities add --display-name NAME --relay-url URL' ;;
     get)    printf '%s\n' 'Usage: buzz-server communities get --community ID' ;;
     list)   printf '%s\n' 'Usage: buzz-server communities list' ;;
-    remove) printf '%s\n' 'Usage: buzz-server communities remove --community ID' ;;
+    update) printf '%s\n' 'Usage: buzz-server communities update --community ID --display-name NAME' ;;
+    delete) printf '%s\n' 'Usage: buzz-server communities delete --community ID' ;;
     *) return 1 ;;
   esac
 }
@@ -120,15 +122,15 @@ EOF_HELP
 
 agents_command_help() {
   case "$1" in
-    create)       printf '%s\n' 'Usage: buzz-server agents create --community ID --display-name NAME --system-prompt PROMPT --runtime ID --idempotency KEY --correlation ID' ;;
+    create)       printf '%s\n' 'Usage: buzz-server agents create --community ID --display-name NAME --system-prompt PROMPT --runtime ID [--idempotency KEY] [--correlation ID]' ;;
     get)          printf '%s\n' 'Usage: buzz-server agents get --agent ID' ;;
     list)         printf '%s\n' 'Usage: buzz-server agents list [--community ID]' ;;
-    update)       printf '%s\n' 'Usage: buzz-server agents update --agent ID [--display-name NAME] [--system-prompt PROMPT] [--runtime ID] --idempotency KEY --correlation ID' ;;
-    enable)       printf '%s\n' 'Usage: buzz-server agents enable --agent ID --idempotency KEY --correlation ID' ;;
-    disable)      printf '%s\n' 'Usage: buzz-server agents disable --agent ID --idempotency KEY --correlation ID' ;;
+    update)       printf '%s\n' 'Usage: buzz-server agents update --agent ID [--display-name NAME] [--system-prompt PROMPT] [--runtime ID] [--idempotency KEY] [--correlation ID]' ;;
+    enable)       printf '%s\n' 'Usage: buzz-server agents enable --agent ID [--idempotency KEY] [--correlation ID]' ;;
+    disable)      printf '%s\n' 'Usage: buzz-server agents disable --agent ID [--idempotency KEY] [--correlation ID]' ;;
     logs)         printf '%s\n' 'Usage: buzz-server agents logs --agent ID [--after CURSOR] [--limit N]' ;;
-    delete)       printf '%s\n' 'Usage: buzz-server agents delete --agent ID --idempotency KEY --correlation ID' ;;
-    purge)        printf '%s\n' 'Usage: buzz-server agents purge --agent ID --idempotency KEY --correlation ID' ;;
+    delete)       printf '%s\n' 'Usage: buzz-server agents delete --agent ID [--idempotency KEY] [--correlation ID]' ;;
+    purge)        printf '%s\n' 'Usage: buzz-server agents purge --agent ID [--idempotency KEY] [--correlation ID]' ;;
     operation)    printf '%s\n' 'Usage: buzz-server agents operation --operation ID' ;;
     pubkey)       printf '%s\n' 'Usage: sudo buzz-server agents pubkey --agent ID' 'Show the agent Nostr public key without exposing its private key.' ;;
     draft-create) printf '%s\n' 'Usage: buzz-server agents draft-create --community ID --channel UUID --display-name NAME --system-prompt PROMPT' 'Requires BUZZ_PRIVATE_KEY and BUZZ_AUTH_TAG for the requesting agent.' ;;
@@ -240,7 +242,7 @@ case "$command" in
       subcommand=$1
       shift
       case "$subcommand" in
-        add|get|list|remove) exec "$release/buzz-agentctl" "community-$subcommand" "$@" ;;
+        add|get|list|update|delete) exec "$release/buzz-agentctl" "community-$subcommand" "$@" ;;
         *) communities_help >&2; exit 64 ;;
       esac
     fi

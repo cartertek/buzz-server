@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, env, path::PathBuf, str::FromStr, time::Duratio
 use buzz_server::api::{
     AddCommunityRequest, AgentCommandRequest, AgentLogsRequest, ChangeAgentStateRequest,
     CommandMetadata, CreateAgentInput, CreateAgentRequest, LifecycleRouteRequest,
-    ListAgentsRequest, UpdateAgentInput, UpdateAgentRequest,
+    ListAgentsRequest, UpdateAgentInput, UpdateAgentRequest, UpdateCommunityRequest,
 };
 use buzz_server::{AgentId, CommunityConfigId, DesiredAgentState};
 use tokio::{
@@ -178,9 +178,16 @@ fn route(
 ) -> Result<LifecycleRouteRequest, String> {
     let agent_id = || parse::<AgentId>(required(options, "--agent")?, "agent ID");
     let metadata = || -> Result<CommandMetadata, String> {
+        let id = uuid::Uuid::now_v7();
         Ok(CommandMetadata {
-            idempotency_key: required(options, "--idempotency")?.into(),
-            correlation_id: required(options, "--correlation")?.into(),
+            idempotency_key: options
+                .get("--idempotency")
+                .cloned()
+                .unwrap_or_else(|| format!("cli-{command}-{id}")),
+            correlation_id: options
+                .get("--correlation")
+                .cloned()
+                .unwrap_or_else(|| format!("cli-{id}")),
         })
     };
     match command {
@@ -188,6 +195,15 @@ fn route(
             display_name: required(options, "--display-name")?.into(),
             relay_url: parse(required(options, "--relay-url")?, "relay URL")?,
         })),
+        "community-update" => Ok(LifecycleRouteRequest::UpdateCommunity(
+            UpdateCommunityRequest {
+                community_id: parse::<CommunityConfigId>(
+                    required(options, "--community")?,
+                    "community ID",
+                )?,
+                display_name: required(options, "--display-name")?.into(),
+            },
+        )),
         "community-get" | "community-relay" => Ok(LifecycleRouteRequest::GetCommunity {
             community_id: parse::<CommunityConfigId>(
                 required(options, "--community")?,
@@ -195,7 +211,7 @@ fn route(
             )?,
         }),
         "community-list" => Ok(LifecycleRouteRequest::ListCommunities),
-        "community-remove" => Ok(LifecycleRouteRequest::RemoveCommunity {
+        "community-delete" | "community-remove" => Ok(LifecycleRouteRequest::RemoveCommunity {
             community_id: parse::<CommunityConfigId>(
                 required(options, "--community")?,
                 "community ID",
@@ -290,7 +306,7 @@ fn parse<T: FromStr>(value: &str, description: &str) -> Result<T, String> {
 }
 
 fn usage() -> String {
-    "usage: buzz-agentctl [--socket PATH] <community-add|community-get|community-list|community-remove|community-relay|create|get|list|update|enable|disable|logs|delete|purge|operation> [--name value ...]".into()
+    "usage: buzz-agentctl [--socket PATH] <community-add|community-update|community-get|community-list|community-delete|community-relay|create|get|list|update|enable|disable|logs|delete|purge|operation> [--name value ...]".into()
 }
 
 #[cfg(test)]

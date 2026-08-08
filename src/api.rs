@@ -17,6 +17,12 @@ pub struct AddCommunityRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UpdateCommunityRequest {
+    pub community_id: CommunityConfigId,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CommandMetadata {
     pub idempotency_key: String,
     pub correlation_id: String,
@@ -123,6 +129,7 @@ pub struct OperationResource {
 #[serde(tag = "route", content = "request", rename_all = "snake_case")]
 pub enum LifecycleRouteRequest {
     AddCommunity(AddCommunityRequest),
+    UpdateCommunity(UpdateCommunityRequest),
     GetCommunity { community_id: CommunityConfigId },
     ListCommunities,
     RemoveCommunity { community_id: CommunityConfigId },
@@ -210,6 +217,10 @@ pub trait LifecycleApplication {
         &self,
         request: &AddCommunityRequest,
     ) -> Result<CommunityConfig, ApplicationError>;
+    fn update_community(
+        &self,
+        request: &UpdateCommunityRequest,
+    ) -> Result<CommunityConfig, ApplicationError>;
     fn get_community(&self, id: CommunityConfigId) -> Result<CommunityConfig, ApplicationError>;
     fn list_communities(&self) -> Result<Vec<CommunityConfig>, ApplicationError>;
     fn remove_community(&self, id: CommunityConfigId) -> Result<CommunityConfig, ApplicationError>;
@@ -282,6 +293,18 @@ impl<S: LifecycleApplication> LifecycleHandler<S> {
         candidate.validate().map_err(api_validation)?;
         self.application
             .add_community(request)
+            .map_err(api_application)
+    }
+
+    pub fn update_community(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        request: &UpdateCommunityRequest,
+    ) -> Result<CommunityConfig, crate::ApiError> {
+        authorize(actor, Capability::ManageCommunity, None).map_err(api_authorization)?;
+        validate_token("display_name", &request.display_name, 120).map_err(api_validation)?;
+        self.application
+            .update_community(request)
             .map_err(api_application)
     }
 
@@ -560,6 +583,12 @@ mod tests {
         fn add_community(
             &self,
             _: &AddCommunityRequest,
+        ) -> Result<CommunityConfig, ApplicationError> {
+            Err(ApplicationError::Unsupported)
+        }
+        fn update_community(
+            &self,
+            _: &UpdateCommunityRequest,
         ) -> Result<CommunityConfig, ApplicationError> {
             Err(ApplicationError::Unsupported)
         }

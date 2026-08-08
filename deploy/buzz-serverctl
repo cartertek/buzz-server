@@ -5,8 +5,6 @@ command=${1:-}
 case "$command" in
   health)
     systemctl is-active --quiet buzz-server.service
-    test -S /run/buzz-server/signer/signer.sock
-    test -f /run/buzz-server/signer/ready
     test -f /var/lib/buzz-server/state.sqlite3
     echo healthy
     ;;

@@ -249,13 +249,55 @@ if [ -e "$release" ] || [ -L "$release" ]; then
 fi
 log "Preparing configuration and credentials"
 if [ ! -e /etc/buzz-server/config.json ]; then
-  config_source=${BUZZ_CONFIG_FILE:-$source_directory/config/buzz-server.dev.example.json}
-  test -f "$config_source"
+  config_source=${BUZZ_CONFIG_FILE:-}
+  [ -n "$config_source" ] && [ -f "$config_source" ] || fail "first install requires BUZZ_CONFIG_FILE; use deploy/install.sh for interactive setup"
   install -o root -g buzz-server -m 0640 "$config_source" /etc/buzz-server/config.json
 fi
 config_migrated=false
 config_backup="$temporary/config.json.previous"
 cp -p /etc/buzz-server/config.json "$config_backup"
+legacy_agent_id=$(python3 - /etc/buzz-server/config.json <<'PYLEGACYID'
+import json
+import sys
+config = json.load(open(sys.argv[1]))
+print(config.get("agent", {}).get("id", ""))
+PYLEGACYID
+)
+if [ -n "$legacy_agent_id" ]; then
+  identity_file="/var/lib/buzz-server/identities/${legacy_agent_id}.secret"
+  if [ ! -e "$identity_file" ]; then
+    legacy_agent_secret=$(python3 - /etc/buzz-server/secrets.env <<'PYLEGACYSECRET'
+import shlex
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+if not path.exists():
+    raise SystemExit(0)
+for raw in path.read_text().splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    if key.strip() != "BUZZ_AGENT_SECRET":
+        continue
+    value = value.strip()
+    if value[:1] in {"'", '"'}:
+        parsed = shlex.split(value, posix=True)
+        value = parsed[0] if parsed else ""
+    print(value)
+    break
+PYLEGACYSECRET
+)
+    [ -n "$legacy_agent_secret" ] || fail "legacy configured agent identity cannot be migrated: BUZZ_AGENT_SECRET is unavailable"
+    case "$legacy_agent_secret" in *[!0-9A-Fa-f]*|'') fail "legacy BUZZ_AGENT_SECRET is not a valid hex secret" ;; esac
+    [ "${#legacy_agent_secret}" -eq 64 ] || fail "legacy BUZZ_AGENT_SECRET is not 64 hex characters"
+    install -d -o root -g root -m 0700 /var/lib/buzz-server/identities
+    printf '%s' "$legacy_agent_secret" >"$identity_file"
+    chown root:root "$identity_file"
+    chmod 0600 "$identity_file"
+    unset legacy_agent_secret
+  fi
+fi
 if python3 - /etc/buzz-server/config.json <<'PYMIGRATE'
 import json
 import os
@@ -269,9 +311,39 @@ changed = False
 if config.get("owner_secret_file") == "/run/credentials/buzz-server.service/owner-secret":
     config["owner_secret_file"] = "/run/buzz-server/credentials/owner-secret"
     changed = True
-if config.get("signer_socket") == "/run/buzz-server/signer.sock":
-    config["signer_socket"] = "/run/buzz-server/signer/signer.sock"
-    changed = True
+legacy_community = config.get("community")
+legacy_agent = config.get("agent")
+if legacy_community or legacy_agent:
+    import sqlite3
+    database = Path(config.get("state_database", "/var/lib/buzz-server/state.sqlite3"))
+    if not database.exists():
+        raise RuntimeError("legacy community/agent config exists but state database is missing")
+    connection = sqlite3.connect(database)
+    try:
+        if legacy_community:
+            row = connection.execute("SELECT 1 FROM community_configs WHERE id=?", (legacy_community["id"],)).fetchone()
+            if row is None:
+                raise RuntimeError("legacy configured community is not present in the state database")
+        if legacy_agent:
+            row = connection.execute("SELECT 1 FROM agent_specs WHERE id=?", (legacy_agent["id"],)).fetchone()
+            if row is None:
+                raise RuntimeError("legacy configured agent is not present in the state database")
+    finally:
+        connection.close()
+
+for legacy_field in [
+    "receipt_file",
+    "signer_socket",
+    "workspace_path",
+    "runtime_path",
+    "agent_secret_env",
+    "expected_agent_pubkey",
+    "community",
+    "agent",
+]:
+    if legacy_field in config:
+        del config[legacy_field]
+        changed = True
 
 probe = {
     "timeout_seconds": 15,

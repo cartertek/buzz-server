@@ -82,15 +82,9 @@ the variable names and lower-level deployment contract.
 
 ## Getting started
 
-Buzz Server keeps community configuration in its durable state database. List the
-communities already known to the server:
-
-```sh
-sudo buzz-server communities list
-```
-
-The community configured during installation is already present. To add another
-community, provide its relay URL:
+Buzz Server keeps community and hosted-agent state in its durable state database.
+A clean installation starts with no communities or agents. Add the community you
+want this server to use:
 
 ```sh
 sudo buzz-server communities add \
@@ -105,9 +99,7 @@ sudo buzz-server agents create \
   --community community_... \
   --display-name 'Build agent' \
   --system-prompt 'Help with software engineering work in this channel.' \
-  --runtime codex-acp \
-  --idempotency getting-started-agent-1 \
-  --correlation getting-started
+  --runtime codex-acp
 ```
 
 The CLI waits for the durable create operation to finish and then returns the
@@ -145,30 +137,20 @@ Use `buzz-server agents list`, `buzz-server agents get --agent agent_...`, and
 
 ## Configuration
 
-Bootstrap configuration lives in `/etc/buzz-server/config.json`; runtime secrets remain in
-`secrets.env`. Communities and hosted agents created through the CLI are stored durably in
-the Buzz Server state database. The owner key is stored
+Persistent host/runtime configuration lives in `/etc/buzz-server/config.json`; runtime
+secrets remain in `secrets.env`. Community and hosted-agent state lives only in the
+Buzz Server state database. The owner key is stored
 through KMS when configured, otherwise through the OS keyring or restricted-file
 fallback. The schema is [`config/buzz-server.schema.json`](config/buzz-server.schema.json).
 
 
 ## Rollback
 
-List installed releases:
-
-```sh
-ls -1 /opt/buzz-server/releases
-```
-
-Select an earlier installed release by its directory name:
-
-```sh
-sudo buzz-server rollback v0.1.4-x86_64-unknown-linux-gnu
-```
-
-Rollback preserves the database, identities, runtime state, workspaces, and
-configuration. It restores the previous release automatically if the selected
-rollback target fails health checks.
+Updates and rollbacks use the same procedure: extract the desired newer or older
+release artifact and run its bundled `deploy/install.sh`. The installer switches
+releases atomically while preserving configuration, secrets, database state,
+identities, workspaces, and logs. If the selected release fails its health check,
+the previously active release is restored automatically.
 
 ## Service management
 

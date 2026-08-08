@@ -252,6 +252,17 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
         Ok(community)
     }
 
+    fn update_community(
+        &self,
+        request: &crate::api::UpdateCommunityRequest,
+    ) -> Result<CommunityConfig, ApplicationError> {
+        let mut community = self.get_community(request.community_id)?;
+        community.display_name.clone_from(&request.display_name);
+        community.validate().map_err(ApplicationError::Invalid)?;
+        self.store.put_community(&community, (self.now)())?;
+        Ok(community)
+    }
+
     fn get_community(&self, id: CommunityConfigId) -> Result<CommunityConfig, ApplicationError> {
         self.store
             .get_community(id)?

@@ -40,21 +40,29 @@ sudo buzz-server communities get --community community_...
 sudo buzz-server communities list
 ```
 
-### `remove`
+### `update`
 
 ```sh
-sudo buzz-server communities remove --community community_...
+sudo buzz-server communities update \
+  --community community_... \
+  --display-name 'Platform Engineering'
 ```
 
-Removal fails with a conflict while hosted agents still reference the community.
+Updates the local display label. The relay URL is unchanged.
+
+### `delete`
+
+```sh
+sudo buzz-server communities delete --community community_...
+```
+
+Deletion fails with a conflict while hosted agents still reference the community.
 
 ## Hosted agent lifecycle
 
-Mutating hosted-agent commands require:
-
-- `--idempotency KEY`: stable retry key scoped to the caller and operation kind;
-- `--correlation ID`: operator-provided trace identifier copied into the durable
-  operation and audit record.
+Mutating hosted-agent commands generate idempotency and correlation identifiers
+automatically. Scripts may pass `--idempotency KEY` to make retries deterministic
+and `--correlation ID` to supply a trace identifier; either option may be omitted.
 
 The underlying control plane remains asynchronous and durable. The CLI hides the
 normal polling step: it waits up to 120 seconds for the operation to reach a
@@ -69,9 +77,7 @@ sudo buzz-server agents create \
   --community community_... \
   --display-name 'Build agent' \
   --system-prompt 'Build and verify requested changes.' \
-  --runtime codex-acp \
-  --idempotency create-build-agent-1 \
-  --correlation ticket-1842
+  --runtime codex-acp
 ```
 
 ### `get` / `list`
@@ -87,9 +93,7 @@ sudo buzz-server agents list --community community_...
 ```sh
 sudo buzz-server agents update \
   --agent agent_... \
-  --display-name 'Primary build agent' \
-  --idempotency rename-agent-1 \
-  --correlation ticket-1901
+  --display-name 'Primary build agent'
 ```
 
 Include at least one of `--display-name`, `--system-prompt`, or `--runtime`.
@@ -97,8 +101,8 @@ Include at least one of `--display-name`, `--system-prompt`, or `--runtime`.
 ### `enable` / `disable`
 
 ```sh
-sudo buzz-server agents enable --agent agent_... --idempotency enable-1 --correlation maintenance
-sudo buzz-server agents disable --agent agent_... --idempotency disable-1 --correlation maintenance
+sudo buzz-server agents enable --agent agent_...
+sudo buzz-server agents disable --agent agent_...
 ```
 
 ### `logs`
@@ -113,8 +117,8 @@ The default limit is 100; valid values are 1 through 1000.
 ### `delete` / `purge`
 
 ```sh
-sudo buzz-server agents delete --agent agent_... --idempotency delete-1 --correlation retire
-sudo buzz-server agents purge --agent agent_... --idempotency purge-1 --correlation retire
+sudo buzz-server agents delete --agent agent_...
+sudo buzz-server agents purge --agent agent_...
 ```
 
 Delete is recoverable until the configured retention deadline. Purge is irreversible
