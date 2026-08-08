@@ -16,7 +16,7 @@ use buzz_server::{
         AuthenticatedPrincipal, Authority, Nip98AuthorityPolicy, Principal, UnixAuthorityPolicy,
     },
     custody::{AgentIdentityCustody, FilesystemAgentIdentityCustody},
-    launch::{ExecutableIdentity, HealthPolicy, RestartMode, RestartPolicy, SecretRef},
+    launch::{ExecutableIdentity, HealthPolicy, RestartPolicy, SecretRef},
     reconcile::{ProcessReceiptRepository, Reconciler},
     signer::DisposableSigner,
     supervisor::{
@@ -883,6 +883,8 @@ enum DaemonError {
     Usage,
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
+    #[error("required secret is unavailable: {0}")]
+    MissingSecret(String),
     #[error("configured owner secret is invalid")]
     InvalidOwnerSecret,
     #[error("system clock is before the Unix epoch")]
