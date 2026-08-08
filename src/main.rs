@@ -621,7 +621,8 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
         .get_community(agent.community_config_id)?
         .ok_or(StorageError::NotFound)?;
     let layout = dynamic_agent_layout(config, agent_id)?;
-    for directory in [&layout.workspace, &layout.runtime] {
+    let runtime_tmp = layout.runtime.join("tmp");
+    for directory in [&layout.workspace, &layout.runtime, &runtime_tmp] {
         fs::create_dir_all(directory)?;
         #[cfg(unix)]
         {
