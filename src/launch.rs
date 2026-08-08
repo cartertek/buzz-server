@@ -194,18 +194,7 @@ impl LaunchSpec {
                 version: _,
             } => (format!("{manager}:{name}"), None),
         };
-        let resolved_preflight = runtime.preflight.as_ref().map(|probe| PreflightProbe {
-            timeout_seconds: probe.timeout_seconds,
-            command: context.harness.path.clone(),
-            arguments: vec![
-                "models".into(),
-                "--json".into(),
-                "--agent-command".into(),
-                runtime.command.clone(),
-                "--agent-args".into(),
-                runtime.arguments.join(","),
-            ],
-        });
+        let resolved_preflight = runtime.preflight.clone();
         let mut secret_environment = BTreeMap::new();
         for required in &runtime.required_secrets {
             if agent
@@ -898,18 +887,11 @@ mod tests {
         assert_eq!(resolved.runtime.arguments, ["--stdio"]);
         assert_eq!(
             resolved.runtime.preflight.as_ref().unwrap().arguments,
-            [
-                "models",
-                "--json",
-                "--agent-command",
-                "/opt/buzz/bin/codex-acp",
-                "--agent-args",
-                "--stdio"
-            ]
+            ["ignored"]
         );
         assert_eq!(
             resolved.runtime.preflight.as_ref().unwrap().command,
-            "/opt/buzz/bin/buzz-acp"
+            "/ignored/catalog/probe"
         );
         assert_eq!(
             resolved.secret_environment["OPENAI_API_KEY"].key,
