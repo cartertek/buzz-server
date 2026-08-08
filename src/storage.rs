@@ -1177,7 +1177,7 @@ mod tests {
 
         assert!(matches!(
             store.delete_community_with_deleted_agents(config.id, 10),
-            Err(StorageError::Conflict(message)) if message.contains("non-deleted agent")
+            Err(StorageError::Conflict(message)) if message.contains("active agents")
         ));
 
         spec.desired_state = DesiredAgentState::Deleted;
