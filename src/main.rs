@@ -535,13 +535,6 @@ fn path_string(path: &Path) -> Result<String, DaemonError> {
         .ok_or_else(|| DaemonError::InvalidConfig("paths must be UTF-8".into()))
 }
 
-fn unix_seconds() -> Result<u64, DaemonError> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| DaemonError::Clock)?
-        .as_secs())
-}
-
 fn unix_seconds_i64() -> i64 {
     i64::try_from(unix_seconds_unchecked()).unwrap_or(i64::MAX)
 }
@@ -552,6 +545,7 @@ fn unix_seconds_unchecked() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn reconcile_lifecycle_operation<E: LifecycleEffects>(
     application: &SqliteLifecycleApplication<E>,
     store: &SqliteStore,
@@ -867,16 +861,6 @@ fn store_operation(resource: &buzz_server::api::OperationResource) -> DurableOpe
     }
 }
 
-fn unix_millis() -> Result<u64, DaemonError> {
-    u64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| DaemonError::Clock)?
-            .as_millis(),
-    )
-    .map_err(|_| DaemonError::Clock)
-}
-
 #[derive(Debug, thiserror::Error)]
 enum DaemonError {
     #[error("usage: buzz-server --config /etc/buzz-server/config.json")]
@@ -887,8 +871,6 @@ enum DaemonError {
     MissingSecret(String),
     #[error("configured owner secret is invalid")]
     InvalidOwnerSecret,
-    #[error("system clock is before the Unix epoch")]
-    Clock,
     #[error("daemon task failed: {0}")]
     Task(String),
     #[error(transparent)]
