@@ -57,8 +57,7 @@ directories, extracted into same-filesystem staging directories, then renamed
 atomically into root-owned, `buzz-agent`-readable immutable locations. Every
 deployment rechecks the retained archive digest and entrypoint.
 Before changing the live release pointer, the installer runs the exact
-`codex-acp --version` availability/version preflight, matching Buzz Desktop, as the
-isolated `buzz-agent` account with a minimal environment. This catches missing
+`buzz-runtime-probe codex-acp-version` availability/version preflight, copied from Buzz Desktop's bounded `codex-acp --version` probe, as the isolated `buzz-agent` account. This catches missing
 Node, modules, loaders, and execute/read permissions.
 
 `secrets.env` supplies the environment names referenced by configuration. It

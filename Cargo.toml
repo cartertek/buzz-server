@@ -8,6 +8,7 @@ description = "Headless Buzz client for operating always-on agents"
 publish = false
 
 [dependencies]
+tempfile = "3.23"
 buzz-core = { git = "https://github.com/block/buzz.git", rev = "79c52166cfe6b6d36bdc7686f943595c74e2f578" }
 buzz-sdk = { git = "https://github.com/block/buzz.git", rev = "79c52166cfe6b6d36bdc7686f943595c74e2f578", version = "0.1.0" }
 buzz-ws-client = { git = "https://github.com/block/buzz.git", rev = "79c52166cfe6b6d36bdc7686f943595c74e2f578" }
@@ -34,6 +35,5 @@ uuid = { version = "1.19.0", features = ["serde", "v7"] }
 unsafe_code = "forbid"
 
 [dev-dependencies]
-tempfile = "3.23"
 rcgen = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

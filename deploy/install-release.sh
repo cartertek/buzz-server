@@ -125,6 +125,7 @@ $package/buzz-server
 $package/buzz-server-daemon
 $package/buzz-agentctl
 $package/buzz-secretsctl
+$package/buzz-runtime-probe
 $package/buzz-cli
 $package/config/
 $package/config/buzz-server.dev.example.json
@@ -247,13 +248,16 @@ config_migrated=false
 config_backup="$temporary/config.json.previous"
 if grep -q '"owner_secret_file": "/run/credentials/buzz-server.service/owner-secret"' /etc/buzz-server/config.json ||
    grep -q '"signer_socket": "/run/buzz-server/signer.sock"' /etc/buzz-server/config.json ||
-   grep -q '"arguments": \["models", "--json", "--agent-command", "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp", "--agent-args", "acp"\]' /etc/buzz-server/config.json; then
+   grep -q '"arguments": \["models", "--json", "--agent-command", "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp", "--agent-args", "acp"\]' /etc/buzz-server/config.json ||
+   grep -q '"arguments": \["--version"\]' /etc/buzz-server/config.json; then
   cp -p /etc/buzz-server/config.json "$config_backup"
   sed -i \
     -e 's#"owner_secret_file": "/run/credentials/buzz-server.service/owner-secret"#"owner_secret_file": "/run/buzz-server/credentials/owner-secret"#' \
     -e 's#"signer_socket": "/run/buzz-server/signer.sock"#"signer_socket": "/run/buzz-server/signer/signer.sock"#' \
-    -e 's#"command": "/opt/buzz-server/runtimes/sprig-0.1.0/bin/buzz-acp"#"command": "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp"#' \
-    -e 's#"arguments": \["models", "--json", "--agent-command", "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp", "--agent-args", "acp"\]#"arguments": ["--version"]#' \
+    -e '/"preflight": {/,/}/ s#"command": "/opt/buzz-server/runtimes/sprig-0.1.0/bin/buzz-acp"#"command": "/opt/buzz-server/current/buzz-runtime-probe"#' \
+    -e '/"preflight": {/,/}/ s#"command": "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp"#"command": "/opt/buzz-server/current/buzz-runtime-probe"#' \
+    -e '/"preflight": {/,/}/ s#"arguments": \["models", "--json", "--agent-command", "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp", "--agent-args", "acp"\]#"arguments": ["codex-acp-version", "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp"]#' \
+    -e '/"preflight": {/,/}/ s#"arguments": \["--version"\]#"arguments": ["codex-acp-version", "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp"]#' \
     /etc/buzz-server/config.json
   config_migrated=true
 fi
@@ -307,11 +311,12 @@ if ! runtime_assets_valid; then
 fi
 runtime_assets_valid || { echo "pinned runtime asset validation failed" >&2; exit 66; }
 log "Running isolated runtime preflight"
-timeout --kill-after=5s 30s runuser --user buzz-agent -- /usr/bin/env -i \
+timeout --kill-after=5s 15s runuser --user buzz-agent -- /usr/bin/env -i \
   HOME=/var/lib/buzz-server/runtime \
   TMPDIR=/var/lib/buzz-server/runtime/agent/tmp \
   PATH=/usr/local/bin:/usr/bin:/bin \
-  /opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp --version >/dev/null || {
+  "$release_staging/buzz-runtime-probe" codex-acp-version \
+  /opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp >/dev/null || {
     echo "pinned Codex ACP runtime failed the availability/version preflight" >&2
     exit 66
   }
