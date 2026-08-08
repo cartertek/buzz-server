@@ -26,13 +26,24 @@ pub trait LifecycleEffects: Send + Sync {
     fn operation_ready(&self, operation: &DurableOperation) -> Result<(), ApplicationError>;
 }
 
-#[derive(Clone)]
 pub struct SqliteLifecycleApplication<E> {
     store: Arc<SqliteStore>,
     effects: Arc<E>,
     now: fn() -> i64,
     retention_seconds: i64,
     completion: Arc<OperationCompletionSignal>,
+}
+
+impl<E> Clone for SqliteLifecycleApplication<E> {
+    fn clone(&self) -> Self {
+        Self {
+            store: Arc::clone(&self.store),
+            effects: Arc::clone(&self.effects),
+            now: self.now,
+            retention_seconds: self.retention_seconds,
+            completion: Arc::clone(&self.completion),
+        }
+    }
 }
 
 #[derive(Default)]
