@@ -80,13 +80,6 @@ For unattended installation, pass the prompted values as environment variables
 and add `--non-interactive`. See [host deployment details](deploy/README.md) for
 the variable names and lower-level deployment contract.
 
-## Configuration
-
-Configuration lives in `/etc/buzz-server`. Edit `config.json` for server and
-agent settings; runtime secrets remain in `secrets.env`. The owner key is stored
-through KMS when configured, otherwise through the OS keyring or restricted-file
-fallback. The schema is [`config/buzz-server.schema.json`](config/buzz-server.schema.json).
-
 ## Getting started
 
 After installation, create an agent in one of the communities configured on this
@@ -135,6 +128,15 @@ automatically; no Buzz Server restart or separate subscribe command is required.
 Use `buzz-server agent list`, `buzz-server agent get --agent agent_...`, and
 `buzz-server agent logs --agent agent_...` to inspect it. See
 [`docs/CLI.md`](docs/CLI.md) for the complete Buzz Server command reference.
+
+
+## Configuration
+
+Configuration lives in `/etc/buzz-server`. Edit `config.json` for server and
+agent settings; runtime secrets remain in `secrets.env`. The owner key is stored
+through KMS when configured, otherwise through the OS keyring or restricted-file
+fallback. The schema is [`config/buzz-server.schema.json`](config/buzz-server.schema.json).
+
 
 ## Rollback
 
