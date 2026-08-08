@@ -5,15 +5,15 @@ use std::sync::Arc;
 
 use crate::{
     api::{
-        AgentCommandRequest, AgentLogsRequest, AgentLogsResource, AgentResource, ApplicationError,
-        ChangeAgentStateRequest, CommandMetadata, CreateAgentInput, DraftResource,
-        LifecycleApplication, ListAgentsRequest, OperationResource, SubmitDraftRequest,
-        UpdateAgentRequest,
+        AddCommunityRequest, AgentCommandRequest, AgentLogsRequest, AgentLogsResource,
+        AgentResource, ApplicationError, ChangeAgentStateRequest, CommandMetadata,
+        CreateAgentInput, DraftResource, LifecycleApplication, ListAgentsRequest,
+        OperationResource, SubmitDraftRequest, UpdateAgentRequest,
     },
     auth::{AuthenticatedPrincipal, Principal},
     storage::{AgentCommandMutation, DurableOperation, IdempotencyRecord, NewAuditRecord},
-    AgentId, AgentSpec, DesiredAgentState, OperationId, OperationKind, OperationStatus,
-    RuntimeSpec, SqliteStore, StorageError,
+    AgentId, AgentSpec, CommunityConfig, CommunityConfigId, DesiredAgentState, OperationId,
+    OperationKind, OperationStatus, RuntimeSpec, SqliteStore, StorageError,
 };
 
 pub const DEFAULT_RETENTION_SECONDS: i64 = 30 * 24 * 60 * 60;
@@ -241,6 +241,35 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
 }
 
 impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E> {
+    fn add_community(
+        &self,
+        request: &AddCommunityRequest,
+    ) -> Result<CommunityConfig, ApplicationError> {
+        let community =
+            CommunityConfig::new(request.display_name.clone(), request.relay_url.clone())
+                .map_err(ApplicationError::Invalid)?;
+        self.store.put_community(&community, (self.now)())?;
+        Ok(community)
+    }
+
+    fn get_community(&self, id: CommunityConfigId) -> Result<CommunityConfig, ApplicationError> {
+        self.store
+            .get_community(id)?
+            .ok_or(ApplicationError::NotFound)
+    }
+
+    fn list_communities(&self) -> Result<Vec<CommunityConfig>, ApplicationError> {
+        self.store
+            .list_communities()
+            .map_err(ApplicationError::from)
+    }
+
+    fn remove_community(&self, id: CommunityConfigId) -> Result<CommunityConfig, ApplicationError> {
+        let community = self.get_community(id)?;
+        self.store.delete_community(id)?;
+        Ok(community)
+    }
+
     fn create_agent(
         &self,
         actor: &AuthenticatedPrincipal,

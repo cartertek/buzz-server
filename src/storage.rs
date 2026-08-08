@@ -120,6 +120,8 @@ pub trait CommunityRepository {
     fn put_community(&self, config: &CommunityConfig, now: i64) -> Result<(), StorageError>;
     fn get_community(&self, id: CommunityConfigId)
         -> Result<Option<CommunityConfig>, StorageError>;
+    fn list_communities(&self) -> Result<Vec<CommunityConfig>, StorageError>;
+    fn delete_community(&self, id: CommunityConfigId) -> Result<(), StorageError>;
 }
 
 /// Persistence boundary for desired agent state.
@@ -212,6 +214,32 @@ impl SqliteStore {
         document
             .map(|value| serde_json::from_str(&value).map_err(StorageError::from))
             .transpose()
+    }
+
+    pub fn list_communities(&self) -> Result<Vec<CommunityConfig>, StorageError> {
+        let connection = self.connection()?;
+        let mut statement =
+            connection.prepare("SELECT document FROM community_configs ORDER BY id")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| {
+            let document = row?;
+            serde_json::from_str(&document).map_err(StorageError::from)
+        })
+        .collect()
+    }
+
+    pub fn delete_community(&self, id: CommunityConfigId) -> Result<(), StorageError> {
+        let changed = self
+            .connection()?
+            .execute(
+                "DELETE FROM community_configs WHERE id=?1",
+                [id.to_string()],
+            )
+            .map_err(map_constraint)?;
+        if changed == 0 {
+            return Err(StorageError::NotFound);
+        }
+        Ok(())
     }
 
     pub fn put_agent(&self, spec: &AgentSpec, now: i64) -> Result<(), StorageError> {
@@ -805,6 +833,14 @@ impl CommunityRepository for SqliteStore {
         id: CommunityConfigId,
     ) -> Result<Option<CommunityConfig>, StorageError> {
         SqliteStore::get_community(self, id)
+    }
+
+    fn list_communities(&self) -> Result<Vec<CommunityConfig>, StorageError> {
+        SqliteStore::list_communities(self)
+    }
+
+    fn delete_community(&self, id: CommunityConfigId) -> Result<(), StorageError> {
+        SqliteStore::delete_community(self, id)
     }
 }
 

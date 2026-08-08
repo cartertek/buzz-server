@@ -52,17 +52,28 @@ jobs:
             sh -s -- -y --profile minimal --default-toolchain 1.88.0 --target "$TARGET"
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - run: cargo build --release --locked --target '${{ matrix.target }}' --bins
+      - name: Build pinned upstream Buzz CLI
+        env:
+          TARGET: ${{ matrix.target }}
+          BUZZ_REV: 79c52166cfe6b6d36bdc7686f943595c74e2f578
+        run: |
+          set -eu
+          git clone --filter=blob:none https://github.com/block/buzz.git upstream-buzz
+          git -C upstream-buzz fetch --depth 1 origin "$BUZZ_REV"
+          git -C upstream-buzz checkout --detach FETCH_HEAD
+          (cd upstream-buzz && cargo build --release --locked --target "$TARGET" -p buzz-cli)
       - name: Enforce deployment-host glibc compatibility
         env:
           TARGET: ${{ matrix.target }}
         run: |
           set -eu
-          binary="target/${TARGET}/release/buzz-server"
-          if readelf --version-info "$binary" | grep -Eq 'Name: GLIBC_2\.(3[5-9]|[4-9][0-9])'; then
-            echo "release requires a glibc version newer than the supported 2.34 baseline" >&2
-            readelf --version-info "$binary" | grep 'Name: GLIBC_' >&2
-            exit 1
-          fi
+          for binary in "target/${TARGET}/release/buzz-server" "upstream-buzz/target/${TARGET}/release/buzz"; do
+            if readelf --version-info "$binary" | grep -Eq 'Name: GLIBC_2\.(3[5-9]|[4-9][0-9])'; then
+              echo "$binary requires a glibc version newer than the supported 2.34 baseline" >&2
+              readelf --version-info "$binary" | grep 'Name: GLIBC_' >&2
+              exit 1
+            fi
+          done
       - name: Package PR artifact
         env:
           TARGET: ${{ matrix.target }}
@@ -76,6 +87,7 @@ jobs:
           chmod 0755 "dist/${package}/buzz-server"
           install -m 0755 "target/${TARGET}/release/buzz-agentctl" "dist/${package}/buzz-agentctl"
           install -m 0755 "target/${TARGET}/release/buzz-secretsctl" "dist/${package}/buzz-secretsctl"
+          install -m 0755 "upstream-buzz/target/${TARGET}/release/buzz" "dist/${package}/buzz-cli"
           install -m 0644 config/buzz-server.dev.example.json config/buzz-server.schema.json "dist/${package}/config/"
           install -m 0644 deploy/buzz-server.service deploy/buzz-server-healthcheck.service deploy/buzz-server-healthcheck.timer deploy/README.md "dist/${package}/deploy/"
           sed -e "s/@BUZZ_SERVER_VERSION@/${VERSION}/g" -e "s/@BUZZ_SERVER_TARGET@/${TARGET}/g" deploy/install.sh > "dist/${package}/deploy/install.sh"

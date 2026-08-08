@@ -54,6 +54,8 @@ pub struct AuthenticatedPrincipal {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Capability {
+    ReadCommunity,
+    ManageCommunity,
     ReadAgent,
     CreateAgent,
     UpdateAgent,
@@ -205,7 +207,9 @@ pub fn authorize(
         Capability::SubmitDraft => Ok(()),
         Capability::ReadDraft if owner == Some(&actor.principal.ownership_key()) => Ok(()),
         Capability::ReadDraft => Err(AuthorizationError::NotOwner),
-        Capability::ReadAgent
+        Capability::ReadCommunity
+        | Capability::ManageCommunity
+        | Capability::ReadAgent
         | Capability::CreateAgent
         | Capability::UpdateAgent
         | Capability::ChangeAgentState
@@ -248,6 +252,8 @@ mod tests {
         let administrator = actor(Authority::Administrator, 1);
         let submitter = actor(Authority::DraftSubmitter, 2);
         let privileged = [
+            Capability::ReadCommunity,
+            Capability::ManageCommunity,
             Capability::ReadAgent,
             Capability::CreateAgent,
             Capability::UpdateAgent,

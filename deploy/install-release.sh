@@ -125,6 +125,7 @@ $package/buzz-server
 $package/buzz-server-daemon
 $package/buzz-agentctl
 $package/buzz-secretsctl
+$package/buzz-cli
 $package/config/
 $package/config/buzz-server.dev.example.json
 $package/config/buzz-server.schema.json
@@ -182,6 +183,7 @@ test -x "$source_directory/buzz-server" || fail "package is missing buzz-server"
 test -x "$source_directory/buzz-server-daemon" || fail "package is missing buzz-server-daemon"
 test -x "$source_directory/buzz-agentctl" || fail "package is missing internal agent client"
 test -x "$source_directory/buzz-secretsctl" || fail "package is missing internal secrets client"
+test -x "$source_directory/buzz-cli" || fail "package is missing bundled Buzz CLI"
 release="/opt/buzz-server/releases/$version-$target"
 previous=$(readlink -f /opt/buzz-server/current 2>/dev/null || true)
 log "Preparing system accounts and directories"
@@ -218,6 +220,7 @@ install -o root -g root -m 0555 "$source_directory/buzz-server" "$release_stagin
 install -o root -g root -m 0555 "$source_directory/buzz-server-daemon" "$release_staging/buzz-server-daemon"
 install -o root -g root -m 0555 "$source_directory/buzz-agentctl" "$release_staging/buzz-agentctl"
 install -o root -g root -m 0555 "$source_directory/buzz-secretsctl" "$release_staging/buzz-secretsctl"
+install -o root -g root -m 0555 "$source_directory/buzz-cli" "$release_staging/buzz-cli"
 install -d -o root -g root -m 0555 "$release_staging/share"
 cp -R "$source_directory/config" "$source_directory/deploy" "$release_staging/share/"
 chown -R root:root "$release_staging"

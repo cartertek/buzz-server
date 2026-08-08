@@ -8,7 +8,7 @@ fully compromised root account.
 
 Buzz Server follows Buzz Desktop's identity-storage ordering where practical.
 If `BUZZ_KMS_KEY_ID` or `BUZZ_OWNER_ENVELOPE_FILE` is configured, AWS KMS
-envelope custody takes precedence. `buzz-server secret` encrypts the owner secret
+envelope custody takes precedence. `buzz-server secrets` encrypts the owner secret
 with an AES-256-GCM data key generated and wrapped by KMS; startup decrypts it
 only into `/run/buzz-server/credentials/owner-secret`.
 
@@ -33,7 +33,7 @@ implementation with literal code reuse.
 For a KMS-backed import:
 
 ```sh
-buzz-server secret encrypt \
+buzz-server secrets encrypt \
   --kms-key-id alias/buzz-server-owner \
   --input ./owner-secret \
   --output ./owner-secret.envelope.json

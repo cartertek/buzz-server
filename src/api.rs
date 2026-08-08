@@ -6,9 +6,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     auth::{authorize, AuthenticatedPrincipal, AuthorizationError, Capability, PrincipalOwnership},
-    AgentId, CommunityConfigId, DesiredAgentState, ErrorCode, OperationId, OperationKind,
-    OperationStatus, RuntimeId, StorageError, ValidationError,
+    AgentId, CommunityConfig, CommunityConfigId, DesiredAgentState, ErrorCode, OperationId,
+    OperationKind, OperationStatus, RuntimeId, StorageError, ValidationError,
 };
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AddCommunityRequest {
+    pub display_name: String,
+    pub relay_url: url::Url,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CommandMetadata {
@@ -116,6 +122,10 @@ pub struct OperationResource {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "route", content = "request", rename_all = "snake_case")]
 pub enum LifecycleRouteRequest {
+    AddCommunity(AddCommunityRequest),
+    GetCommunity { community_id: CommunityConfigId },
+    ListCommunities,
+    RemoveCommunity { community_id: CommunityConfigId },
     CreateAgent(CreateAgentRequest),
     UpdateAgent(UpdateAgentRequest),
     ChangeAgentState(ChangeAgentStateRequest),
@@ -133,6 +143,8 @@ pub enum LifecycleRouteRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "resource", content = "value", rename_all = "snake_case")]
 pub enum LifecycleRouteResource {
+    Community(CommunityConfig),
+    Communities(Vec<CommunityConfig>),
     Agent(AgentResource),
     Agents(Vec<AgentResource>),
     Logs(AgentLogsResource),
@@ -194,6 +206,13 @@ impl From<StorageError> for ApplicationError {
 }
 
 pub trait LifecycleApplication {
+    fn add_community(
+        &self,
+        request: &AddCommunityRequest,
+    ) -> Result<CommunityConfig, ApplicationError>;
+    fn get_community(&self, id: CommunityConfigId) -> Result<CommunityConfig, ApplicationError>;
+    fn list_communities(&self) -> Result<Vec<CommunityConfig>, ApplicationError>;
+    fn remove_community(&self, id: CommunityConfigId) -> Result<CommunityConfig, ApplicationError>;
     fn create_agent(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -249,6 +268,49 @@ impl<S: LifecycleApplication> LifecycleHandler<S> {
     #[must_use]
     pub const fn new(application: S) -> Self {
         Self { application }
+    }
+
+    pub fn add_community(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        request: &AddCommunityRequest,
+    ) -> Result<CommunityConfig, crate::ApiError> {
+        authorize(actor, Capability::ManageCommunity, None).map_err(api_authorization)?;
+        let candidate =
+            CommunityConfig::new(request.display_name.clone(), request.relay_url.clone())
+                .map_err(api_validation)?;
+        candidate.validate().map_err(api_validation)?;
+        self.application
+            .add_community(request)
+            .map_err(api_application)
+    }
+
+    pub fn get_community(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        id: CommunityConfigId,
+    ) -> Result<CommunityConfig, crate::ApiError> {
+        authorize(actor, Capability::ReadCommunity, None).map_err(api_authorization)?;
+        self.application.get_community(id).map_err(api_application)
+    }
+
+    pub fn list_communities(
+        &self,
+        actor: &AuthenticatedPrincipal,
+    ) -> Result<Vec<CommunityConfig>, crate::ApiError> {
+        authorize(actor, Capability::ReadCommunity, None).map_err(api_authorization)?;
+        self.application.list_communities().map_err(api_application)
+    }
+
+    pub fn remove_community(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        id: CommunityConfigId,
+    ) -> Result<CommunityConfig, crate::ApiError> {
+        authorize(actor, Capability::ManageCommunity, None).map_err(api_authorization)?;
+        self.application
+            .remove_community(id)
+            .map_err(api_application)
     }
 
     pub fn create_agent(
@@ -495,6 +557,25 @@ mod tests {
     }
 
     impl LifecycleApplication for FakeApplication {
+        fn add_community(
+            &self,
+            _: &AddCommunityRequest,
+        ) -> Result<CommunityConfig, ApplicationError> {
+            Err(ApplicationError::Unsupported)
+        }
+        fn get_community(&self, _: CommunityConfigId) -> Result<CommunityConfig, ApplicationError> {
+            Err(ApplicationError::Unsupported)
+        }
+        fn list_communities(&self) -> Result<Vec<CommunityConfig>, ApplicationError> {
+            Ok(Vec::new())
+        }
+        fn remove_community(
+            &self,
+            _: CommunityConfigId,
+        ) -> Result<CommunityConfig, ApplicationError> {
+            Err(ApplicationError::Unsupported)
+        }
+
         fn create_agent(
             &self,
             _: &AuthenticatedPrincipal,

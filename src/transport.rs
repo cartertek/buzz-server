@@ -78,6 +78,22 @@ impl<S: LifecycleApplication + Send + Sync + 'static> AuthenticatedRequestHandle
                 field: None,
             })
             .and_then(|request| match request {
+                LifecycleRouteRequest::AddCommunity(request) => self
+                    .0
+                    .add_community(actor, &request)
+                    .map(LifecycleRouteResource::Community),
+                LifecycleRouteRequest::GetCommunity { community_id } => self
+                    .0
+                    .get_community(actor, community_id)
+                    .map(LifecycleRouteResource::Community),
+                LifecycleRouteRequest::ListCommunities => self
+                    .0
+                    .list_communities(actor)
+                    .map(LifecycleRouteResource::Communities),
+                LifecycleRouteRequest::RemoveCommunity { community_id } => self
+                    .0
+                    .remove_community(actor, community_id)
+                    .map(LifecycleRouteResource::Community),
                 LifecycleRouteRequest::CreateAgent(request) => self
                     .0
                     .create_agent(actor, &request)
@@ -481,6 +497,28 @@ mod tests {
     struct RouterApplication(Mutex<Option<AgentResource>>);
 
     impl LifecycleApplication for RouterApplication {
+        fn add_community(
+            &self,
+            _: &AddCommunityRequest,
+        ) -> Result<crate::CommunityConfig, ApplicationError> {
+            Err(ApplicationError::Unsupported)
+        }
+        fn get_community(
+            &self,
+            _: crate::CommunityConfigId,
+        ) -> Result<crate::CommunityConfig, ApplicationError> {
+            Err(ApplicationError::Unsupported)
+        }
+        fn list_communities(&self) -> Result<Vec<crate::CommunityConfig>, ApplicationError> {
+            Ok(Vec::new())
+        }
+        fn remove_community(
+            &self,
+            _: crate::CommunityConfigId,
+        ) -> Result<crate::CommunityConfig, ApplicationError> {
+            Err(ApplicationError::Unsupported)
+        }
+
         fn create_agent(
             &self,
             _: &AuthenticatedPrincipal,

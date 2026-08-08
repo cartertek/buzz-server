@@ -1,15 +1,15 @@
 # Buzz Server host deployment
 
-Releases also install `buzz-server agent`, a machine-readable lifecycle client for
+Releases also install `buzz-server agents`, a machine-readable lifecycle client for
 the authenticated Unix socket. See [`docs/CLI.md`](../docs/CLI.md) for the full
 command reference and [`docs/LIFECYCLE_API.md`](../docs/LIFECYCLE_API.md) for the
 wire and authorization contracts. For example:
 
 ```sh
-buzz-server agent list
-buzz-server agent get --agent agent_...
-buzz-server agent disable --agent agent_... --idempotency disable-1 --correlation maintenance-1
-buzz-server agent operation --operation operation_...
+buzz-server agents list
+buzz-server agents get --agent agent_...
+buzz-server agents disable --agent agent_... --idempotency disable-1 --correlation maintenance-1
+buzz-server agents operation --operation operation_...
 ```
 
 Create, update, enable, disable, logs, recoverable delete, immediate purge, and

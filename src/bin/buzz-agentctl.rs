@@ -1,14 +1,15 @@
-use std::{collections::BTreeMap, env, path::PathBuf, str::FromStr};
+use std::{collections::BTreeMap, env, path::PathBuf, str::FromStr, time::Duration};
 
 use buzz_server::api::{
-    AgentCommandRequest, AgentLogsRequest, ChangeAgentStateRequest, CommandMetadata,
-    CreateAgentInput, CreateAgentRequest, LifecycleRouteRequest, ListAgentsRequest,
-    PromoteDraftRequest, SubmitDraftRequest, UpdateAgentInput, UpdateAgentRequest,
+    AddCommunityRequest, AgentCommandRequest, AgentLogsRequest, ChangeAgentStateRequest,
+    CommandMetadata, CreateAgentInput, CreateAgentRequest, LifecycleRouteRequest,
+    ListAgentsRequest, UpdateAgentInput, UpdateAgentRequest,
 };
-use buzz_server::{AgentId, DesiredAgentState};
+use buzz_server::{AgentId, CommunityConfigId, DesiredAgentState};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UnixStream,
+    time::{sleep, Instant},
 };
 
 #[tokio::main(flavor = "current_thread")]
@@ -31,8 +32,82 @@ async fn run() -> Result<(), String> {
     };
     let values = parse_options(arguments.collect())?;
     let request = route(&command, &values)?;
-    let body = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
-    let mut stream = UnixStream::connect(&socket)
+    let mut value = send_request(&socket, &request).await?;
+    if wire_error(&value) {
+        print_value(&value)?;
+        std::process::exit(1);
+    }
+
+    if is_mutating_command(&command) {
+        let operation_id = operation_field(&value, "id")
+            .ok_or("mutation response did not contain an operation ID")?
+            .to_owned();
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            let status = operation_field(&value, "status")
+                .ok_or("operation response did not contain a status")?;
+            match status {
+                "succeeded" => break,
+                "failed" | "cancelled" => {
+                    print_value(&value)?;
+                    std::process::exit(1);
+                }
+                "pending" | "running" => {}
+                other => return Err(format!("unknown operation status: {other}")),
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "operation {operation_id} did not finish within 120 seconds; inspect it with `buzz-server agents operation --operation {operation_id}`"
+                ));
+            }
+            sleep(Duration::from_millis(200)).await;
+            value = send_request(
+                &socket,
+                &LifecycleRouteRequest::GetOperation {
+                    operation_id: parse(&operation_id, "operation ID")?,
+                },
+            )
+            .await?;
+            if wire_error(&value) {
+                print_value(&value)?;
+                std::process::exit(1);
+            }
+        }
+        if command != "purge" {
+            if let Some(agent_id) = operation_field(&value, "agent_id") {
+                value = send_request(
+                    &socket,
+                    &LifecycleRouteRequest::GetAgent {
+                        agent_id: parse(agent_id, "agent ID")?,
+                    },
+                )
+                .await?;
+                if wire_error(&value) {
+                    print_value(&value)?;
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+
+    if command == "community-relay" {
+        let relay = value
+            .pointer("/value/value/relay_url")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("community response did not contain relay_url")?;
+        println!("{relay}");
+        return Ok(());
+    }
+
+    print_value(&value)
+}
+
+async fn send_request(
+    socket: &PathBuf,
+    request: &LifecycleRouteRequest,
+) -> Result<serde_json::Value, String> {
+    let body = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+    let mut stream = UnixStream::connect(socket)
         .await
         .map_err(|error| format!("cannot connect to {}: {error}", socket.display()))?;
     stream
@@ -52,16 +127,32 @@ async fn run() -> Result<(), String> {
         .read_exact(&mut response)
         .await
         .map_err(|error| error.to_string())?;
-    let value: serde_json::Value =
-        serde_json::from_slice(&response).map_err(|error| error.to_string())?;
+    serde_json::from_slice(&response).map_err(|error| error.to_string())
+}
+
+fn print_value(value: &serde_json::Value) -> Result<(), String> {
     println!(
         "{}",
-        serde_json::to_string(&value).map_err(|error| error.to_string())?
+        serde_json::to_string(value).map_err(|error| error.to_string())?
     );
-    if value.get("status").and_then(serde_json::Value::as_str) == Some("error") {
-        std::process::exit(1);
-    }
     Ok(())
+}
+
+fn wire_error(value: &serde_json::Value) -> bool {
+    value.get("status").and_then(serde_json::Value::as_str) == Some("error")
+}
+
+fn operation_field<'a>(value: &'a serde_json::Value, field: &str) -> Option<&'a str> {
+    (value.get("status")?.as_str()? == "ok").then_some(())?;
+    (value.pointer("/value/resource")?.as_str()? == "operation").then_some(())?;
+    value.pointer(&format!("/value/value/{field}"))?.as_str()
+}
+
+fn is_mutating_command(command: &str) -> bool {
+    matches!(
+        command,
+        "create" | "update" | "enable" | "disable" | "delete" | "purge"
+    )
 }
 
 fn parse_options(arguments: Vec<String>) -> Result<BTreeMap<String, String>, String> {
@@ -93,6 +184,23 @@ fn route(
         })
     };
     match command {
+        "community-add" => Ok(LifecycleRouteRequest::AddCommunity(AddCommunityRequest {
+            display_name: required(options, "--display-name")?.into(),
+            relay_url: parse(required(options, "--relay-url")?, "relay URL")?,
+        })),
+        "community-get" | "community-relay" => Ok(LifecycleRouteRequest::GetCommunity {
+            community_id: parse::<CommunityConfigId>(
+                required(options, "--community")?,
+                "community ID",
+            )?,
+        }),
+        "community-list" => Ok(LifecycleRouteRequest::ListCommunities),
+        "community-remove" => Ok(LifecycleRouteRequest::RemoveCommunity {
+            community_id: parse::<CommunityConfigId>(
+                required(options, "--community")?,
+                "community ID",
+            )?,
+        }),
         "create" => Ok(LifecycleRouteRequest::CreateAgent(CreateAgentRequest {
             metadata: metadata()?,
             agent: create_input(options)?,
@@ -144,17 +252,6 @@ fn route(
         "operation" => Ok(LifecycleRouteRequest::GetOperation {
             operation_id: parse(required(options, "--operation")?, "operation ID")?,
         }),
-        "draft-submit" => Ok(LifecycleRouteRequest::SubmitDraft(SubmitDraftRequest {
-            metadata: metadata()?,
-            agent: create_input(options)?,
-        })),
-        "draft-get" => Ok(LifecycleRouteRequest::GetDraft {
-            draft_id: required(options, "--draft")?.into(),
-        }),
-        "draft-promote" => Ok(LifecycleRouteRequest::PromoteDraft(PromoteDraftRequest {
-            metadata: metadata()?,
-            draft_id: required(options, "--draft")?.into(),
-        })),
         _ => Err(usage()),
     }
 }
@@ -193,7 +290,7 @@ fn parse<T: FromStr>(value: &str, description: &str) -> Result<T, String> {
 }
 
 fn usage() -> String {
-    "usage: buzz-agentctl [--socket PATH] <create|get|list|update|enable|disable|logs|delete|purge|operation|draft-submit|draft-get|draft-promote> [--name value ...]".into()
+    "usage: buzz-agentctl [--socket PATH] <community-add|community-get|community-list|community-remove|community-relay|create|get|list|update|enable|disable|logs|delete|purge|operation> [--name value ...]".into()
 }
 
 #[cfg(test)]

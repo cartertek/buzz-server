@@ -29,8 +29,10 @@ Commands:
   backup         Back up Buzz Server state
   restore        Restore a backup
   rotate-owner   Rotate the owner secret
-  agent          Manage agents
-  secret         Manage secrets
+  communities    Manage Buzz communities
+  agents         Manage agent identities and hosted agents
+  channels       Manage Buzz channels
+  secrets        Manage secrets
   version        Show the installed version
 
 Options:
@@ -56,18 +58,44 @@ command_help() {
     restore)      printf '%s\n' 'Usage: buzz-server restore BACKUP' 'Restore Buzz Server state from BACKUP.' ;;
     rotate-owner) printf '%s\n' 'Usage: buzz-server rotate-owner SECRET_FILE [KMS_KEY_ID]' 'Replace the owner secret, optionally storing it with AWS KMS.' ;;
     version)      printf '%s\n' 'Usage: buzz-server version' 'Show the installed Buzz Server version.' ;;
-    agent)        agent_help ;;
-    secret)       secret_help ;;
+    communities)  communities_help ;;
+    agents)       agents_help ;;
+    channels)     channels_help ;;
+    secrets)      secrets_help ;;
     *) return 1 ;;
   esac
 }
 
-agent_help() {
+communities_help() {
   cat <<'EOF_HELP'
-Usage: buzz-server agent [--socket PATH] <command> [options]
+Usage: buzz-server communities <command> [options]
 
 Commands:
-  create         Create an agent
+  add            Add a community
+  get            Get a community
+  list           List communities
+  remove         Remove a community
+
+Run `buzz-server communities <command> --help` for command-specific help.
+EOF_HELP
+}
+
+communities_command_help() {
+  case "$1" in
+    add)    printf '%s\n' 'Usage: buzz-server communities add --display-name NAME --relay-url URL' ;;
+    get)    printf '%s\n' 'Usage: buzz-server communities get --community ID' ;;
+    list)   printf '%s\n' 'Usage: buzz-server communities list' ;;
+    remove) printf '%s\n' 'Usage: buzz-server communities remove --community ID' ;;
+    *) return 1 ;;
+  esac
+}
+
+agents_help() {
+  cat <<'EOF_HELP'
+Usage: buzz-server agents <command> [options]
+
+Hosted-agent commands:
+  create         Create and start an agent
   get            Get an agent
   list           List agents
   update         Update an agent
@@ -76,39 +104,56 @@ Commands:
   logs           Read agent logs
   delete         Recoverably delete an agent
   purge          Permanently purge an agent
-  operation      Get an operation
+  operation      Get a durable operation
   pubkey         Show an agent Nostr public key
-  draft-submit   Submit an agent draft
-  draft-get      Get an agent draft
-  draft-promote  Promote a draft to an agent
 
-Run `buzz-server agent <command> --help` for command-specific help.
+Buzz identity commands:
+  draft-create   Send an owner-reviewed create request through Buzz
+  draft-update   Send an owner-reviewed update request through Buzz
+  archive        Archive an agent identity
+  unarchive      Unarchive an agent identity
+  archived       List archived identities
+
+Run `buzz-server agents <command> --help` for command-specific help.
 EOF_HELP
 }
 
-agent_command_help() {
+agents_command_help() {
   case "$1" in
-    create)        printf '%s\n' 'Usage: buzz-server agent create --community ID --display-name NAME --system-prompt PROMPT --runtime ID --idempotency KEY --correlation ID' ;;
-    get)           printf '%s\n' 'Usage: buzz-server agent get --agent ID' ;;
-    list)          printf '%s\n' 'Usage: buzz-server agent list [--community ID]' ;;
-    update)        printf '%s\n' 'Usage: buzz-server agent update --agent ID [--display-name NAME] [--system-prompt PROMPT] [--runtime ID] --idempotency KEY --correlation ID' ;;
-    enable)        printf '%s\n' 'Usage: buzz-server agent enable --agent ID --idempotency KEY --correlation ID' ;;
-    disable)       printf '%s\n' 'Usage: buzz-server agent disable --agent ID --idempotency KEY --correlation ID' ;;
-    logs)          printf '%s\n' 'Usage: buzz-server agent logs --agent ID [--after CURSOR] [--limit N]' ;;
-    delete)        printf '%s\n' 'Usage: buzz-server agent delete --agent ID --idempotency KEY --correlation ID' ;;
-    purge)         printf '%s\n' 'Usage: buzz-server agent purge --agent ID --idempotency KEY --correlation ID' ;;
-    operation)     printf '%s\n' 'Usage: buzz-server agent operation --operation ID' ;;
-    pubkey)        printf '%s\n' 'Usage: sudo buzz-server agent pubkey --agent ID' 'Show the agent Nostr public key without exposing its private key.' ;;
-    draft-submit)  printf '%s\n' 'Usage: buzz-server agent draft-submit --community ID --display-name NAME --system-prompt PROMPT --runtime ID --idempotency KEY --correlation ID' ;;
-    draft-get)     printf '%s\n' 'Usage: buzz-server agent draft-get --draft ID' ;;
-    draft-promote) printf '%s\n' 'Usage: buzz-server agent draft-promote --draft ID --idempotency KEY --correlation ID' ;;
+    create)       printf '%s\n' 'Usage: buzz-server agents create --community ID --display-name NAME --system-prompt PROMPT --runtime ID --idempotency KEY --correlation ID' ;;
+    get)          printf '%s\n' 'Usage: buzz-server agents get --agent ID' ;;
+    list)         printf '%s\n' 'Usage: buzz-server agents list [--community ID]' ;;
+    update)       printf '%s\n' 'Usage: buzz-server agents update --agent ID [--display-name NAME] [--system-prompt PROMPT] [--runtime ID] --idempotency KEY --correlation ID' ;;
+    enable)       printf '%s\n' 'Usage: buzz-server agents enable --agent ID --idempotency KEY --correlation ID' ;;
+    disable)      printf '%s\n' 'Usage: buzz-server agents disable --agent ID --idempotency KEY --correlation ID' ;;
+    logs)         printf '%s\n' 'Usage: buzz-server agents logs --agent ID [--after CURSOR] [--limit N]' ;;
+    delete)       printf '%s\n' 'Usage: buzz-server agents delete --agent ID --idempotency KEY --correlation ID' ;;
+    purge)        printf '%s\n' 'Usage: buzz-server agents purge --agent ID --idempotency KEY --correlation ID' ;;
+    operation)    printf '%s\n' 'Usage: buzz-server agents operation --operation ID' ;;
+    pubkey)       printf '%s\n' 'Usage: sudo buzz-server agents pubkey --agent ID' 'Show the agent Nostr public key without exposing its private key.' ;;
+    draft-create) printf '%s\n' 'Usage: buzz-server agents draft-create --community ID --channel UUID --display-name NAME --system-prompt PROMPT' 'Requires BUZZ_PRIVATE_KEY and BUZZ_AUTH_TAG for the requesting agent.' ;;
+    draft-update) printf '%s\n' 'Usage: buzz-server agents draft-update --community ID --channel UUID --agent-name NAME [options]' 'Requires BUZZ_PRIVATE_KEY and BUZZ_AUTH_TAG for the requesting agent.' ;;
+    archive)      printf '%s\n' 'Usage: sudo buzz-server agents archive --community ID PUBKEY [options]' ;;
+    unarchive)    printf '%s\n' 'Usage: sudo buzz-server agents unarchive --community ID PUBKEY [options]' ;;
+    archived)     printf '%s\n' 'Usage: sudo buzz-server agents archived --community ID' ;;
     *) return 1 ;;
   esac
 }
 
-secret_help() {
+channels_help() {
   cat <<'EOF_HELP'
-Usage: buzz-server secret <command> [options]
+Usage: sudo buzz-server channels <command> --community ID [options]
+
+Runs the bundled, Buzz-Server-pinned Buzz channel CLI against the selected
+community using the Buzz Server owner identity. Upstream channel commands include
+list, get, search, create, update, topic, purpose, join, leave, archive,
+unarchive, delete, members, add-member, remove-member, and set-add-policy.
+EOF_HELP
+}
+
+secrets_help() {
+  cat <<'EOF_HELP'
+Usage: buzz-server secrets <command> [options]
 
 Commands:
   encrypt             Encrypt a secret with AWS KMS
@@ -122,28 +167,59 @@ Commands:
   materialize         Materialize a persisted secret into a file
   clear-local         Remove a locally persisted secret
 
-Run `buzz-server secret <command> --help` for command-specific help.
+Run `buzz-server secrets <command> --help` for command-specific help.
 EOF_HELP
 }
 
-secret_command_help() {
+secrets_command_help() {
   case "$1" in
-    encrypt)            printf '%s\n' 'Usage: buzz-server secret encrypt --kms-key-id KEY --input FILE --output FILE [--aws-command PATH]' ;;
-    decrypt)            printf '%s\n' 'Usage: buzz-server secret decrypt --input FILE --output FILE [--aws-command PATH]' ;;
-    fingerprint)        printf '%s\n' 'Usage: buzz-server secret fingerprint --input FILE' ;;
-    encrypt-passphrase) printf '%s\n' 'Usage: buzz-server secret encrypt-passphrase --input FILE --output FILE --passphrase-file FILE' ;;
-    decrypt-passphrase) printf '%s\n' 'Usage: buzz-server secret decrypt-passphrase --input FILE --output FILE --passphrase-file FILE' ;;
-    export-nip49)       printf '%s\n' 'Usage: buzz-server secret export-nip49 --input FILE --output FILE --passphrase-file FILE' ;;
-    import-nip49)       printf '%s\n' 'Usage: buzz-server secret import-nip49 --input FILE --output FILE --passphrase-file FILE' ;;
-    persist)            printf '%s\n' 'Usage: buzz-server secret persist --input FILE --key-file FILE --marker FILE [--service NAME] [--name NAME]' ;;
-    materialize)        printf '%s\n' 'Usage: buzz-server secret materialize --output FILE --key-file FILE --marker FILE [--service NAME] [--name NAME]' ;;
-    clear-local)        printf '%s\n' 'Usage: buzz-server secret clear-local --key-file FILE --marker FILE [--service NAME] [--name NAME]' ;;
+    encrypt)            printf '%s\n' 'Usage: buzz-server secrets encrypt --kms-key-id KEY --input FILE --output FILE [--aws-command PATH]' ;;
+    decrypt)            printf '%s\n' 'Usage: buzz-server secrets decrypt --input FILE --output FILE [--aws-command PATH]' ;;
+    fingerprint)        printf '%s\n' 'Usage: buzz-server secrets fingerprint --input FILE' ;;
+    encrypt-passphrase) printf '%s\n' 'Usage: buzz-server secrets encrypt-passphrase --input FILE --output FILE --passphrase-file FILE' ;;
+    decrypt-passphrase) printf '%s\n' 'Usage: buzz-server secrets decrypt-passphrase --input FILE --output FILE --passphrase-file FILE' ;;
+    export-nip49)       printf '%s\n' 'Usage: buzz-server secrets export-nip49 --input FILE --output FILE --passphrase-file FILE' ;;
+    import-nip49)       printf '%s\n' 'Usage: buzz-server secrets import-nip49 --input FILE --output FILE --passphrase-file FILE' ;;
+    persist)            printf '%s\n' 'Usage: buzz-server secrets persist --input FILE --key-file FILE --marker FILE [--service NAME] [--name NAME]' ;;
+    materialize)        printf '%s\n' 'Usage: buzz-server secrets materialize --output FILE --key-file FILE --marker FILE [--service NAME] [--name NAME]' ;;
+    clear-local)        printf '%s\n' 'Usage: buzz-server secrets clear-local --key-file FILE --marker FILE [--service NAME] [--name NAME]' ;;
     *) return 1 ;;
   esac
 }
 
 is_help() {
   [ "${1:-}" = -h ] || [ "${1:-}" = --help ] || [ "${1:-}" = help ]
+}
+
+community_relay() {
+  "$release/buzz-agentctl" community-relay --community "$1"
+}
+
+run_owner_buzz() {
+  group=$1
+  subcommand=$2
+  community=$3
+  shift 3
+  relay_url=$(community_relay "$community")
+  owner_secret=/run/buzz-server/credentials/owner-secret
+  [ -r "$owner_secret" ] || {
+    echo "Buzz Server owner credential is unavailable; start the service and run this command as root" >&2
+    exit 77
+  }
+  BUZZ_RELAY_URL=$relay_url BUZZ_PRIVATE_KEY=$(cat "$owner_secret") \
+    exec "$release/buzz-cli" "$group" "$subcommand" "$@"
+}
+
+run_requester_buzz() {
+  subcommand=$1
+  community=$2
+  shift 2
+  relay_url=$(community_relay "$community")
+  [ -n "${BUZZ_PRIVATE_KEY:-}" ] && [ -n "${BUZZ_AUTH_TAG:-}" ] || {
+    echo "agents $subcommand requires BUZZ_PRIVATE_KEY and BUZZ_AUTH_TAG for the requesting agent" >&2
+    exit 77
+  }
+  BUZZ_RELAY_URL=$relay_url exec "$release/buzz-cli" agents "$subcommand" "$@"
 }
 
 command=${1:-}
@@ -154,28 +230,76 @@ case "$command" in
   -V|--version|version)
     if is_help "${2:-}"; then command_help version; else printf 'buzz-server %s\n' "$version"; fi
     ;;
-  agent)
+  communities)
     shift
     if is_help "${1:-}" || [ "$#" -eq 0 ]; then
-      agent_help
+      communities_help
     elif [ "$#" -ge 2 ] && is_help "${2:-}"; then
-      agent_command_help "$1" || { agent_help >&2; exit 64; }
-    elif [ "${1:-}" = pubkey ]; then
-      [ "$#" -eq 3 ] && [ "${2:-}" = --agent ] || { agent_command_help pubkey >&2; exit 64; }
-      agent_id=$3
-      case "$agent_id" in agent_[A-Za-z0-9]* ) ;; *) echo "invalid agent ID" >&2; exit 64 ;; esac
-      case "$agent_id" in *[!A-Za-z0-9_]* ) echo "invalid agent ID" >&2; exit 64 ;; esac
-      exec "$release/buzz-secretsctl" public-key --input "/var/lib/buzz-server/identities/${agent_id}.secret"
+      communities_command_help "$1" || { communities_help >&2; exit 64; }
     else
-      exec "$release/buzz-agentctl" "$@"
+      subcommand=$1
+      shift
+      case "$subcommand" in
+        add|get|list|remove) exec "$release/buzz-agentctl" "community-$subcommand" "$@" ;;
+        *) communities_help >&2; exit 64 ;;
+      esac
     fi
     ;;
-  secret)
+  agents)
     shift
     if is_help "${1:-}" || [ "$#" -eq 0 ]; then
-      secret_help
+      agents_help
     elif [ "$#" -ge 2 ] && is_help "${2:-}"; then
-      secret_command_help "$1" || { secret_help >&2; exit 64; }
+      agents_command_help "$1" || { agents_help >&2; exit 64; }
+    else
+      subcommand=$1
+      shift
+      case "$subcommand" in
+        pubkey)
+          [ "$#" -eq 2 ] && [ "${1:-}" = --agent ] || { agents_command_help pubkey >&2; exit 64; }
+          agent_id=$2
+          case "$agent_id" in agent_[A-Za-z0-9]* ) ;; *) echo "invalid agent ID" >&2; exit 64 ;; esac
+          case "$agent_id" in *[!A-Za-z0-9_]* ) echo "invalid agent ID" >&2; exit 64 ;; esac
+          exec "$release/buzz-secretsctl" public-key --input "/var/lib/buzz-server/identities/${agent_id}.secret"
+          ;;
+        create|get|list|update|enable|disable|logs|delete|purge|operation)
+          exec "$release/buzz-agentctl" "$subcommand" "$@"
+          ;;
+        draft-create|draft-update)
+          [ "${1:-}" = --community ] && [ -n "${2:-}" ] || { agents_command_help "$subcommand" >&2; exit 64; }
+          community=$2
+          shift 2
+          run_requester_buzz "$subcommand" "$community" "$@"
+          ;;
+        archive|unarchive|archived)
+          [ "${1:-}" = --community ] && [ -n "${2:-}" ] || { agents_command_help "$subcommand" >&2; exit 64; }
+          community=$2
+          shift 2
+          run_owner_buzz agents "$subcommand" "$community" "$@"
+          ;;
+        *) agents_help >&2; exit 64 ;;
+      esac
+    fi
+    ;;
+  channels)
+    shift
+    if is_help "${1:-}" || [ "$#" -eq 0 ]; then
+      channels_help
+    else
+      subcommand=$1
+      shift
+      [ "${1:-}" = --community ] && [ -n "${2:-}" ] || { channels_help >&2; exit 64; }
+      community=$2
+      shift 2
+      run_owner_buzz channels "$subcommand" "$community" "$@"
+    fi
+    ;;
+  secrets)
+    shift
+    if is_help "${1:-}" || [ "$#" -eq 0 ]; then
+      secrets_help
+    elif [ "$#" -ge 2 ] && is_help "${2:-}"; then
+      secrets_command_help "$1" || { secrets_help >&2; exit 64; }
     else
       exec "$release/buzz-secretsctl" "$@"
     fi
@@ -191,7 +315,7 @@ case "$command" in
     fi
     ;;
   *)
-    echo "usage: buzz-server {run|agent|secret|health|check|start|restart|stop|status|redeploy|rollback|backup|restore|rotate-owner|version}" >&2
+    echo "usage: buzz-server {run|communities|agents|channels|secrets|health|check|start|restart|stop|status|redeploy|rollback|backup|restore|rotate-owner|version}" >&2
     exit 64
     ;;
 esac

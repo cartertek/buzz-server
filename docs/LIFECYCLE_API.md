@@ -13,7 +13,7 @@ response envelope.
 
 Configured callers receive one fixed authority:
 
-- `administrator`: may read and operate agents, purge retained agents, and
+- `administrator`: may manage communities, read and operate agents, purge retained agents, and
   promote drafts;
 - `draft_submitter`: may submit drafts and read only drafts owned by the same
   Unix UID or Nostr public key.
@@ -35,8 +35,8 @@ Successful responses use:
 }
 ```
 
-The `resource` value is one of `agent`, `agents`, `logs`, `operation`, or
-`draft`. The nested `value` is the corresponding resource documented below.
+The `resource` value is one of `community`, `communities`, `agent`, `agents`,
+`logs`, `operation`, or `draft`. The nested `value` is the corresponding resource documented below.
 
 Application errors use:
 
@@ -60,7 +60,7 @@ Unix-socket clients receive the JSON envelope directly.
 
 ## Command metadata
 
-Every mutating request contains:
+Durable agent mutations contain:
 
 ```json
 {
@@ -77,6 +77,33 @@ operations and audit records for tracing.
 ## Requests
 
 Requests are tagged JSON objects with `route` and `request` fields.
+
+### Add a community
+
+```json
+{
+  "route": "add_community",
+  "request": {
+    "display_name": "Engineering",
+    "relay_url": "wss://relay.example.com/"
+  }
+}
+```
+
+Returns a `community` resource with a generated `community_...` ID. Community
+configuration changes are synchronous and administrator-only.
+
+### Get, list, or remove communities
+
+```json
+{"route":"get_community","request":{"community_id":"community_..."}}
+{"route":"list_communities"}
+{"route":"remove_community","request":{"community_id":"community_..."}}
+```
+
+Removal returns `conflict` while an agent still references the community. The
+community configured in `/etc/buzz-server/config.json` is the installation
+bootstrap community and is reloaded when the daemon starts.
 
 ### Create an agent
 
@@ -366,7 +393,7 @@ have a 10-second I/O timeout.
 The server authenticates the connection with `SO_PEERCRED`. UIDs are mapped by
 `lifecycle_api.administrator_uids` and `lifecycle_api.draft_submitter_uids`.
 Filesystem ownership is not accepted as identity, and an unlisted UID is rejected.
-The supplied `buzz-server agent` client implements this framing.
+The supplied `buzz-server agents` client implements this framing.
 
 ## HTTPS and NIP-98 transport
 

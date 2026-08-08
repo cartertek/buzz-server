@@ -82,12 +82,26 @@ the variable names and lower-level deployment contract.
 
 ## Getting started
 
-Create an agent in one of the communities configured on this
-server. The community ID is the `community.id` value in
-`/etc/buzz-server/config.json`.
+Buzz Server keeps community configuration in its durable state database. List the
+communities already known to the server:
 
 ```sh
-sudo buzz-server agent create \
+sudo buzz-server communities list
+```
+
+The community configured during installation is already present. To add another
+community, provide its relay URL:
+
+```sh
+sudo buzz-server communities add \
+  --display-name 'Engineering' \
+  --relay-url 'wss://relay.example.com/'
+```
+
+Create an agent in the target community using the returned `community_...` ID:
+
+```sh
+sudo buzz-server agents create \
   --community community_... \
   --display-name 'Build agent' \
   --system-prompt 'Help with software engineering work in this channel.' \
@@ -96,44 +110,44 @@ sudo buzz-server agent create \
   --correlation getting-started
 ```
 
-The response contains an operation ID and the new `agent_...` ID. Poll the
-operation until it succeeds:
+The CLI waits for the durable create operation to finish and then returns the
+created agent resource, including its new `agent_...` ID. Creating the agent also
+generates and custodies its Buzz/Nostr identity and starts its ACP runtime against
+the selected community relay.
+
+Get the generated Nostr public key without exposing the private key:
 
 ```sh
-sudo buzz-server agent operation --operation operation_...
+sudo buzz-server agents pubkey --agent agent_...
 ```
 
-Creating the agent with `--community` gives it an identity and authorization for
-that Buzz community and starts its ACP runtime against the community relay. Get
-the generated Nostr public key without exposing the private key:
+Buzz Server bundles the compatible upstream Buzz CLI and exposes channel
+operations through its own namespace. Add the new agent identity to the target
+channel as a bot:
 
 ```sh
-sudo buzz-server agent pubkey --agent agent_...
-```
-
-From a Buzz CLI logged into the same community as an identity allowed to manage
-the target channel, add the agent as a channel member:
-
-```sh
-buzz channels add-member \
+sudo buzz-server channels add-member \
+  --community community_... \
   --channel <channel-uuid> \
   --pubkey <agent-public-key> \
   --role bot
 ```
 
-`buzz-acp` watches community membership notifications. Once the relay records the
-new membership, the running agent discovers the channel and subscribes to it
-automatically; no Buzz Server restart or separate subscribe command is required.
+The channel command uses the Buzz Server owner identity and the selected
+community's relay URL; no separate Buzz CLI installation or login is required.
+Once the relay records the membership, `buzz-acp` discovers the channel and
+subscribes according to its configured subscription behavior. No Buzz Server
+restart or separate subscribe command is required.
 
-Use `buzz-server agent list`, `buzz-server agent get --agent agent_...`, and
-`buzz-server agent logs --agent agent_...` to inspect it. See
+Use `buzz-server agents list`, `buzz-server agents get --agent agent_...`, and
+`buzz-server agents logs --agent agent_...` to inspect the hosted agent. See
 [`docs/CLI.md`](docs/CLI.md) for the complete Buzz Server command reference.
-
 
 ## Configuration
 
-Configuration lives in `/etc/buzz-server`. Edit `config.json` for server and
-agent settings; runtime secrets remain in `secrets.env`. The owner key is stored
+Bootstrap configuration lives in `/etc/buzz-server/config.json`; runtime secrets remain in
+`secrets.env`. Communities and hosted agents created through the CLI are stored durably in
+the Buzz Server state database. The owner key is stored
 through KMS when configured, otherwise through the OS keyring or restricted-file
 fallback. The schema is [`config/buzz-server.schema.json`](config/buzz-server.schema.json).
 
