@@ -132,8 +132,8 @@ if [ ! -f /etc/buzz-server/config.json ]; then
       "arguments": ["acp"],
       "preflight": {
         "timeout_seconds": 15,
-        "command": "/opt/buzz-server/runtimes/sprig-0.1.0/bin/buzz-acp",
-        "arguments": ["models", "--json", "--agent-command", "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp", "--agent-args", "acp"]
+        "command": "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp",
+        "arguments": ["--version"]
       },
       "required_secrets": [{"environment_key": "OPENAI_API_KEY", "secret_name": "BUZZ_SECRET_OPENAI_API_KEY"}]
     }]
