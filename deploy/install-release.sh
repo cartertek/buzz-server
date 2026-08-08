@@ -203,7 +203,6 @@ install -d -o buzz-agent -g buzz-agent -m 0700 \
   /var/lib/buzz-server/workspaces \
   /var/lib/buzz-server/runtime \
   /var/lib/buzz-server/runtime/agent \
-  /var/lib/buzz-server/runtime/agent/codex-home \
   /var/lib/buzz-server/runtime/agent/tmp
 install -d -o root -g root -m 0755 /opt/buzz-server /opt/buzz-server/releases
 [ ! -e "$release" ] && [ ! -L "$release" ] || {
@@ -306,8 +305,7 @@ fi
 runtime_assets_valid || { echo "pinned runtime asset validation failed" >&2; exit 66; }
 log "Running isolated runtime preflight"
 timeout --kill-after=5s 30s runuser --user buzz-agent -- /usr/bin/env -i \
-  HOME=/var/lib/buzz-server/runtime/agent \
-  CODEX_HOME=/var/lib/buzz-server/runtime/agent/codex-home \
+  HOME=/var/lib/buzz-server/runtime \
   TMPDIR=/var/lib/buzz-server/runtime/agent/tmp \
   PATH=/usr/local/bin:/usr/bin:/bin \
   /opt/buzz-server/runtimes/sprig-0.1.0/bin/buzz-acp models --json \

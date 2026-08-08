@@ -430,6 +430,7 @@ async fn main() -> Result<(), DaemonError> {
         )?;
     }
     let child_identity = resolve_user(&config.runtime_user)?;
+    let child_home = resolve_user_home(&config.runtime_user)?;
     #[cfg(unix)]
     for directory in [&config.workspace_path, &config.runtime_path] {
         use std::os::unix::fs::{chown, PermissionsExt};
@@ -552,6 +553,7 @@ async fn main() -> Result<(), DaemonError> {
         },
         Duration::from_secs(10),
         Some(child_identity),
+        Some(child_home),
     )?;
     let receipts = ReceiptFile::new(config.receipt_file.clone());
     let secrets = EnvironmentSecrets {
@@ -866,6 +868,25 @@ fn resolve_user(name: &str) -> Result<(u32, u32), DaemonError> {
                 .parse()
                 .map_err(|_| DaemonError::InvalidConfig("runtime user has invalid gid".into()))?;
             return Ok((uid, gid));
+        }
+    }
+    Err(DaemonError::InvalidConfig(format!(
+        "runtime user {name} does not exist"
+    )))
+}
+
+fn resolve_user_home(name: &str) -> Result<PathBuf, DaemonError> {
+    let passwd = fs::read_to_string("/etc/passwd")?;
+    for line in passwd.lines() {
+        let fields: Vec<_> = line.split(':').collect();
+        if fields.first() == Some(&name) && fields.len() >= 6 {
+            let home = fields[5];
+            if home.starts_with('/') && !home.is_empty() {
+                return Ok(PathBuf::from(home));
+            }
+            return Err(DaemonError::InvalidConfig(
+                "runtime user has invalid home directory".into(),
+            ));
         }
     }
     Err(DaemonError::InvalidConfig(format!(
