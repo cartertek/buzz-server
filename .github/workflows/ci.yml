@@ -19,7 +19,7 @@ jobs:
       - name: Validate deployment scripts and units
         run: |
           set -eu
-          for script in deploy/*.sh deploy/buzz-server deploy/buzz-serverctl scripts/package-artifact.sh scripts/prepare-ci-payload.sh scripts/verify-package-artifact.sh scripts/github-tag-sha.sh; do sh -n "$script"; done
+          for script in deploy/*.sh deploy/buzz-server deploy/buzz-serverctl scripts/package-artifact.sh scripts/prepare-ci-payload.sh scripts/verify-package-artifact.sh scripts/github-tag-sha.sh scripts/publish-release.sh scripts/mock-gh-release.sh; do sh -n "$script"; done
           sudo install -d /opt/buzz-server/current/share/deploy
           sudo install -m 0755 /bin/true /opt/buzz-server/current/buzz-server
           sudo install -m 0755 /bin/true /opt/buzz-server/current/share/deploy/prepare-owner-credential.sh
@@ -150,7 +150,7 @@ jobs:
 
   release-dry-run:
     if: github.event_name == 'pull_request'
-    needs: [test, build]
+    needs: build
     uses: ./.github/workflows/release-core.yml
     permissions:
       contents: read
