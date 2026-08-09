@@ -2,13 +2,28 @@
 //!
 //! HTTP/TLS, Unix socket listeners, and NIP-98 verification are adapters outside this module.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
     auth::{authorize, AuthenticatedPrincipal, AuthorizationError, Capability, PrincipalOwnership},
-    AgentId, CommunityConfigId, DesiredAgentState, ErrorCode, OperationId, OperationKind,
-    OperationStatus, RuntimeId, StorageError, ValidationError,
+    AgentId, CommunityConfig, CommunityConfigId, DesiredAgentState, ErrorCode, OperationId,
+    OperationKind, OperationStatus, PersonaDefinition, RuntimeId, StorageError, ValidationError,
 };
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct JoinCommunityRequest {
+    pub display_name: String,
+    pub relay_url: url::Url,
+    pub identity_pubkey: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UpdateCommunityRequest {
+    pub community_id: CommunityConfigId,
+    pub display_name: String,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CommandMetadata {
@@ -24,17 +39,58 @@ impl CommandMetadata {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CreatePersonaRequest {
+    pub display_name: String,
+    #[serde(default)]
+    pub system_prompt: String,
+    #[serde(default)]
+    pub runtime: Option<RuntimeId>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UpdatePersonaInput {
+    pub display_name: Option<String>,
+    pub system_prompt: Option<String>,
+    pub runtime: Option<RuntimeId>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UpdatePersonaRequest {
+    pub persona_id: String,
+    pub changes: UpdatePersonaInput,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CreateAgentInput {
     pub community_config_id: CommunityConfigId,
     pub display_name: String,
-    pub system_prompt: String,
-    pub runtime_id: RuntimeId,
+    #[serde(default)]
+    pub persona_id: Option<String>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub runtime_id: Option<RuntimeId>,
 }
 
 impl CreateAgentInput {
     pub fn validate(&self) -> Result<(), ValidationError> {
         validate_token("display_name", &self.display_name, 120)?;
-        validate_token("system_prompt", &self.system_prompt, 65_536)
+        if let Some(prompt) = self.system_prompt.as_deref() {
+            validate_token("system_prompt", prompt, 65_536)?;
+        }
+        if self.persona_id.is_some() && self.system_prompt.is_some() {
+            return Err(ValidationError::new(
+                "system_prompt",
+                "is defined by the selected persona; omit --system-prompt",
+            ));
+        }
+        if self.persona_id.is_none() && self.runtime_id.is_none() {
+            return Err(ValidationError::new(
+                "runtime_id",
+                "is required when no persona is selected",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -92,6 +148,8 @@ pub struct AgentResource {
     pub runtime_id: RuntimeId,
     pub desired_state: DesiredAgentState,
     pub purge_after: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -116,6 +174,16 @@ pub struct OperationResource {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "route", content = "request", rename_all = "snake_case")]
 pub enum LifecycleRouteRequest {
+    JoinCommunity(JoinCommunityRequest),
+    UpdateCommunity(UpdateCommunityRequest),
+    GetCommunity { community_id: CommunityConfigId },
+    ListCommunities,
+    RemoveCommunity { community_id: CommunityConfigId },
+    CreatePersona(CreatePersonaRequest),
+    UpdatePersona(UpdatePersonaRequest),
+    GetPersona { persona_id: String },
+    ListPersonas,
+    DeletePersona { persona_id: String },
     CreateAgent(CreateAgentRequest),
     UpdateAgent(UpdateAgentRequest),
     ChangeAgentState(ChangeAgentStateRequest),
@@ -125,6 +193,7 @@ pub enum LifecycleRouteRequest {
     ListAgents(ListAgentsRequest),
     AgentLogs(AgentLogsRequest),
     GetOperation { operation_id: OperationId },
+    AwaitOperation { operation_id: OperationId },
     SubmitDraft(SubmitDraftRequest),
     GetDraft { draft_id: String },
     PromoteDraft(PromoteDraftRequest),
@@ -133,6 +202,10 @@ pub enum LifecycleRouteRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "resource", content = "value", rename_all = "snake_case")]
 pub enum LifecycleRouteResource {
+    Community(CommunityConfig),
+    Communities(Vec<CommunityConfig>),
+    Persona(PersonaDefinition),
+    Personas(Vec<PersonaDefinition>),
     Agent(AgentResource),
     Agents(Vec<AgentResource>),
     Logs(AgentLogsResource),
@@ -143,6 +216,8 @@ pub enum LifecycleRouteResource {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ListAgentsRequest {
     pub community_config_id: Option<CommunityConfigId>,
+    #[serde(default)]
+    pub include_deleted: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -171,8 +246,12 @@ pub struct AgentLogsResource {
 pub enum ApplicationError {
     #[error("resource not found")]
     NotFound,
-    #[error("resource conflict")]
-    Conflict,
+    #[error("request is forbidden: {0}")]
+    Forbidden(String),
+    #[error("service unavailable: {0}")]
+    Unavailable(String),
+    #[error("resource conflict: {0}")]
+    Conflict(String),
     #[error("request is invalid: {0}")]
     Invalid(ValidationError),
     #[error("operation is unsupported")]
@@ -185,7 +264,7 @@ impl From<StorageError> for ApplicationError {
     fn from(error: StorageError) -> Self {
         match error {
             StorageError::NotFound => Self::NotFound,
-            StorageError::Conflict(_) => Self::Conflict,
+            StorageError::Conflict(message) => Self::Conflict(message),
             StorageError::InvalidData(_)
             | StorageError::Database(_)
             | StorageError::LockPoisoned => Self::Internal,
@@ -194,6 +273,38 @@ impl From<StorageError> for ApplicationError {
 }
 
 pub trait LifecycleApplication {
+    fn join_community(
+        &self,
+        request: &JoinCommunityRequest,
+    ) -> Result<CommunityConfig, ApplicationError>;
+    fn update_community(
+        &self,
+        request: &UpdateCommunityRequest,
+    ) -> Result<CommunityConfig, ApplicationError>;
+    fn get_community(&self, id: CommunityConfigId) -> Result<CommunityConfig, ApplicationError>;
+    fn list_communities(&self) -> Result<Vec<CommunityConfig>, ApplicationError>;
+    fn remove_community(&self, id: CommunityConfigId) -> Result<CommunityConfig, ApplicationError>;
+    fn create_persona(
+        &self,
+        _request: &CreatePersonaRequest,
+    ) -> Result<PersonaDefinition, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
+    fn update_persona(
+        &self,
+        _request: &UpdatePersonaRequest,
+    ) -> Result<PersonaDefinition, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
+    fn get_persona(&self, _id: &str) -> Result<PersonaDefinition, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
+    fn list_personas(&self) -> Result<Vec<PersonaDefinition>, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
+    fn delete_persona(&self, _id: &str) -> Result<PersonaDefinition, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
     fn create_agent(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -228,6 +339,13 @@ pub trait LifecycleApplication {
     fn agent_logs(&self, request: &AgentLogsRequest)
         -> Result<AgentLogsResource, ApplicationError>;
     fn get_operation(&self, id: OperationId) -> Result<OperationResource, ApplicationError>;
+    fn wait_operation(
+        &self,
+        id: OperationId,
+        _timeout: Duration,
+    ) -> Result<OperationResource, ApplicationError> {
+        self.get_operation(id)
+    }
     fn submit_draft(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -249,6 +367,120 @@ impl<S: LifecycleApplication> LifecycleHandler<S> {
     #[must_use]
     pub const fn new(application: S) -> Self {
         Self { application }
+    }
+
+    pub fn join_community(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        request: &JoinCommunityRequest,
+    ) -> Result<CommunityConfig, crate::ApiError> {
+        authorize(actor, Capability::ManageCommunity, None).map_err(api_authorization)?;
+        let candidate =
+            CommunityConfig::new(request.display_name.clone(), request.relay_url.clone())
+                .and_then(|community| {
+                    community.with_identity_pubkey(request.identity_pubkey.clone())
+                })
+                .map_err(api_validation)?;
+        candidate.validate().map_err(api_validation)?;
+        self.application
+            .join_community(request)
+            .map_err(api_application)
+    }
+
+    pub fn update_community(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        request: &UpdateCommunityRequest,
+    ) -> Result<CommunityConfig, crate::ApiError> {
+        authorize(actor, Capability::ManageCommunity, None).map_err(api_authorization)?;
+        validate_token("display_name", &request.display_name, 120).map_err(api_validation)?;
+        self.application
+            .update_community(request)
+            .map_err(api_application)
+    }
+
+    pub fn get_community(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        id: CommunityConfigId,
+    ) -> Result<CommunityConfig, crate::ApiError> {
+        authorize(actor, Capability::ReadCommunity, None).map_err(api_authorization)?;
+        self.application.get_community(id).map_err(api_application)
+    }
+
+    pub fn list_communities(
+        &self,
+        actor: &AuthenticatedPrincipal,
+    ) -> Result<Vec<CommunityConfig>, crate::ApiError> {
+        authorize(actor, Capability::ReadCommunity, None).map_err(api_authorization)?;
+        self.application.list_communities().map_err(api_application)
+    }
+
+    pub fn remove_community(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        id: CommunityConfigId,
+    ) -> Result<CommunityConfig, crate::ApiError> {
+        authorize(actor, Capability::ManageCommunity, None).map_err(api_authorization)?;
+        self.application
+            .remove_community(id)
+            .map_err(api_application)
+    }
+
+    pub fn create_persona(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        request: &CreatePersonaRequest,
+    ) -> Result<PersonaDefinition, crate::ApiError> {
+        authorize(actor, Capability::CreateAgent, None).map_err(api_authorization)?;
+        validate_token("display_name", &request.display_name, 120).map_err(api_validation)?;
+        self.application
+            .create_persona(request)
+            .map_err(api_application)
+    }
+
+    pub fn update_persona(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        request: &UpdatePersonaRequest,
+    ) -> Result<PersonaDefinition, crate::ApiError> {
+        authorize(actor, Capability::UpdateAgent, None).map_err(api_authorization)?;
+        validate_token("persona_id", &request.persona_id, 120).map_err(api_validation)?;
+        if request.changes == UpdatePersonaInput::default() {
+            return Err(api_validation(ValidationError::new(
+                "changes",
+                "must include at least one field",
+            )));
+        }
+        self.application
+            .update_persona(request)
+            .map_err(api_application)
+    }
+
+    pub fn get_persona(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        id: &str,
+    ) -> Result<PersonaDefinition, crate::ApiError> {
+        authorize(actor, Capability::ReadAgent, None).map_err(api_authorization)?;
+        self.application.get_persona(id).map_err(api_application)
+    }
+
+    pub fn list_personas(
+        &self,
+        actor: &AuthenticatedPrincipal,
+    ) -> Result<Vec<PersonaDefinition>, crate::ApiError> {
+        authorize(actor, Capability::ReadAgent, None).map_err(api_authorization)?;
+        self.application.list_personas().map_err(api_application)
+    }
+
+    pub fn delete_persona(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        id: &str,
+    ) -> Result<PersonaDefinition, crate::ApiError> {
+        authorize(actor, Capability::DeleteAgent, None).map_err(api_authorization)?;
+        self.application.delete_persona(id).map_err(api_application)
     }
 
     pub fn create_agent(
@@ -362,6 +594,17 @@ impl<S: LifecycleApplication> LifecycleHandler<S> {
         self.application.get_operation(id).map_err(api_application)
     }
 
+    pub fn await_operation(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        id: OperationId,
+    ) -> Result<OperationResource, crate::ApiError> {
+        authorize(actor, Capability::ReadAgent, None).map_err(api_authorization)?;
+        self.application
+            .wait_operation(id, Duration::from_secs(120))
+            .map_err(api_application)
+    }
+
     pub fn submit_draft(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -435,17 +678,27 @@ fn api_authorization(error: AuthorizationError) -> crate::ApiError {
 
 fn api_application(error: ApplicationError) -> crate::ApiError {
     let (code, message, field) = match error {
-        ApplicationError::NotFound => (ErrorCode::NotFound, "resource not found", None),
-        ApplicationError::Conflict => (ErrorCode::Conflict, "resource conflict", None),
+        ApplicationError::NotFound => (ErrorCode::NotFound, "resource not found".to_owned(), None),
+        ApplicationError::Forbidden(message) => (ErrorCode::Forbidden, message, None),
+        ApplicationError::Unavailable(message) => (ErrorCode::Unavailable, message, None),
+        ApplicationError::Conflict(message) => (ErrorCode::Conflict, message, None),
         ApplicationError::Invalid(error) => {
             return crate::ApiError::validation(error);
         }
-        ApplicationError::Unsupported => (ErrorCode::Unsupported, "operation is unsupported", None),
-        ApplicationError::Internal => (ErrorCode::Internal, "internal service error", None),
+        ApplicationError::Unsupported => (
+            ErrorCode::Unsupported,
+            "operation is unsupported".to_owned(),
+            None,
+        ),
+        ApplicationError::Internal => (
+            ErrorCode::Internal,
+            "internal service error".to_owned(),
+            None,
+        ),
     };
     crate::ApiError {
         code,
-        message: message.into(),
+        message,
         field,
     }
 }
@@ -495,6 +748,31 @@ mod tests {
     }
 
     impl LifecycleApplication for FakeApplication {
+        fn join_community(
+            &self,
+            _: &JoinCommunityRequest,
+        ) -> Result<CommunityConfig, ApplicationError> {
+            Err(ApplicationError::Unsupported)
+        }
+        fn update_community(
+            &self,
+            _: &UpdateCommunityRequest,
+        ) -> Result<CommunityConfig, ApplicationError> {
+            Err(ApplicationError::Unsupported)
+        }
+        fn get_community(&self, _: CommunityConfigId) -> Result<CommunityConfig, ApplicationError> {
+            Err(ApplicationError::Unsupported)
+        }
+        fn list_communities(&self) -> Result<Vec<CommunityConfig>, ApplicationError> {
+            Ok(Vec::new())
+        }
+        fn remove_community(
+            &self,
+            _: CommunityConfigId,
+        ) -> Result<CommunityConfig, ApplicationError> {
+            Err(ApplicationError::Unsupported)
+        }
+
         fn create_agent(
             &self,
             _: &AuthenticatedPrincipal,
@@ -603,9 +881,18 @@ mod tests {
         CreateAgentInput {
             community_config_id: CommunityConfigId::new(),
             display_name: "Builder".into(),
-            system_prompt: "Build safely.".into(),
-            runtime_id: "codex-acp".parse().unwrap(),
+            persona_id: None,
+            system_prompt: Some("Build safely.".into()),
+            runtime_id: Some("codex-acp".parse().unwrap()),
         }
+    }
+
+    #[test]
+    fn persona_backed_create_rejects_agent_system_prompt() {
+        let mut input = input();
+        input.persona_id = Some("reviewer".into());
+        let error = input.validate().unwrap_err();
+        assert_eq!(error.field, "system_prompt");
     }
 
     fn make_handler(owner: PrincipalOwnership) -> LifecycleHandler<FakeApplication> {

@@ -28,6 +28,7 @@ pub enum ErrorCode {
     Unauthorized,
     Forbidden,
     Unsupported,
+    Unavailable,
     Internal,
 }
 

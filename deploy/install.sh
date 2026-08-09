@@ -79,50 +79,23 @@ trap 'exit 143' HUP TERM
 
 if [ ! -f /etc/buzz-server/config.json ]; then
   if [ -z "${BUZZ_CONFIG_FILE:-}" ]; then
-    prompt BUZZ_RELAY_URL "Buzz relay URL"
-    prompt BUZZ_AGENT_SECRET "Agent Nostr secret" true
-    prompt BUZZ_AGENT_PUBKEY "Agent Nostr public key (hex)"
-    prompt BUZZ_OWNER_SECRET "Owner Nostr secret" true
     prompt BUZZ_OPENAI_API_KEY "OpenAI API key" true
     prompt BUZZ_HARNESS_URL "Sprig package URL"
     prompt BUZZ_HARNESS_SHA256 "Sprig package SHA-256"
     prompt BUZZ_RUNTIME_URL "Codex ACP package URL"
     prompt BUZZ_RUNTIME_SHA256 "Codex ACP package SHA-256"
 
-    community_id=$(new_id community_)
-    agent_id=$(new_id agent_)
     BUZZ_CONFIG_FILE="$temporary/config.json"
     BUZZ_SECRETS_FILE="$temporary/secrets.env"
-    BUZZ_OWNER_SECRET_FILE="$temporary/owner-secret"
-    export BUZZ_CONFIG_FILE BUZZ_SECRETS_FILE BUZZ_OWNER_SECRET_FILE
+    export BUZZ_CONFIG_FILE BUZZ_SECRETS_FILE
 
     cat >"$BUZZ_CONFIG_FILE" <<EOF_CONFIG
 {
   "state_database": "/var/lib/buzz-server/state.sqlite3",
-  "receipt_file": "/var/lib/buzz-server/process-receipt.json",
-  "signer_socket": "/run/buzz-server/signer/signer.sock",
   "log_directory": "/var/log/buzz-server/agents",
   "working_directory": "/var/lib/buzz-server",
-  "workspace_path": "/var/lib/buzz-server/workspaces/agent",
-  "runtime_path": "/var/lib/buzz-server/runtime/agent",
-  "agent_secret_env": "BUZZ_AGENT_SECRET",
-  "owner_secret_file": "/run/buzz-server/credentials/owner-secret",
   "runtime_user": "buzz-agent",
-  "expected_agent_pubkey": "$BUZZ_AGENT_PUBKEY",
   "signer_conditions": "kind=9",
-  "community": {
-    "id": "$community_id",
-    "display_name": "Buzz",
-    "relay_url": "$BUZZ_RELAY_URL"
-  },
-  "agent": {
-    "id": "$agent_id",
-    "community_config_id": "$community_id",
-    "display_name": "Buzz agent",
-    "system_prompt": "You are a Buzz agent.",
-    "runtime": {"runtime_id": "codex-acp", "environment": {"RUST_LOG": "info"}},
-    "desired_state": "enabled"
-  },
   "runtime_catalog": {
     "runtimes": [{
       "id": "codex-acp",
@@ -132,8 +105,8 @@ if [ ! -f /etc/buzz-server/config.json ]; then
       "arguments": ["acp"],
       "preflight": {
         "timeout_seconds": 15,
-        "command": "/opt/buzz-server/runtimes/sprig-0.1.0/bin/buzz-acp",
-        "arguments": ["models", "--json", "--agent-command", "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp", "--agent-args", "acp"]
+        "command": "/opt/buzz-server/current/buzz-runtime-probe",
+        "arguments": ["codex-acp-version", "/opt/buzz-server/runtimes/codex-acp-1.1.7/bin/codex-acp"]
       },
       "required_secrets": [{"environment_key": "OPENAI_API_KEY", "secret_name": "BUZZ_SECRET_OPENAI_API_KEY"}]
     }]
@@ -145,9 +118,8 @@ if [ ! -f /etc/buzz-server/config.json ]; then
   "lifecycle_api": {"unix_socket": "/run/buzz-server/lifecycle.sock", "administrator_uids": [0], "draft_submitter_uids": [], "retention_seconds": 2592000, "tls": null}
 }
 EOF_CONFIG
-    printf 'BUZZ_AGENT_SECRET=%s\nBUZZ_SECRET_OPENAI_API_KEY=%s\n' "$BUZZ_AGENT_SECRET" "$BUZZ_OPENAI_API_KEY" >"$BUZZ_SECRETS_FILE"
-    printf '%s\n' "$BUZZ_OWNER_SECRET" >"$BUZZ_OWNER_SECRET_FILE"
-    chmod 0600 "$BUZZ_CONFIG_FILE" "$BUZZ_SECRETS_FILE" "$BUZZ_OWNER_SECRET_FILE"
+    printf 'BUZZ_SECRET_OPENAI_API_KEY=%s\n' "$BUZZ_OPENAI_API_KEY" >"$BUZZ_SECRETS_FILE"
+    chmod 0600 "$BUZZ_CONFIG_FILE" "$BUZZ_SECRETS_FILE"
   fi
 fi
 

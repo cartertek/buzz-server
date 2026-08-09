@@ -1,33 +1,29 @@
 //! Minimal Buzz Server development daemon.
 
 use std::{
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender},
         Arc, Mutex,
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use buzz_core::{Keys, PublicKey};
+use buzz_core::Keys;
 use buzz_server::{
     api::LifecycleApplication,
     application::{LifecycleEffects, SqliteLifecycleApplication},
     auth::{
         AuthenticatedPrincipal, Authority, Nip98AuthorityPolicy, Principal, UnixAuthorityPolicy,
     },
-    community_session::{CommunityAuthorizationVerifier, CommunitySession},
     custody::{AgentIdentityCustody, FilesystemAgentIdentityCustody},
-    launch::{ExecutableIdentity, HealthPolicy, RestartMode, RestartPolicy, SecretRef},
+    launch::{ExecutableIdentity, HealthPolicy, RestartPolicy, SecretRef},
     reconcile::{ProcessReceiptRepository, Reconciler},
-    relay_adapter::{
-        BuzzWsFactory, CommunityRelayAdapter, RelayAdapterConfig, RelayAdapterObserver,
-        SystemRelayClock,
-    },
     signer::DisposableSigner,
-    signer_ipc::SignerIpcServer,
     supervisor::{
         LocalLogPolicy, LocalProcessAdapter, ProcessSupervisor, SecretResolver, SupervisorError,
     },
@@ -35,10 +31,9 @@ use buzz_server::{
         LifecycleJsonRouter, SqliteReplayGuard, TlsLifecycleServer, TlsNip98Authenticator,
         UnixLifecycleServer,
     },
-    AgentSpec, CommunityConfig, DurableOperation, LaunchSpec, LocalLaunchContext, ProcessReceipt,
-    RuntimeCatalog, SqliteStore, StorageError,
+    AgentFileStore, DurableOperation, LaunchSpec, LocalLaunchContext, ProcessReceipt,
+    ResolvedAgentConfig, RuntimeCatalog, SqliteStore, StorageError,
 };
-use nostr::Tag;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
@@ -49,19 +44,12 @@ const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 #[serde(deny_unknown_fields)]
 struct DaemonConfig {
     state_database: PathBuf,
-    receipt_file: PathBuf,
-    signer_socket: PathBuf,
     log_directory: PathBuf,
     working_directory: PathBuf,
-    workspace_path: PathBuf,
-    runtime_path: PathBuf,
-    agent_secret_env: String,
-    owner_secret_file: PathBuf,
+    #[serde(default)]
+    owner_secret_file: Option<PathBuf>,
     runtime_user: String,
-    expected_agent_pubkey: String,
     signer_conditions: String,
-    community: CommunityConfig,
-    agent: AgentSpec,
     runtime_catalog: RuntimeCatalog,
     harness: ExecutableIdentity,
     #[serde(default)]
@@ -118,26 +106,11 @@ impl DaemonConfig {
     }
 
     fn validate(&self) -> Result<(), DaemonError> {
-        self.community
-            .validate()
-            .map_err(|error| DaemonError::InvalidConfig(error.to_string()))?;
-        self.agent
-            .validate()
-            .map_err(|error| DaemonError::InvalidConfig(error.to_string()))?;
         self.runtime_catalog.validate()?;
-        if self.agent.community_config_id != self.community.id {
-            return Err(DaemonError::InvalidConfig(
-                "agent community does not match configured community".into(),
-            ));
-        }
         for path in [
             &self.state_database,
-            &self.receipt_file,
-            &self.signer_socket,
             &self.log_directory,
             &self.working_directory,
-            &self.workspace_path,
-            &self.runtime_path,
             &self.lifecycle_api.unix_socket,
         ] {
             if !path.is_absolute() {
@@ -168,15 +141,12 @@ impl DaemonConfig {
                 ));
             }
         }
-        if !valid_env_name(&self.agent_secret_env) {
-            return Err(DaemonError::InvalidConfig(
-                "credential references must be environment variable names".into(),
-            ));
-        }
-        if self.owner_secret_file != Path::new("/run/buzz-server/credentials/owner-secret") {
-            return Err(DaemonError::InvalidConfig(
-                "owner_secret_file must be the ephemeral materialized credential path".into(),
-            ));
+        if let Some(owner_secret_file) = &self.owner_secret_file {
+            if owner_secret_file != Path::new("/run/buzz-server/credentials/owner-secret") {
+                return Err(DaemonError::InvalidConfig(
+                    "owner_secret_file must be the ephemeral materialized credential path".into(),
+                ));
+            }
         }
         if self.runtime_user != "buzz-agent" {
             return Err(DaemonError::InvalidConfig(
@@ -190,16 +160,6 @@ impl DaemonConfig {
                 Path::new("/var/lib/buzz-server"),
             ),
             (
-                "receipt_file",
-                &self.receipt_file,
-                Path::new("/var/lib/buzz-server"),
-            ),
-            (
-                "signer_socket",
-                &self.signer_socket,
-                Path::new("/run/buzz-server"),
-            ),
-            (
                 "log_directory",
                 &self.log_directory,
                 Path::new("/var/log/buzz-server"),
@@ -207,16 +167,6 @@ impl DaemonConfig {
             (
                 "working_directory",
                 &self.working_directory,
-                Path::new("/var/lib/buzz-server"),
-            ),
-            (
-                "workspace_path",
-                &self.workspace_path,
-                Path::new("/var/lib/buzz-server"),
-            ),
-            (
-                "runtime_path",
-                &self.runtime_path,
                 Path::new("/var/lib/buzz-server"),
             ),
         ] {
@@ -227,32 +177,400 @@ impl DaemonConfig {
                 )));
             }
         }
-        if self.workspace_path == Path::new("/var/lib/buzz-server")
-            || self.runtime_path == Path::new("/var/lib/buzz-server")
-            || self.workspace_path == self.runtime_path
-        {
-            return Err(DaemonError::InvalidConfig(
-                "workspace_path and runtime_path must be distinct agent-specific subdirectories"
-                    .into(),
-            ));
-        }
-        PublicKey::from_hex(&self.expected_agent_pubkey).map_err(|_| {
-            DaemonError::InvalidConfig("expected_agent_pubkey must be lowercase Nostr hex".into())
-        })?;
         Ok(())
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ReconcileWork {
+    Operation(buzz_server::OperationId),
+    StartupAgent(buzz_server::AgentId),
+    Shutdown,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RelayPublicationWork {
+    Wake,
+    Shutdown,
+}
+
 #[derive(Clone)]
-struct LifecycleWake(tokio::sync::mpsc::UnboundedSender<buzz_server::OperationId>);
+struct LifecycleWake {
+    sender: Sender<ReconcileWork>,
+    relay_publication_sender: Sender<RelayPublicationWork>,
+    store: Arc<SqliteStore>,
+    community_join: buzz_server::community_join::DesktopCommunityJoinVerifier,
+    community_identity_root: PathBuf,
+    agent_files: AgentFileStore,
+    custody: FilesystemAgentIdentityCustody,
+    legacy_owner_keys: Option<Keys>,
+    auto_join_sender: tokio::sync::mpsc::UnboundedSender<buzz_server::CommunityConfigId>,
+}
+
+impl LifecycleWake {
+    fn owner_keys_for_community(
+        &self,
+        community: &buzz_server::CommunityConfig,
+    ) -> Result<Keys, buzz_server::api::ApplicationError> {
+        if let Some(pubkey) = community.identity_pubkey.as_deref() {
+            let path = self
+                .community_identity_root
+                .join(format!("{pubkey}.secret"));
+            let secret = fs::read_to_string(path)
+                .map_err(|_| buzz_server::api::ApplicationError::Internal)?;
+            let keys = Keys::parse(secret.trim())
+                .map_err(|_| buzz_server::api::ApplicationError::Internal)?;
+            if !keys.public_key().to_hex().eq_ignore_ascii_case(pubkey) {
+                return Err(buzz_server::api::ApplicationError::Internal);
+            }
+            return Ok(keys);
+        }
+        self.legacy_owner_keys
+            .clone()
+            .ok_or(buzz_server::api::ApplicationError::Internal)
+    }
+
+    fn sync_persona_references(&self, persona: &buzz_server::PersonaDefinition) {
+        let mut communities = HashSet::new();
+        if let Ok(agents) = self.store.list_agents(None) {
+            for agent in agents {
+                if self
+                    .agent_files
+                    .load_agent(agent.id)
+                    .ok()
+                    .and_then(|file| file.persona_id)
+                    .as_deref()
+                    == Some(persona.id.as_str())
+                {
+                    communities.insert(agent.community_config_id);
+                }
+            }
+        }
+        if let Ok(scopes) = self.store.relay_projection_scopes(
+            buzz_server::storage::RelayProjectionKind::Persona,
+            &persona.id,
+        ) {
+            communities.extend(scopes.into_iter().map(|scope| scope.community_config_id));
+        }
+        for community_id in communities {
+            let Ok(Some(community)) = self.store.get_community(community_id) else {
+                continue;
+            };
+            let Ok(owner_keys) = self.owner_keys_for_community(&community) else {
+                eprintln!("persona projection owner key unavailable for {community_id}");
+                continue;
+            };
+            match buzz_server::relay_projection::sync_persona(
+                &community.relay_url,
+                &owner_keys,
+                persona,
+            ) {
+                Ok(()) => {
+                    let scope = buzz_server::storage::RelayProjectionScope {
+                        community_config_id: community.id,
+                        relay_url: community.relay_url.to_string(),
+                        owner_pubkey: owner_keys.public_key().to_hex(),
+                        d_tag: buzz_server::relay_projection::persona_d_tag(&persona.id),
+                    };
+                    if let Err(error) = self.store.record_relay_projection(
+                        buzz_server::storage::RelayProjectionKind::Persona,
+                        &persona.id,
+                        &scope,
+                        unix_seconds_i64(),
+                    ) {
+                        eprintln!(
+                            "failed to record persona projection {}: {error}",
+                            persona.id
+                        );
+                    }
+                }
+                Err(error) => {
+                    eprintln!("persona projection sync failed for {}: {error}", persona.id);
+                    let scope = buzz_server::storage::RelayProjectionScope {
+                        community_config_id: community.id,
+                        relay_url: community.relay_url.to_string(),
+                        owner_pubkey: owner_keys.public_key().to_hex(),
+                        d_tag: buzz_server::relay_projection::persona_d_tag(&persona.id),
+                    };
+                    if let Err(queue_error) = self.store.enqueue_relay_publication(
+                        buzz_server::storage::RelayPublicationAction::SyncPersona,
+                        &scope,
+                        &persona.id,
+                        unix_seconds_i64(),
+                    ) {
+                        eprintln!(
+                            "failed to queue persona projection {}: {queue_error}",
+                            persona.id
+                        );
+                    } else {
+                        let _ = self
+                            .relay_publication_sender
+                            .send(RelayPublicationWork::Wake);
+                    }
+                }
+            }
+        }
+    }
+}
 
 impl LifecycleEffects for LifecycleWake {
+    fn community_changed(&self, community_id: buzz_server::CommunityConfigId) {
+        let _ = self.auto_join_sender.send(community_id);
+        let _ = self
+            .relay_publication_sender
+            .send(RelayPublicationWork::Wake);
+    }
+
+    fn community_agents_purged(
+        &self,
+        agent_ids: &[buzz_server::AgentId],
+    ) -> Result<(), buzz_server::api::ApplicationError> {
+        for agent_id in agent_ids {
+            match self.agent_files.remove_agent(*agent_id) {
+                Ok(()) => {}
+                Err(buzz_server::AgentFileError::Io(error))
+                    if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(agent_file_application_error(error)),
+            }
+        }
+        Ok(())
+    }
+
+    fn community_identity_unreferenced(&self, pubkey: &str) {
+        match self.store.has_pending_relay_publications_for_owner(pubkey) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("community identity cleanup deferred for {pubkey}: {error}");
+                return;
+            }
+        }
+        let path = self
+            .community_identity_root
+            .join(format!("{pubkey}.secret"));
+        if let Err(error) = fs::remove_file(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("community identity cleanup failed for {pubkey}: {error}");
+            }
+        }
+    }
+
+    fn verify_community_join(
+        &self,
+        community: &buzz_server::CommunityConfig,
+    ) -> Result<(), buzz_server::api::ApplicationError> {
+        self.community_join
+            .verify(community)
+            .map_err(|error| match error {
+                buzz_server::community_join::CommunityJoinError::MembershipDenied => {
+                    buzz_server::api::ApplicationError::Forbidden(error.to_string())
+                }
+                buzz_server::community_join::CommunityJoinError::Unreachable(_) => {
+                    buzz_server::api::ApplicationError::Unavailable(error.to_string())
+                }
+                buzz_server::community_join::CommunityJoinError::InvalidResponse => {
+                    buzz_server::api::ApplicationError::Unavailable(error.to_string())
+                }
+            })
+    }
+
+    fn create_persona(
+        &self,
+        request: &buzz_server::api::CreatePersonaRequest,
+    ) -> Result<buzz_server::PersonaDefinition, buzz_server::api::ApplicationError> {
+        let persona = buzz_server::PersonaDefinition {
+            id: uuid::Uuid::now_v7().to_string(),
+            display_name: request.display_name.trim().to_owned(),
+            avatar_url: None,
+            system_prompt: request.system_prompt.trim().to_owned(),
+            runtime: request.runtime.clone(),
+            model: None,
+            provider: None,
+            name_pool: vec![],
+            environment: Default::default(),
+            respond_to: None,
+            respond_to_allowlist: vec![],
+            parallelism: None,
+            is_builtin: false,
+            is_active: true,
+            shared: false,
+        };
+        self.agent_files
+            .write_persona(&persona)
+            .map_err(agent_file_application_error)?;
+        self.sync_persona_references(&persona);
+        Ok(persona)
+    }
+
+    fn update_persona(
+        &self,
+        request: &buzz_server::api::UpdatePersonaRequest,
+    ) -> Result<buzz_server::PersonaDefinition, buzz_server::api::ApplicationError> {
+        let mut persona = self
+            .agent_files
+            .load_persona(&request.persona_id)
+            .map_err(agent_file_application_error)?;
+        if let Some(value) = &request.changes.display_name {
+            persona.display_name = value.trim().to_owned();
+        }
+        if let Some(value) = &request.changes.system_prompt {
+            persona.system_prompt = value.trim().to_owned();
+        }
+        if let Some(value) = &request.changes.runtime {
+            persona.runtime = Some(value.clone());
+        }
+        self.agent_files
+            .write_persona(&persona)
+            .map_err(agent_file_application_error)?;
+        self.sync_persona_references(&persona);
+        Ok(persona)
+    }
+
+    fn get_persona(
+        &self,
+        id: &str,
+    ) -> Result<buzz_server::PersonaDefinition, buzz_server::api::ApplicationError> {
+        self.agent_files
+            .load_persona(id)
+            .map_err(agent_file_application_error)
+    }
+
+    fn list_personas(
+        &self,
+    ) -> Result<Vec<buzz_server::PersonaDefinition>, buzz_server::api::ApplicationError> {
+        self.agent_files
+            .list_personas()
+            .map_err(agent_file_application_error)
+    }
+
+    fn delete_persona(
+        &self,
+        id: &str,
+    ) -> Result<buzz_server::PersonaDefinition, buzz_server::api::ApplicationError> {
+        self.agent_files
+            .ensure_persona_removable(id)
+            .map_err(agent_file_application_error)?;
+        let scopes = self
+            .store
+            .relay_projection_scopes(buzz_server::storage::RelayProjectionKind::Persona, id)
+            .map_err(buzz_server::api::ApplicationError::from)?;
+        for scope in &scopes {
+            self.store
+                .enqueue_relay_publication(
+                    buzz_server::storage::RelayPublicationAction::TombstonePersona,
+                    scope,
+                    id,
+                    unix_seconds_i64(),
+                )
+                .map_err(buzz_server::api::ApplicationError::from)?;
+        }
+        let persona = self
+            .agent_files
+            .remove_persona(id)
+            .map_err(agent_file_application_error)?;
+        if !scopes.is_empty() {
+            let _ = self
+                .relay_publication_sender
+                .send(RelayPublicationWork::Wake);
+        }
+        Ok(persona)
+    }
+
+    fn prepare_agent_create(
+        &self,
+        id: buzz_server::AgentId,
+        input: &buzz_server::api::CreateAgentInput,
+    ) -> Result<buzz_server::AgentSpec, buzz_server::api::ApplicationError> {
+        let file = self
+            .agent_files
+            .build_create_file(
+                id,
+                input.display_name.clone(),
+                input.persona_id.clone(),
+                input.system_prompt.clone(),
+                input.runtime_id.clone(),
+            )
+            .map_err(agent_file_application_error)?;
+        self.agent_files
+            .resolve(
+                &file,
+                input.community_config_id,
+                buzz_server::DesiredAgentState::Enabled,
+            )
+            .map(|resolved| resolved.spec)
+            .map_err(agent_file_application_error)
+    }
+
+    fn persist_agent_create(
+        &self,
+        agent: &buzz_server::AgentSpec,
+        input: &buzz_server::api::CreateAgentInput,
+    ) -> Result<(), buzz_server::api::ApplicationError> {
+        if self.agent_files.agent_path(agent.id).exists() {
+            return Ok(());
+        }
+        let file = self
+            .agent_files
+            .build_create_file(
+                agent.id,
+                input.display_name.clone(),
+                input.persona_id.clone(),
+                input.system_prompt.clone(),
+                input.runtime_id.clone(),
+            )
+            .map_err(agent_file_application_error)?;
+        self.agent_files
+            .write_agent(&file)
+            .map_err(agent_file_application_error)
+    }
+
+    fn prepare_agent_update(
+        &self,
+        current: &buzz_server::AgentSpec,
+        changes: &buzz_server::api::UpdateAgentInput,
+    ) -> Result<(), buzz_server::api::ApplicationError> {
+        self.agent_files
+            .ensure_agent_file(current)
+            .map_err(agent_file_application_error)?;
+        let mut file = self
+            .agent_files
+            .load_agent(current.id)
+            .map_err(agent_file_application_error)?;
+        if let Some(value) = &changes.display_name {
+            file.display_name.clone_from(value);
+        }
+        if let Some(value) = &changes.system_prompt {
+            if file.persona_id.is_some() {
+                return Err(buzz_server::api::ApplicationError::Invalid(
+                    buzz_server::ValidationError::new(
+                        "system_prompt",
+                        "is defined by the selected persona; update the persona instead",
+                    ),
+                ));
+            }
+            file.system_prompt = Some(value.clone());
+        }
+        if let Some(value) = &changes.runtime_id {
+            file.runtime = Some(value.clone());
+        }
+        self.agent_files
+            .write_agent(&file)
+            .map_err(agent_file_application_error)
+    }
+
+    fn agent_public_key(&self, agent_id: buzz_server::AgentId) -> Option<String> {
+        self.custody
+            .load(agent_id)
+            .ok()
+            .map(|keys| keys.public_key().to_hex())
+    }
+
     fn operation_ready(
         &self,
         operation: &DurableOperation,
     ) -> Result<(), buzz_server::api::ApplicationError> {
-        self.0
-            .send(operation.id)
+        self.sender
+            .send(ReconcileWork::Operation(operation.id))
             .map_err(|_| buzz_server::api::ApplicationError::Internal)
     }
 }
@@ -280,23 +598,6 @@ impl SecretResolver for EnvironmentSecrets {
             return Err(SupervisorError::SecretResolution);
         }
         std::env::var(&reference.key).map_err(|_| SupervisorError::SecretResolution)
-    }
-}
-
-struct SharedAuthorizationVerifier;
-
-impl CommunityAuthorizationVerifier for SharedAuthorizationVerifier {
-    type Error = ();
-
-    fn verify(
-        &self,
-        _: buzz_server::CommunityConfigId,
-        expected_agent: &PublicKey,
-        authorization: &str,
-    ) -> Result<(), Self::Error> {
-        buzz_sdk::nip_oa::verify_auth_tag(authorization, expected_agent)
-            .map(|_| ())
-            .map_err(|_| ())
     }
 }
 
@@ -362,46 +663,6 @@ impl ProcessReceiptRepository for ReceiptFile {
     }
 }
 
-struct StatusObserver {
-    readiness: Arc<CombinedReadiness>,
-}
-
-struct CombinedReadiness {
-    ready_path: PathBuf,
-    relay_ready: AtomicBool,
-    process_ready: AtomicBool,
-}
-
-impl CombinedReadiness {
-    fn update_file(&self) {
-        if self.relay_ready.load(Ordering::Acquire) && self.process_ready.load(Ordering::Acquire) {
-            let _ = fs::write(&self.ready_path, b"ready\n");
-        } else {
-            let _ = fs::remove_file(&self.ready_path);
-        }
-    }
-
-    fn set_process_ready(&self, ready: bool) {
-        self.process_ready.store(ready, Ordering::Release);
-        self.update_file();
-    }
-}
-
-impl RelayAdapterObserver for StatusObserver {
-    fn readiness_changed(&mut self, readiness: buzz_server::community_session::CommunityReadiness) {
-        eprintln!("community readiness: {readiness:?}");
-        self.readiness.relay_ready.store(
-            readiness == buzz_server::community_session::CommunityReadiness::Ready,
-            Ordering::Release,
-        );
-        self.readiness.update_file();
-    }
-
-    fn transport_error(&mut self, message: &str) {
-        eprintln!("relay transport error: {message}");
-    }
-}
-
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), DaemonError> {
     rustls::crypto::ring::default_provider()
@@ -411,17 +672,11 @@ async fn main() -> Result<(), DaemonError> {
         })?;
     let config_path = parse_args()?;
     let config = DaemonConfig::load(&config_path)?;
-    let now = unix_seconds()?;
-    let ready_path = config.signer_socket.with_file_name("ready");
 
     for directory in [
         config.state_database.parent(),
-        config.receipt_file.parent(),
-        config.signer_socket.parent(),
         config.lifecycle_api.unix_socket.parent(),
         Some(config.log_directory.as_path()),
-        Some(config.workspace_path.as_path()),
-        Some(config.runtime_path.as_path()),
     ] {
         fs::create_dir_all(
             directory.ok_or_else(|| {
@@ -430,120 +685,25 @@ async fn main() -> Result<(), DaemonError> {
         )?;
     }
     let child_identity = resolve_user(&config.runtime_user)?;
-    #[cfg(unix)]
-    for directory in [&config.workspace_path, &config.runtime_path] {
-        use std::os::unix::fs::{chown, PermissionsExt};
-        chown(directory, Some(child_identity.0), Some(child_identity.1))?;
-        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
-    }
-    if let Some(signer_directory) = config.signer_socket.parent() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(signer_directory, fs::Permissions::from_mode(0o700))?;
-        }
-    }
+    let child_home = resolve_user_home(&config.runtime_user)?;
     if let Some(lifecycle_directory) = config.lifecycle_api.unix_socket.parent() {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            // The socket authenticates every caller with SO_PEERCRED. Non-root configured draft
-            // submitters need directory traversal, but no caller may modify directory entries.
             fs::set_permissions(lifecycle_directory, fs::Permissions::from_mode(0o711))?;
         }
     }
-    clear_readiness_file(&ready_path)?;
 
-    let mut launch = LaunchSpec::resolve_local(
-        &config.agent,
-        &config.runtime_catalog,
-        LocalLaunchContext {
-            launch_id: format!("agent-{}", config.agent.id),
-            harness: config.harness.clone(),
-            harness_arguments: config.harness_arguments.clone(),
-            working_directory: path_string(&config.working_directory)?,
-            workspace_path: path_string(&config.workspace_path)?,
-            runtime_path: path_string(&config.runtime_path)?,
-            process_group_id: format!("agent-{}", config.agent.id),
-            restart: config.restart.clone(),
-            health: config.health.clone(),
-        },
-    )?;
-    let agent_secret = read_secret_env(&config.agent_secret_env)?;
-    let agent_secret_generation = secret_generation(&agent_secret);
-    let agent_keys = Keys::parse(&agent_secret).map_err(|_| DaemonError::InvalidAgentSecret)?;
-    drop(agent_secret);
-    if agent_keys.public_key().to_hex() != config.expected_agent_pubkey {
-        return Err(DaemonError::InvalidAgentSecret);
-    }
-    let owner_secret = read_secret_file(&config.owner_secret_file)?;
-    let owner_keys = Keys::parse(&owner_secret).map_err(|_| DaemonError::InvalidOwnerSecret)?;
-    drop(owner_secret);
-    let authorization_generation = secret_generation(&format!(
-        "owner={}|community={}|relay={}|agent={}|conditions={}",
-        owner_keys.public_key().to_hex(),
-        config.community.id,
-        config.community.relay_url,
-        config.expected_agent_pubkey,
-        config.signer_conditions,
-    ));
-    let signer_policy = buzz_server::signer::SignerPolicy {
-        community_config_id: config.community.id,
-        relay_url: config.community.relay_url.clone(),
-        agent_pubkey: config.expected_agent_pubkey.clone(),
-        conditions: config.signer_conditions.clone(),
+    let legacy_owner_keys = if let Some(owner_secret_file) = &config.owner_secret_file {
+        let owner_secret = read_secret_file(owner_secret_file)?;
+        let keys = Keys::parse(&owner_secret).map_err(|_| DaemonError::InvalidOwnerSecret)?;
+        drop(owner_secret);
+        Some(keys)
+    } else {
+        None
     };
-    let constrained_signer = DisposableSigner::from_owner_keys(owner_keys.clone(), signer_policy)?;
-    let authorization = constrained_signer
-        .authorize_agent(&buzz_server::signer::AuthorizeAgentRequest {
-            action: "authorize_agent".into(),
-            community_config_id: config.community.id,
-            relay_url: config.community.relay_url.clone(),
-            agent_pubkey: config.expected_agent_pubkey.clone(),
-            conditions: config.signer_conditions.clone(),
-        })?
-        .auth_tag;
-    let auth_parts = buzz_sdk::nip_oa::parse_auth_tag(&authorization)
-        .map_err(|_| DaemonError::InvalidAuthorization)?;
-    let auth_tag = Tag::parse(auth_parts).map_err(|_| DaemonError::InvalidAuthorization)?;
-    let mut community_session = CommunitySession::new(
-        config.community.id,
-        config.community.relay_url.clone(),
-        agent_keys.public_key(),
-        now,
-    )?;
-    community_session.verify_authorization(&SharedAuthorizationVerifier, &authorization)?;
-    launch.environment.insert(
-        buzz_server::launch::HARNESS_RELAY_URL_ENV.into(),
-        config.community.relay_url.to_string(),
-    );
-    launch.secret_environment.insert(
-        buzz_server::launch::HARNESS_PRIVATE_KEY_ENV.into(),
-        SecretRef {
-            key: config.agent_secret_env.clone(),
-            version: Some(agent_secret_generation),
-        },
-    );
-    launch.secret_environment.insert(
-        buzz_server::launch::HARNESS_AUTH_TAG_ENV.into(),
-        SecretRef {
-            key: INTERNAL_AUTHORIZATION_REFERENCE.into(),
-            // The signed tag carries a fresh timestamp and signature on every
-            // daemon start. Its generation is the stable signer authority and
-            // policy, so an equivalent re-sign does not look like process
-            // identity drift and defeat restart adoption.
-            version: Some(authorization_generation),
-        },
-    );
-    launch
-        .validate()
-        .map_err(buzz_server::LaunchResolutionError::Validation)?;
 
     let store = Arc::new(SqliteStore::open(&config.state_database)?);
-    store.put_community(&config.community, now as i64)?;
-    if store.get_agent(config.agent.id)?.is_none() && !store.is_agent_purged(config.agent.id)? {
-        store.put_agent(&config.agent, now as i64)?;
-    }
     let supervisor = LocalProcessAdapter::new(
         LocalLogPolicy {
             directory: config.log_directory.clone(),
@@ -552,81 +712,110 @@ async fn main() -> Result<(), DaemonError> {
         },
         Duration::from_secs(10),
         Some(child_identity),
+        Some(child_home),
     )?;
-    let receipts = ReceiptFile::new(config.receipt_file.clone());
-    let secrets = EnvironmentSecrets {
-        authorization: authorization.clone(),
-        agent_private_key: None,
-    };
-    let reconciler = Reconciler::new(store.as_ref(), &receipts, &supervisor, &secrets);
     let custody_root = config
         .state_database
         .parent()
         .ok_or_else(|| DaemonError::InvalidConfig("state database has no parent".into()))?
         .join("identities");
     let custody = FilesystemAgentIdentityCustody::new(custody_root, 0);
-    let (operation_tx, mut operation_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent_files = AgentFileStore::new(
+        config
+            .state_database
+            .parent()
+            .ok_or_else(|| DaemonError::InvalidConfig("state database has no parent".into()))?
+            .join("agent-config"),
+    )?;
+    let config = Arc::new(config);
+    let (operation_tx, operation_rx) = mpsc::channel();
+    let (relay_publication_tx, relay_publication_rx) = mpsc::channel();
+    let community_identity_root = config
+        .state_database
+        .parent()
+        .ok_or_else(|| DaemonError::InvalidConfig("state database has no parent".into()))?
+        .join("community-identities");
+    let community_join = buzz_server::community_join::DesktopCommunityJoinVerifier::new(
+        community_identity_root.clone(),
+    )
+    .map_err(|error| DaemonError::Task(format!("community join verifier: {error}")))?;
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (auto_join_tx, auto_join_rx) = tokio::sync::mpsc::unbounded_channel();
     let lifecycle_application = SqliteLifecycleApplication::new(
         Arc::clone(&store),
-        Arc::new(LifecycleWake(operation_tx.clone())),
+        Arc::new(LifecycleWake {
+            sender: operation_tx.clone(),
+            relay_publication_sender: relay_publication_tx.clone(),
+            store: Arc::clone(&store),
+            community_join,
+            community_identity_root: community_identity_root.clone(),
+            agent_files: agent_files.clone(),
+            custody: custody.clone(),
+            legacy_owner_keys: legacy_owner_keys.clone(),
+            auto_join_sender: auto_join_tx.clone(),
+        }),
         unix_seconds_i64,
     )
     .with_retention_seconds(config.lifecycle_api.retention_seconds);
-    // Resume durable commands before applying steady-state desired intent. Otherwise an old
-    // disable/delete can be temporarily undone by startup reconciliation.
-    for operation in store.nonterminal_operations()? {
-        reconcile_lifecycle_operation(
-            &lifecycle_application,
-            &reconciler,
-            store.as_ref(),
-            operation.id,
-            config.agent.id,
-            &mut launch,
-            &config,
-            &owner_keys,
-            &custody,
-            &supervisor,
+
+    let worker = spawn_reconciliation_worker(
+        operation_rx,
+        ReconcileContext {
+            application: lifecycle_application.clone(),
+            store: Arc::clone(&store),
+            config: Arc::clone(&config),
+            legacy_owner_keys: legacy_owner_keys.clone(),
+            custody: custody.clone(),
+            agent_files: agent_files.clone(),
+            supervisor,
             child_identity,
-        )?;
-    }
-    if let Some(agent) = store.get_agent(config.agent.id)? {
-        let outcome = reconciler.reconcile_desired(&agent, Some(&launch))?;
-        eprintln!("local reconciliation: {outcome:?}");
+            relay_publication_sender: relay_publication_tx.clone(),
+        },
+    );
+    let relay_publication_worker = spawn_relay_publication_worker(
+        relay_publication_rx,
+        RelayPublicationContext {
+            store: Arc::clone(&store),
+            community_identity_root: community_identity_root.clone(),
+            legacy_owner_keys: legacy_owner_keys.clone(),
+            agent_files: agent_files.clone(),
+            custody: custody.clone(),
+        },
+    );
+    let _ = relay_publication_tx.send(RelayPublicationWork::Wake);
+
+    for operation in store.nonterminal_operations()? {
+        operation_tx
+            .send(ReconcileWork::Operation(operation.id))
+            .map_err(|_| DaemonError::Task("reconciliation worker stopped".into()))?;
     }
     for agent in store.list_agents(None)? {
-        if agent.id == config.agent.id {
-            continue;
-        }
-        let kind = match agent.desired_state {
-            buzz_server::DesiredAgentState::Enabled => buzz_server::OperationKind::EnableAgent,
-            buzz_server::DesiredAgentState::Disabled => buzz_server::OperationKind::DisableAgent,
-            buzz_server::DesiredAgentState::Deleted => buzz_server::OperationKind::DeleteAgent,
-        };
-        let startup = buzz_server::api::OperationResource {
-            id: buzz_server::OperationId::new(),
-            kind,
-            status: buzz_server::OperationStatus::Running,
-            agent_id: Some(agent.id),
-            error_code: None,
-            correlation_id: format!("startup:{}", agent.id),
-            created_at: unix_seconds_i64(),
-            updated_at: unix_seconds_i64(),
-        };
-        reconcile_dynamic_lifecycle_operation(
-            &lifecycle_application,
-            store.as_ref(),
-            &startup,
-            &config,
-            &owner_keys,
-            &custody,
-            &supervisor,
-            child_identity,
-            false,
-        )?;
+        agent_files.ensure_agent_file(&agent)?;
+        let file = agent_files.load_agent(agent.id)?;
+        let resolved =
+            agent_files.resolve(&file, agent.community_config_id, agent.desired_state)?;
+        store.put_agent(&resolved.spec, unix_seconds_i64())?;
+        operation_tx
+            .send(ReconcileWork::StartupAgent(agent.id))
+            .map_err(|_| DaemonError::Task("reconciliation worker stopped".into()))?;
     }
 
-    let signer_server = SignerIpcServer::new(&config.signer_socket, Arc::new(constrained_signer));
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let auto_join_context = AutoJoinContext {
+        store: Arc::clone(&store),
+        agent_files: agent_files.clone(),
+        custody: custody.clone(),
+        community_identity_root: community_identity_root.clone(),
+        legacy_owner_keys: legacy_owner_keys.clone(),
+    };
+    let mut auto_join_task = tokio::spawn(run_auto_join_manager(
+        auto_join_rx,
+        shutdown_rx.clone(),
+        auto_join_context,
+    ));
+    for community in store.list_communities()? {
+        let _ = auto_join_tx.send(community.id);
+    }
+
     let unix_lifecycle = UnixLifecycleServer::new(
         &config.lifecycle_api.unix_socket,
         UnixAuthorityPolicy {
@@ -661,167 +850,648 @@ async fn main() -> Result<(), DaemonError> {
         };
         tokio::spawn(async move { server.run(lifecycle_shutdown).await })
     });
-    let mut signer_task = tokio::spawn({
-        let signer_shutdown = shutdown_rx.clone();
-        async move { signer_server.run(signer_shutdown).await }
-    });
-    let relay = CommunityRelayAdapter {
-        factory: BuzzWsFactory {
-            keys: agent_keys,
-            authorization_tag: Some(auth_tag),
-        },
-        clock: SystemRelayClock,
-        config: RelayAdapterConfig::default(),
-    };
-    let readiness = Arc::new(CombinedReadiness {
-        ready_path: ready_path.clone(),
-        relay_ready: AtomicBool::new(false),
-        process_ready: AtomicBool::new(false),
-    });
-    let mut observer = StatusObserver {
-        readiness: Arc::clone(&readiness),
-    };
-    let relay_task = relay.run(&mut community_session, &mut observer, shutdown_rx);
-    tokio::pin!(relay_task);
-    let mut process_tick = tokio::time::interval(Duration::from_secs(1));
-    process_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut retention_tick = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
     retention_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut restart_attempts = 0_u32;
-    let mut next_restart = Instant::now();
-
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    enum Completion<T, S> {
-        Relay(T),
-        Signer(S),
+
+    enum Completion {
         Lifecycle(Result<(), buzz_server::transport::TransportError>),
+        AutoJoin(Result<(), DaemonError>),
         Signal,
     }
     let completion = loop {
         tokio::select! {
-            result = &mut relay_task => break Completion::Relay(result),
-            result = &mut signer_task => break Completion::Signer(result),
             result = &mut unix_lifecycle_task => break Completion::Lifecycle(result.map_err(|error| buzz_server::transport::TransportError::Task(error.to_string()))?),
             result = async { tls_lifecycle_task.as_mut().expect("guarded").await }, if tls_lifecycle_task.is_some() => break Completion::Lifecycle(result.map_err(|error| buzz_server::transport::TransportError::Task(error.to_string()))?),
+            result = &mut auto_join_task => break Completion::AutoJoin(result?),
             signal = tokio::signal::ctrl_c() => { signal?; break Completion::Signal },
             _ = terminate.recv() => break Completion::Signal,
-            Some(operation_id) = operation_rx.recv() => {
-                reconcile_lifecycle_operation(
-                    &lifecycle_application,
-                    &reconciler,
-                    &store,
-                    operation_id,
-                    config.agent.id,
-                    &mut launch,
-                    &config,
-                    &owner_keys,
-                    &custody,
-                    &supervisor,
-                    child_identity,
-                )?;
-            }
-            _ = process_tick.tick() => {
-                observe_dynamic_agents(store.as_ref(), &supervisor, &config)?;
-            },
             _ = retention_tick.tick() => {
                 enqueue_expired_purges(&lifecycle_application)?;
             },
         }
-        let mut process_ready = false;
-        let durable = receipts.get_receipt(config.agent.id)?;
-        let observed = durable
-            .as_ref()
-            .map(|receipt| supervisor.inspect(receipt))
-            .transpose()?;
-        if let Some(observed) = &observed {
-            receipts.put_receipt(observed)?;
-            process_ready = observed.observed_state == buzz_server::ObservedProcessState::Healthy;
-            if process_ready
-                && unix_millis()?.saturating_sub(observed.started_at_unix_ms)
-                    >= config.restart.stable_after_ms
-            {
-                restart_attempts = 0;
-            }
-        }
-        readiness.set_process_ready(process_ready);
-        let desired_agent = store.get_agent(config.agent.id)?;
-        if desired_agent.is_some() {
-            sync_supervisor_logs(&store, &supervisor, config.agent.id, &launch.launch_id)?;
-        }
-        let should_restart = desired_agent
-            .as_ref()
-            .is_some_and(|agent| agent.desired_state == buzz_server::DesiredAgentState::Enabled)
-            && match observed.as_ref() {
-                Some(receipt) if receipt.observed_state.is_terminal() => {
-                    match config.restart.mode {
-                        RestartMode::Never => false,
-                        RestartMode::OnFailure => receipt.exit_code != Some(0),
-                        RestartMode::Always => true,
-                    }
-                }
-                None => true,
-                Some(_) => false,
-            };
-        if should_restart
-            && restart_attempts < config.restart.max_attempts
-            && Instant::now() >= next_restart
-        {
-            let outcome = reconciler.reconcile_desired(
-                desired_agent
-                    .as_ref()
-                    .expect("restart requires desired agent"),
-                Some(&launch),
-            )?;
-            restart_attempts = restart_attempts.saturating_add(1);
-            let shift = restart_attempts.saturating_sub(1).min(31);
-            let delay = config
-                .restart
-                .initial_backoff_ms
-                .saturating_mul(1_u64 << shift)
-                .min(config.restart.max_backoff_ms);
-            next_restart = Instant::now() + Duration::from_millis(delay);
-            eprintln!("local reconciliation: {outcome:?}");
-        }
     };
     let _ = shutdown_tx.send(true);
-    let _ = fs::remove_file(&ready_path);
-    let intentional_shutdown = matches!(completion, Completion::Signal);
-    if should_stop_managed_agent(intentional_shutdown) {
-        if let Some(receipt) = receipts.get_receipt(config.agent.id)? {
-            let stopped = supervisor.stop(&receipt)?;
-            receipts.put_receipt(&stopped)?;
-        }
-    }
     match completion {
-        Completion::Relay(result) => {
-            result?;
-            signer_task
-                .await
-                .map_err(|error| DaemonError::Task(error.to_string()))??;
-        }
-        Completion::Signer(result) => {
-            result.map_err(|error| DaemonError::Task(error.to_string()))??;
-            relay_task.await?;
-        }
-        Completion::Lifecycle(result) => {
-            result?;
-            relay_task.await?;
-            signer_task
-                .await
-                .map_err(|error| DaemonError::Task(error.to_string()))??;
-        }
-        Completion::Signal => {
-            relay_task.await?;
-            signer_task
-                .await
-                .map_err(|error| DaemonError::Task(error.to_string()))??;
-        }
+        Completion::Lifecycle(result) => result?,
+        Completion::AutoJoin(result) => result?,
+        Completion::Signal => {}
     }
     unix_lifecycle_task.abort();
     if let Some(task) = tls_lifecycle_task {
         task.abort();
     }
+    auto_join_task.abort();
+    let _ = operation_tx.send(ReconcileWork::Shutdown);
+    let _ = relay_publication_tx.send(RelayPublicationWork::Shutdown);
+    worker
+        .join()
+        .map_err(|_| DaemonError::Task("reconciliation worker panicked".into()))?;
+    relay_publication_worker
+        .join()
+        .map_err(|_| DaemonError::Task("relay publication worker panicked".into()))?;
     Ok(())
+}
+
+#[derive(Clone)]
+struct AutoJoinContext {
+    store: Arc<SqliteStore>,
+    agent_files: AgentFileStore,
+    custody: FilesystemAgentIdentityCustody,
+    community_identity_root: PathBuf,
+    legacy_owner_keys: Option<Keys>,
+}
+
+async fn run_auto_join_manager(
+    mut changes: tokio::sync::mpsc::UnboundedReceiver<buzz_server::CommunityConfigId>,
+    mut shutdown: watch::Receiver<bool>,
+    context: AutoJoinContext,
+) -> Result<(), DaemonError> {
+    let mut watchers: HashMap<buzz_server::CommunityConfigId, tokio::task::JoinHandle<()>> =
+        HashMap::new();
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+            }
+            community_id = changes.recv() => {
+                let Some(community_id) = community_id else { break; };
+                if let Some(task) = watchers.remove(&community_id) {
+                    task.abort();
+                }
+                let Some(community) = context.store.get_community(community_id)? else {
+                    continue;
+                };
+                let task_context = context.clone();
+                let task_shutdown = shutdown.clone();
+                watchers.insert(community_id, tokio::spawn(async move {
+                    if let Err(error) = run_community_auto_join(task_context, community, task_shutdown).await {
+                        eprintln!("auto-join watcher failed for community {community_id}: {error}");
+                    }
+                }));
+            }
+        }
+    }
+    for (_, task) in watchers {
+        task.abort();
+    }
+    Ok(())
+}
+
+async fn run_community_auto_join(
+    context: AutoJoinContext,
+    community: buzz_server::CommunityConfig,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), DaemonError> {
+    let owner_keys = auto_join_owner_keys(&context, &community)?;
+    let subscription_id = format!("server-auto-join-{}", community.id);
+    let request = buzz_server::auto_join::channel_creation_subscription(&subscription_id);
+    let mut backoff = Duration::from_secs(1);
+    while !*shutdown.borrow() {
+        let connection = tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() { return Ok(()); }
+                continue;
+            }
+            result = buzz_ws_client::NostrWsConnection::connect_authenticated(
+                community.relay_url.as_str(),
+                &owner_keys,
+                None,
+            ) => result,
+        };
+        let mut connection = match connection {
+            Ok(connection) => connection,
+            Err(error) => {
+                eprintln!(
+                    "auto-join relay connection failed for {}: {error}",
+                    community.id
+                );
+                if auto_join_wait_or_shutdown(backoff, &mut shutdown).await {
+                    return Ok(());
+                }
+                backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+                continue;
+            }
+        };
+        if let Err(error) = connection.send_raw(&request).await {
+            eprintln!(
+                "auto-join subscription failed for {}: {error}",
+                community.id
+            );
+            let _ = connection.disconnect().await;
+            if auto_join_wait_or_shutdown(backoff, &mut shutdown).await {
+                return Ok(());
+            }
+            backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+            continue;
+        }
+        backoff = Duration::from_secs(1);
+        loop {
+            match buzz_server::auto_join::next_open_channel(&mut connection, &mut shutdown).await {
+                Ok(Some(channel_id)) => {
+                    reconcile_auto_join_channel(&context, &community, &owner_keys, channel_id).await
+                }
+                Ok(None) => {
+                    let _ = connection.disconnect().await;
+                    return Ok(());
+                }
+                Err(error) => {
+                    eprintln!(
+                        "auto-join relay stream failed for {}: {error}",
+                        community.id
+                    );
+                    let _ = connection.disconnect().await;
+                    break;
+                }
+            }
+        }
+        if auto_join_wait_or_shutdown(backoff, &mut shutdown).await {
+            return Ok(());
+        }
+        backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+    }
+    Ok(())
+}
+
+async fn reconcile_auto_join_channel(
+    context: &AutoJoinContext,
+    community: &buzz_server::CommunityConfig,
+    owner_keys: &Keys,
+    channel_id: uuid::Uuid,
+) {
+    let agents = match context.store.list_agents(Some(community.id)) {
+        Ok(agents) => agents,
+        Err(error) => {
+            eprintln!(
+                "auto-join could not list agents for {}: {error}",
+                community.id
+            );
+            return;
+        }
+    };
+    for agent in agents {
+        if agent.desired_state == buzz_server::DesiredAgentState::Deleted {
+            continue;
+        }
+        let file = match context.agent_files.load_agent(agent.id) {
+            Ok(file) => file,
+            Err(error) => {
+                eprintln!("auto-join could not read config for {}: {error}", agent.id);
+                continue;
+            }
+        };
+        if !file.auto_join_open_channels {
+            continue;
+        }
+        let agent_keys = match context.custody.provision(agent.id) {
+            Ok(identity) => match context.custody.load(agent.id) {
+                Ok(keys) if keys.public_key().to_hex() == identity.public_key => keys,
+                Ok(_) => {
+                    eprintln!("auto-join identity mismatch for {}", agent.id);
+                    continue;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "auto-join could not load identity for {}: {error}",
+                        agent.id
+                    );
+                    continue;
+                }
+            },
+            Err(error) => {
+                eprintln!(
+                    "auto-join could not provision identity for {}: {error}",
+                    agent.id
+                );
+                continue;
+            }
+        };
+        let auth_tag = match buzz_sdk::nip_oa::compute_auth_tag(
+            owner_keys,
+            &agent_keys.public_key(),
+            "kind=9021",
+        ) {
+            Ok(tag) => tag,
+            Err(error) => {
+                eprintln!("auto-join authorization failed for {}: {error}", agent.id);
+                continue;
+            }
+        };
+        match buzz_server::auto_join::publish_join(
+            &community.relay_url,
+            &agent_keys,
+            &auth_tag,
+            channel_id,
+        )
+        .await
+        {
+            Ok(()) => eprintln!("auto-joined agent {} to channel {channel_id}", agent.id),
+            Err(error) if auto_join_already_member(&error) => {}
+            Err(error) => eprintln!(
+                "auto-join failed for agent {} channel {channel_id}: {error}",
+                agent.id
+            ),
+        }
+    }
+}
+
+fn auto_join_owner_keys(
+    context: &AutoJoinContext,
+    community: &buzz_server::CommunityConfig,
+) -> Result<Keys, DaemonError> {
+    let Some(pubkey) = community.identity_pubkey.as_deref() else {
+        return context.legacy_owner_keys.clone().ok_or_else(|| {
+            DaemonError::InvalidConfig(
+                "legacy community has no associated identity; rejoin the community".into(),
+            )
+        });
+    };
+    let secret = fs::read_to_string(
+        context
+            .community_identity_root
+            .join(format!("{pubkey}.secret")),
+    )?;
+    let keys = Keys::parse(secret.trim()).map_err(|_| DaemonError::InvalidOwnerSecret)?;
+    if !keys.public_key().to_hex().eq_ignore_ascii_case(pubkey) {
+        return Err(DaemonError::InvalidOwnerSecret);
+    }
+    Ok(keys)
+}
+
+fn auto_join_already_member(message: &str) -> bool {
+    let value = message.to_ascii_lowercase();
+    value.contains("already") && value.contains("member")
+}
+
+async fn auto_join_wait_or_shutdown(
+    duration: Duration,
+    shutdown: &mut watch::Receiver<bool>,
+) -> bool {
+    tokio::select! {
+        () = tokio::time::sleep(duration) => false,
+        changed = shutdown.changed() => changed.is_err() || *shutdown.borrow(),
+    }
+}
+
+#[derive(Clone)]
+struct RelayPublicationContext {
+    store: Arc<SqliteStore>,
+    community_identity_root: PathBuf,
+    legacy_owner_keys: Option<Keys>,
+    agent_files: AgentFileStore,
+    custody: FilesystemAgentIdentityCustody,
+}
+
+fn spawn_relay_publication_worker(
+    receiver: Receiver<RelayPublicationWork>,
+    context: RelayPublicationContext,
+) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name("buzz-relay-publications".into())
+        .spawn(move || loop {
+            match receiver.recv_timeout(Duration::from_secs(30)) {
+                Ok(RelayPublicationWork::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
+                Ok(RelayPublicationWork::Wake) | Err(RecvTimeoutError::Timeout) => {
+                    if let Err(error) = drain_relay_publications(&context) {
+                        eprintln!("relay publication drain failed: {error}");
+                    }
+                }
+            }
+        })
+        .expect("failed to spawn relay publication worker")
+}
+
+fn drain_relay_publications(context: &RelayPublicationContext) -> Result<(), DaemonError> {
+    for publication in context.store.pending_relay_publications()? {
+        let relay_url = url::Url::parse(&publication.relay_url)
+            .map_err(|error| DaemonError::Task(format!("invalid retained relay URL: {error}")))?;
+        let owner_keys = match relay_publication_owner_keys(context, &publication.owner_pubkey) {
+            Ok(keys) => keys,
+            Err(error) => {
+                context.store.fail_relay_publication(
+                    &publication.id,
+                    &error.to_string(),
+                    unix_seconds_i64(),
+                )?;
+                continue;
+            }
+        };
+        let result: Result<(), String> = match publication.action {
+            buzz_server::storage::RelayPublicationAction::SyncManagedAgent => {
+                retry_managed_agent_projection(context, &publication, &relay_url, &owner_keys)
+            }
+            buzz_server::storage::RelayPublicationAction::SyncPersona => {
+                retry_persona_projection(context, &publication, &relay_url, &owner_keys)
+            }
+            buzz_server::storage::RelayPublicationAction::TombstoneManagedAgent => {
+                buzz_server::relay_projection::tombstone_managed_agent(
+                    &relay_url,
+                    &owner_keys,
+                    &publication.d_tag,
+                )
+                .map_err(|error| error.to_string())
+            }
+            buzz_server::storage::RelayPublicationAction::ArchiveIdentity => {
+                buzz_server::relay_projection::archive_identity(
+                    &relay_url,
+                    &owner_keys,
+                    &publication.d_tag,
+                )
+                .map_err(|error| error.to_string())
+            }
+            buzz_server::storage::RelayPublicationAction::TombstonePersona => {
+                buzz_server::relay_projection::tombstone_persona(
+                    &relay_url,
+                    &owner_keys,
+                    &publication.subject_id,
+                )
+                .map_err(|error| error.to_string())
+            }
+        };
+        match result {
+            Ok(()) => {
+                context.store.complete_relay_publication(&publication.id)?;
+                if let Some(community_id) = publication.community_config_id {
+                    let projection = match publication.action {
+                        buzz_server::storage::RelayPublicationAction::TombstoneManagedAgent => {
+                            Some(buzz_server::storage::RelayProjectionKind::ManagedAgent)
+                        }
+                        buzz_server::storage::RelayPublicationAction::TombstonePersona => {
+                            Some(buzz_server::storage::RelayProjectionKind::Persona)
+                        }
+                        buzz_server::storage::RelayPublicationAction::SyncManagedAgent
+                        | buzz_server::storage::RelayPublicationAction::SyncPersona
+                        | buzz_server::storage::RelayPublicationAction::ArchiveIdentity => None,
+                    };
+                    if let Some(kind) = projection {
+                        context.store.remove_relay_projection(
+                            community_id,
+                            kind,
+                            &publication.subject_id,
+                        )?;
+                    }
+                }
+                cleanup_unreferenced_projection_owner(context, &publication.owner_pubkey)?;
+            }
+            Err(error) => {
+                context.store.fail_relay_publication(
+                    &publication.id,
+                    &error.to_string(),
+                    unix_seconds_i64(),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn retry_managed_agent_projection(
+    context: &RelayPublicationContext,
+    publication: &buzz_server::storage::RelayPublication,
+    relay_url: &url::Url,
+    owner_keys: &Keys,
+) -> Result<(), String> {
+    let agent_id: buzz_server::AgentId = publication
+        .subject_id
+        .parse()
+        .map_err(|error| format!("invalid retained agent id: {error}"))?;
+    let Some(agent) = context
+        .store
+        .get_agent(agent_id)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    if !context.agent_files.agent_path(agent_id).exists() {
+        return Ok(());
+    }
+    let file = context
+        .agent_files
+        .load_agent(agent_id)
+        .map_err(|error| error.to_string())?;
+    let resolved = context
+        .agent_files
+        .resolve(&file, agent.community_config_id, agent.desired_state)
+        .map_err(|error| error.to_string())?;
+    let agent_keys = context
+        .custody
+        .load(agent_id)
+        .map_err(|error| error.to_string())?;
+    buzz_server::relay_projection::sync_managed_agent_projection(
+        relay_url,
+        owner_keys,
+        &agent_keys,
+        &resolved,
+    )
+    .map_err(|error| error.to_string())?;
+    let community_id = publication
+        .community_config_id
+        .ok_or_else(|| "managed-agent projection retry has no community".to_string())?;
+    context
+        .store
+        .record_relay_projection(
+            buzz_server::storage::RelayProjectionKind::ManagedAgent,
+            &publication.subject_id,
+            &buzz_server::storage::RelayProjectionScope {
+                community_config_id: community_id,
+                relay_url: publication.relay_url.clone(),
+                owner_pubkey: publication.owner_pubkey.clone(),
+                d_tag: agent_keys.public_key().to_hex(),
+            },
+            unix_seconds_i64(),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn retry_persona_projection(
+    context: &RelayPublicationContext,
+    publication: &buzz_server::storage::RelayPublication,
+    relay_url: &url::Url,
+    owner_keys: &Keys,
+) -> Result<(), String> {
+    let path = context
+        .agent_files
+        .persona_path(&publication.subject_id)
+        .map_err(|error| error.to_string())?;
+    if !path.exists() {
+        return Ok(());
+    }
+    let persona = context
+        .agent_files
+        .load_persona(&publication.subject_id)
+        .map_err(|error| error.to_string())?;
+    buzz_server::relay_projection::sync_persona(relay_url, owner_keys, &persona)
+        .map_err(|error| error.to_string())?;
+    let community_id = publication
+        .community_config_id
+        .ok_or_else(|| "persona projection retry has no community".to_string())?;
+    context
+        .store
+        .record_relay_projection(
+            buzz_server::storage::RelayProjectionKind::Persona,
+            &publication.subject_id,
+            &buzz_server::storage::RelayProjectionScope {
+                community_config_id: community_id,
+                relay_url: publication.relay_url.clone(),
+                owner_pubkey: publication.owner_pubkey.clone(),
+                d_tag: buzz_server::relay_projection::persona_d_tag(&publication.subject_id),
+            },
+            unix_seconds_i64(),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn relay_publication_owner_keys(
+    context: &RelayPublicationContext,
+    owner_pubkey: &str,
+) -> Result<Keys, DaemonError> {
+    let path = context
+        .community_identity_root
+        .join(format!("{owner_pubkey}.secret"));
+    if path.exists() {
+        let secret = fs::read_to_string(path)?;
+        let keys = Keys::parse(secret.trim()).map_err(|_| DaemonError::InvalidOwnerSecret)?;
+        if keys
+            .public_key()
+            .to_hex()
+            .eq_ignore_ascii_case(owner_pubkey)
+        {
+            return Ok(keys);
+        }
+        return Err(DaemonError::InvalidOwnerSecret);
+    }
+    context
+        .legacy_owner_keys
+        .clone()
+        .filter(|keys| {
+            keys.public_key()
+                .to_hex()
+                .eq_ignore_ascii_case(owner_pubkey)
+        })
+        .ok_or_else(|| DaemonError::Task(format!("owner key {owner_pubkey} is unavailable")))
+}
+
+fn cleanup_unreferenced_projection_owner(
+    context: &RelayPublicationContext,
+    owner_pubkey: &str,
+) -> Result<(), DaemonError> {
+    if context
+        .store
+        .has_pending_relay_publications_for_owner(owner_pubkey)?
+        || context
+            .store
+            .list_communities()?
+            .iter()
+            .any(|community| community.identity_pubkey.as_deref() == Some(owner_pubkey))
+    {
+        return Ok(());
+    }
+    let path = context
+        .community_identity_root
+        .join(format!("{owner_pubkey}.secret"));
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+struct ReconcileContext {
+    application: SqliteLifecycleApplication<LifecycleWake>,
+    store: Arc<SqliteStore>,
+    config: Arc<DaemonConfig>,
+    legacy_owner_keys: Option<Keys>,
+    custody: FilesystemAgentIdentityCustody,
+    agent_files: AgentFileStore,
+    supervisor: LocalProcessAdapter,
+    child_identity: (u32, u32),
+    relay_publication_sender: Sender<RelayPublicationWork>,
+}
+
+fn spawn_reconciliation_worker(
+    receiver: Receiver<ReconcileWork>,
+    context: ReconcileContext,
+) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name("buzz-reconciler".into())
+        .spawn(move || loop {
+            match receiver.recv_timeout(Duration::from_secs(1)) {
+                Ok(ReconcileWork::Operation(operation_id)) => {
+                    reconcile_operation_contained(&context, operation_id);
+                }
+                Ok(ReconcileWork::StartupAgent(agent_id)) => {
+                    if let Err(error) = reconcile_startup_agent(&context, agent_id) {
+                        eprintln!("startup reconciliation failed for {agent_id}: {error}");
+                    }
+                }
+                Ok(ReconcileWork::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {
+                    if let Err(error) = observe_dynamic_agents(&context) {
+                        eprintln!("agent observation failed: {error}");
+                    }
+                    if let Err(error) = cleanup_purged_agent_artifacts(&context) {
+                        eprintln!("purged-agent artifact cleanup failed: {error}");
+                    }
+                }
+            }
+        })
+        .expect("failed to spawn reconciliation worker")
+}
+
+fn reconcile_operation_contained(
+    context: &ReconcileContext,
+    operation_id: buzz_server::OperationId,
+) {
+    if let Err(error) = reconcile_lifecycle_operation(context, operation_id) {
+        eprintln!("lifecycle operation {operation_id} failed: {error}");
+        let terminal_result = (|| -> Result<(), buzz_server::api::ApplicationError> {
+            let operation = context.application.get_operation(operation_id)?;
+            if operation.status.is_terminal() {
+                return Ok(());
+            }
+            if operation.status == buzz_server::OperationStatus::Pending {
+                context.application.start_operation(operation_id)?;
+            }
+            context.application.complete_operation(
+                operation_id,
+                buzz_server::OperationStatus::Failed,
+                Some(buzz_server::ErrorCode::Internal),
+            )
+        })();
+        if let Err(persist_error) = terminal_result {
+            eprintln!(
+                "failed to persist terminal state for lifecycle operation {operation_id}: {persist_error}"
+            );
+        }
+    }
+}
+
+fn reconcile_startup_agent(
+    context: &ReconcileContext,
+    agent_id: buzz_server::AgentId,
+) -> Result<(), DaemonError> {
+    let agent = context
+        .store
+        .get_agent(agent_id)?
+        .ok_or(StorageError::NotFound)?;
+    let kind = match agent.desired_state {
+        buzz_server::DesiredAgentState::Enabled => buzz_server::OperationKind::EnableAgent,
+        buzz_server::DesiredAgentState::Disabled => buzz_server::OperationKind::DisableAgent,
+        buzz_server::DesiredAgentState::Deleted => buzz_server::OperationKind::DeleteAgent,
+    };
+    let startup = buzz_server::api::OperationResource {
+        id: buzz_server::OperationId::new(),
+        kind,
+        status: buzz_server::OperationStatus::Running,
+        agent_id: Some(agent.id),
+        error_code: None,
+        correlation_id: format!("startup:{}", agent.id),
+        created_at: unix_seconds_i64(),
+        updated_at: unix_seconds_i64(),
+    };
+    reconcile_dynamic_lifecycle_operation(context, &startup, false)
 }
 
 fn parse_args() -> Result<PathBuf, DaemonError> {
@@ -834,10 +1504,6 @@ fn parse_args() -> Result<PathBuf, DaemonError> {
         return Err(DaemonError::Usage);
     }
     Ok(path.into())
-}
-
-fn read_secret_env(name: &str) -> Result<String, DaemonError> {
-    std::env::var(name).map_err(|_| DaemonError::MissingSecret(name.to_owned()))
 }
 
 fn read_secret_file(path: &Path) -> Result<String, DaemonError> {
@@ -873,27 +1539,35 @@ fn resolve_user(name: &str) -> Result<(u32, u32), DaemonError> {
     )))
 }
 
+fn resolve_user_home(name: &str) -> Result<PathBuf, DaemonError> {
+    let passwd = fs::read_to_string("/etc/passwd")?;
+    for line in passwd.lines() {
+        let fields: Vec<_> = line.split(':').collect();
+        if fields.first() == Some(&name) && fields.len() >= 6 {
+            let home = fields[5];
+            if home.starts_with('/') && !home.is_empty() {
+                return Ok(PathBuf::from(home));
+            }
+            return Err(DaemonError::InvalidConfig(
+                "runtime user has invalid home directory".into(),
+            ));
+        }
+    }
+    Err(DaemonError::InvalidConfig(format!(
+        "runtime user {name} does not exist"
+    )))
+}
+
 fn valid_env_name(name: &str) -> bool {
     let mut characters = name.chars();
     matches!(characters.next(), Some('A'..='Z' | '_'))
         && characters.all(|character| matches!(character, 'A'..='Z' | '0'..='9' | '_'))
 }
 
-fn should_stop_managed_agent(intentional_shutdown: bool) -> bool {
-    !intentional_shutdown
-}
-
 fn path_string(path: &Path) -> Result<String, DaemonError> {
     path.to_str()
         .map(ToOwned::to_owned)
         .ok_or_else(|| DaemonError::InvalidConfig("paths must be UTF-8".into()))
-}
-
-fn unix_seconds() -> Result<u64, DaemonError> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| DaemonError::Clock)?
-        .as_secs())
 }
 
 fn unix_seconds_i64() -> i64 {
@@ -906,111 +1580,19 @@ fn unix_seconds_unchecked() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn reconcile_lifecycle_operation<E: LifecycleEffects>(
-    application: &SqliteLifecycleApplication<E>,
-    reconciler: &Reconciler<'_, SqliteStore, ReceiptFile, LocalProcessAdapter>,
-    store: &SqliteStore,
+fn reconcile_lifecycle_operation(
+    context: &ReconcileContext,
     operation_id: buzz_server::OperationId,
-    configured_agent_id: buzz_server::AgentId,
-    launch: &mut LaunchSpec,
-    config: &DaemonConfig,
-    owner_keys: &Keys,
-    custody: &FilesystemAgentIdentityCustody,
-    supervisor: &LocalProcessAdapter,
-    child_identity: (u32, u32),
 ) -> Result<(), DaemonError> {
-    let operation = application.get_operation(operation_id)?;
+    let operation = context.application.get_operation(operation_id)?;
     if operation.status == buzz_server::OperationStatus::Pending {
-        application.start_operation(operation_id)?;
+        context.application.start_operation(operation_id)?;
     }
-    let durable = application.get_operation(operation_id)?;
+    let durable = context.application.get_operation(operation_id)?;
     if durable.status != buzz_server::OperationStatus::Running {
         return Ok(());
     }
-    let target_agent_id = durable.agent_id.ok_or(StorageError::NotFound)?;
-    if target_agent_id != configured_agent_id {
-        return reconcile_dynamic_lifecycle_operation(
-            application,
-            store,
-            &durable,
-            config,
-            owner_keys,
-            custody,
-            supervisor,
-            child_identity,
-            true,
-        );
-    }
-    let agent = store
-        .get_agent(configured_agent_id)?
-        .ok_or(StorageError::NotFound)?;
-    let mut next_launch = LaunchSpec::resolve_local(
-        &agent,
-        &config.runtime_catalog,
-        LocalLaunchContext {
-            launch_id: launch.launch_id.clone(),
-            harness: config.harness.clone(),
-            harness_arguments: config.harness_arguments.clone(),
-            working_directory: launch.working_directory.clone(),
-            workspace_path: launch.workspace_path.clone(),
-            runtime_path: launch.runtime_path.clone(),
-            process_group_id: launch.process_group_id.clone(),
-            restart: config.restart.clone(),
-            health: config.health.clone(),
-        },
-    )?;
-    for key in [
-        buzz_server::launch::HARNESS_RELAY_URL_ENV,
-        buzz_server::launch::HARNESS_PRIVATE_KEY_ENV,
-        buzz_server::launch::HARNESS_AUTH_TAG_ENV,
-    ] {
-        if let Some(value) = launch.environment.get(key) {
-            next_launch.environment.insert(key.into(), value.clone());
-        }
-        if let Some(value) = launch.secret_environment.get(key) {
-            next_launch
-                .secret_environment
-                .insert(key.into(), value.clone());
-        }
-    }
-    next_launch
-        .validate()
-        .map_err(buzz_server::LaunchResolutionError::Validation)?;
-    *launch = next_launch;
-    let stored = reconciler.reconcile(
-        configured_agent_id,
-        &store_operation(&durable),
-        Some(launch),
-    );
-    let (mut status, mut error_code) = match stored {
-        Ok(
-            buzz_server::reconcile::ReconcileOutcome::FailedPreflight
-            | buzz_server::reconcile::ReconcileOutcome::NoPresence,
-        ) => (
-            buzz_server::OperationStatus::Failed,
-            Some(buzz_server::ErrorCode::Internal),
-        ),
-        Ok(_) => (buzz_server::OperationStatus::Succeeded, None),
-        Err(error) => {
-            eprintln!("lifecycle reconciliation failed: {error}");
-            (
-                buzz_server::OperationStatus::Failed,
-                Some(buzz_server::ErrorCode::Internal),
-            )
-        }
-    };
-    if status == buzz_server::OperationStatus::Succeeded
-        && durable.kind == buzz_server::OperationKind::PurgeAgent
-    {
-        if let Err(error) = purge_agent_files(config, &launch.launch_id) {
-            eprintln!("purge cleanup failed: {error}");
-            status = buzz_server::OperationStatus::Failed;
-            error_code = Some(buzz_server::ErrorCode::Internal);
-        }
-    }
-    application.complete_operation(operation_id, status, error_code)?;
-    Ok(())
+    reconcile_dynamic_lifecycle_operation(context, &durable, true)
 }
 
 #[derive(Clone, Debug)]
@@ -1039,42 +1621,180 @@ fn dynamic_agent_layout(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
-    application: &SqliteLifecycleApplication<E>,
-    store: &SqliteStore,
+fn community_owner_keys(
+    context: &ReconcileContext,
+    community: &buzz_server::CommunityConfig,
+) -> Result<Keys, DaemonError> {
+    let Some(pubkey) = community.identity_pubkey.as_deref() else {
+        return context.legacy_owner_keys.clone().ok_or_else(|| {
+            DaemonError::InvalidConfig(
+                "legacy community has no associated identity; rejoin the community".into(),
+            )
+        });
+    };
+    let root = context
+        .config
+        .state_database
+        .parent()
+        .ok_or_else(|| DaemonError::InvalidConfig("state database has no parent".into()))?
+        .join("community-identities");
+    let path = root.join(format!("{pubkey}.secret"));
+    let secret = fs::read_to_string(path)?;
+    let keys = Keys::parse(secret.trim()).map_err(|_| DaemonError::InvalidOwnerSecret)?;
+    if !keys.public_key().to_hex().eq_ignore_ascii_case(pubkey) {
+        return Err(DaemonError::InvalidOwnerSecret);
+    }
+    Ok(keys)
+}
+
+fn reconcile_dynamic_lifecycle_operation(
+    context: &ReconcileContext,
     operation: &buzz_server::api::OperationResource,
-    config: &DaemonConfig,
-    owner_keys: &Keys,
-    custody: &FilesystemAgentIdentityCustody,
-    supervisor: &LocalProcessAdapter,
-    child_identity: (u32, u32),
     finish_operation: bool,
 ) -> Result<(), DaemonError> {
     let agent_id = operation.agent_id.ok_or(StorageError::NotFound)?;
-    let agent = store.get_agent(agent_id)?.ok_or(StorageError::NotFound)?;
-    let community = store
+    let cached_agent = context
+        .store
+        .get_agent(agent_id)?
+        .ok_or(StorageError::NotFound)?;
+    context.agent_files.ensure_agent_file(&cached_agent)?;
+    let file = context.agent_files.load_agent(agent_id)?;
+    let resolved = context.agent_files.resolve(
+        &file,
+        cached_agent.community_config_id,
+        cached_agent.desired_state,
+    )?;
+    let agent = resolved.spec.clone();
+    context.store.put_agent(&agent, unix_seconds_i64())?;
+    let community = context
+        .store
         .get_community(agent.community_config_id)?
         .ok_or(StorageError::NotFound)?;
-    let layout = dynamic_agent_layout(config, agent_id)?;
-    for directory in [&layout.workspace, &layout.runtime] {
+    let layout = dynamic_agent_layout(context.config.as_ref(), agent_id)?;
+    let state_root = layout
+        .receipt
+        .parent()
+        .ok_or_else(|| DaemonError::InvalidConfig("agent receipt path has no parent".into()))?;
+    fs::create_dir_all(state_root)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{chown, PermissionsExt};
+        chown(state_root, Some(0), Some(context.child_identity.1))?;
+        fs::set_permissions(state_root, fs::Permissions::from_mode(0o710))?;
+    }
+    let runtime_tmp = layout.runtime.join("tmp");
+    for directory in [&layout.workspace, &layout.runtime, &runtime_tmp] {
         fs::create_dir_all(directory)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::{chown, PermissionsExt};
-            chown(directory, Some(child_identity.0), Some(child_identity.1))?;
-            fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+            chown(
+                directory,
+                Some(context.child_identity.0),
+                Some(context.child_identity.1),
+            )?;
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o770))?;
         }
     }
-    let identity = custody.provision(agent_id)?;
-    let agent_keys = custody.load(agent_id)?;
+    let identity = context.custody.provision(agent_id)?;
+    let agent_keys = context.custody.load(agent_id)?;
+    let owner_keys = community_owner_keys(context, &community)?;
+    if let Err(error) = buzz_server::relay_projection::sync_agent_profile(
+        &community.relay_url,
+        &owner_keys,
+        &agent_keys,
+        &file,
+    ) {
+        eprintln!("agent profile sync failed for {agent_id}: {error}");
+    }
+    let agent_pubkey = agent_keys.public_key().to_hex();
+    match buzz_server::relay_projection::sync_managed_agent_projection(
+        &community.relay_url,
+        &owner_keys,
+        &agent_keys,
+        &resolved,
+    ) {
+        Ok(()) => {
+            let scope = buzz_server::storage::RelayProjectionScope {
+                community_config_id: community.id,
+                relay_url: community.relay_url.to_string(),
+                owner_pubkey: owner_keys.public_key().to_hex(),
+                d_tag: agent_pubkey.clone(),
+            };
+            context.store.record_relay_projection(
+                buzz_server::storage::RelayProjectionKind::ManagedAgent,
+                &agent_id.to_string(),
+                &scope,
+                unix_seconds_i64(),
+            )?
+        }
+        Err(error) => {
+            eprintln!("managed-agent projection sync failed for {agent_id}: {error}");
+            let scope = buzz_server::storage::RelayProjectionScope {
+                community_config_id: community.id,
+                relay_url: community.relay_url.to_string(),
+                owner_pubkey: owner_keys.public_key().to_hex(),
+                d_tag: agent_pubkey.clone(),
+            };
+            context.store.enqueue_relay_publication(
+                buzz_server::storage::RelayPublicationAction::SyncManagedAgent,
+                &scope,
+                &agent_id.to_string(),
+                unix_seconds_i64(),
+            )?;
+            let _ = context
+                .relay_publication_sender
+                .send(RelayPublicationWork::Wake);
+        }
+    }
+    if let Some(persona_id) = resolved.persona_id.as_deref() {
+        let persona = context.agent_files.load_persona(persona_id)?;
+        match buzz_server::relay_projection::sync_persona(
+            &community.relay_url,
+            &owner_keys,
+            &persona,
+        ) {
+            Ok(()) => {
+                let scope = buzz_server::storage::RelayProjectionScope {
+                    community_config_id: community.id,
+                    relay_url: community.relay_url.to_string(),
+                    owner_pubkey: owner_keys.public_key().to_hex(),
+                    d_tag: buzz_server::relay_projection::persona_d_tag(&persona.id),
+                };
+                context.store.record_relay_projection(
+                    buzz_server::storage::RelayProjectionKind::Persona,
+                    &persona.id,
+                    &scope,
+                    unix_seconds_i64(),
+                )?
+            }
+            Err(error) => {
+                eprintln!("persona projection sync failed for {}: {error}", persona.id);
+                let scope = buzz_server::storage::RelayProjectionScope {
+                    community_config_id: community.id,
+                    relay_url: community.relay_url.to_string(),
+                    owner_pubkey: owner_keys.public_key().to_hex(),
+                    d_tag: buzz_server::relay_projection::persona_d_tag(&persona.id),
+                };
+                context.store.enqueue_relay_publication(
+                    buzz_server::storage::RelayPublicationAction::SyncPersona,
+                    &scope,
+                    &persona.id,
+                    unix_seconds_i64(),
+                )?;
+                let _ = context
+                    .relay_publication_sender
+                    .send(RelayPublicationWork::Wake);
+            }
+        }
+    }
     let signer = DisposableSigner::from_owner_keys(
         owner_keys.clone(),
         buzz_server::signer::SignerPolicy {
             community_config_id: community.id,
             relay_url: community.relay_url.clone(),
             agent_pubkey: identity.public_key.clone(),
-            conditions: config.signer_conditions.clone(),
+            conditions: context.config.signer_conditions.clone(),
         },
     )?;
     let authorization = signer
@@ -1083,7 +1803,7 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
             community_config_id: community.id,
             relay_url: community.relay_url.clone(),
             agent_pubkey: identity.public_key,
-            conditions: config.signer_conditions.clone(),
+            conditions: context.config.signer_conditions.clone(),
         })?
         .auth_tag;
     let authorization_generation = secret_generation(&format!(
@@ -1092,21 +1812,21 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
         community.id,
         community.relay_url,
         agent_keys.public_key().to_hex(),
-        config.signer_conditions,
+        context.config.signer_conditions,
     ));
     let mut dynamic_launch = LaunchSpec::resolve_local(
         &agent,
-        &config.runtime_catalog,
+        &context.config.runtime_catalog,
         LocalLaunchContext {
             launch_id: layout.launch_id.clone(),
-            harness: config.harness.clone(),
-            harness_arguments: config.harness_arguments.clone(),
-            working_directory: path_string(&config.working_directory)?,
+            harness: context.config.harness.clone(),
+            harness_arguments: context.config.harness_arguments.clone(),
+            working_directory: path_string(&context.config.working_directory)?,
             workspace_path: path_string(&layout.workspace)?,
             runtime_path: path_string(&layout.runtime)?,
             process_group_id: layout.launch_id.clone(),
-            restart: config.restart.clone(),
-            health: config.health.clone(),
+            restart: context.config.restart.clone(),
+            health: context.config.health.clone(),
         },
     )?;
     dynamic_launch.environment.insert(
@@ -1127,6 +1847,7 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
             version: Some(authorization_generation),
         },
     );
+    apply_resolved_agent_environment(&mut dynamic_launch, &resolved);
     dynamic_launch
         .validate()
         .map_err(buzz_server::LaunchResolutionError::Validation)?;
@@ -1135,7 +1856,12 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
         authorization,
         agent_private_key: Some(agent_keys.secret_key().to_secret_hex()),
     };
-    let reconciler = Reconciler::new(store, &receipts, supervisor, &secrets);
+    let reconciler = Reconciler::new(
+        context.store.as_ref(),
+        &receipts,
+        &context.supervisor,
+        &secrets,
+    );
     let stored_operation = store_operation(operation);
     let outcome = reconciler.reconcile(agent_id, &stored_operation, Some(&dynamic_launch));
     let (mut status, mut error_code) = match outcome {
@@ -1158,36 +1884,58 @@ fn reconcile_dynamic_lifecycle_operation<E: LifecycleEffects>(
     if status == buzz_server::OperationStatus::Succeeded
         && operation.kind == buzz_server::OperationKind::PurgeAgent
     {
+        let scope = buzz_server::storage::RelayProjectionScope {
+            community_config_id: community.id,
+            relay_url: community.relay_url.to_string(),
+            owner_pubkey: owner_keys.public_key().to_hex(),
+            d_tag: agent_pubkey.clone(),
+        };
+        context.store.enqueue_relay_publication(
+            buzz_server::storage::RelayPublicationAction::TombstoneManagedAgent,
+            &scope,
+            &agent_id.to_string(),
+            unix_seconds_i64(),
+        )?;
+        context.store.enqueue_relay_publication(
+            buzz_server::storage::RelayPublicationAction::ArchiveIdentity,
+            &scope,
+            &agent_id.to_string(),
+            unix_seconds_i64(),
+        )?;
+        let _ = context
+            .relay_publication_sender
+            .send(RelayPublicationWork::Wake);
         if let Err(error) = purge_agent_paths(
             &layout.workspace,
             &layout.runtime,
-            &config.log_directory,
+            &context.config.log_directory,
             &layout.launch_id,
         )
-        .and_then(|()| custody.purge(agent_id).map_err(std::io::Error::other))
-        {
+        .and_then(|()| {
+            context
+                .custody
+                .purge(agent_id)
+                .map_err(std::io::Error::other)?;
+            context
+                .agent_files
+                .remove_agent(agent_id)
+                .map_err(std::io::Error::other)
+        }) {
             eprintln!("dynamic purge cleanup failed: {error}");
             status = buzz_server::OperationStatus::Failed;
             error_code = Some(buzz_server::ErrorCode::Internal);
         }
     }
     if finish_operation {
-        application.complete_operation(operation.id, status, error_code)?;
+        context
+            .application
+            .complete_operation(operation.id, status, error_code)?;
     } else if status == buzz_server::OperationStatus::Failed {
         return Err(DaemonError::Task(format!(
             "startup reconciliation failed for dynamic agent {agent_id}: {error_code:?}"
         )));
     }
     Ok(())
-}
-
-fn purge_agent_files(config: &DaemonConfig, launch_id: &str) -> Result<(), std::io::Error> {
-    purge_agent_paths(
-        &config.workspace_path,
-        &config.runtime_path,
-        &config.log_directory,
-        launch_id,
-    )
 }
 
 fn purge_agent_paths(
@@ -1209,6 +1957,28 @@ fn purge_agent_paths(
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_purged_agent_artifacts(context: &ReconcileContext) -> Result<(), DaemonError> {
+    for agent_id in context.store.list_purged_agent_ids()? {
+        let layout = dynamic_agent_layout(context.config.as_ref(), agent_id)?;
+        purge_agent_paths(
+            &layout.workspace,
+            &layout.runtime,
+            &context.config.log_directory,
+            &layout.launch_id,
+        )?;
+        context.custody.purge(agent_id)?;
+        context.agent_files.remove_agent(agent_id)?;
+        if let Some(state_root) = layout.receipt.parent() {
+            match fs::remove_dir_all(state_root) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
         }
     }
     Ok(())
@@ -1276,21 +2046,19 @@ fn sync_supervisor_logs(
     Ok(())
 }
 
-fn observe_dynamic_agents(
-    store: &SqliteStore,
-    supervisor: &LocalProcessAdapter,
-    config: &DaemonConfig,
-) -> Result<(), DaemonError> {
-    for agent in store.list_agents(None)? {
-        if agent.id == config.agent.id {
-            continue;
-        }
-        let layout = dynamic_agent_layout(config, agent.id)?;
+fn observe_dynamic_agents(context: &ReconcileContext) -> Result<(), DaemonError> {
+    for agent in context.store.list_agents(None)? {
+        let layout = dynamic_agent_layout(context.config.as_ref(), agent.id)?;
         let receipts = ReceiptFile::new(layout.receipt);
         if let Some(receipt) = receipts.get_receipt(agent.id)? {
-            let observed = supervisor.inspect(&receipt)?;
+            let observed = context.supervisor.inspect(&receipt)?;
             receipts.put_receipt(&observed)?;
-            sync_supervisor_logs(store, supervisor, agent.id, &layout.launch_id)?;
+            sync_supervisor_logs(
+                context.store.as_ref(),
+                &context.supervisor,
+                agent.id,
+                &layout.launch_id,
+            )?;
         }
     }
     Ok(())
@@ -1309,21 +2077,88 @@ fn store_operation(resource: &buzz_server::api::OperationResource) -> DurableOpe
     }
 }
 
-fn unix_millis() -> Result<u64, DaemonError> {
-    u64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| DaemonError::Clock)?
-            .as_millis(),
-    )
-    .map_err(|_| DaemonError::Clock)
+fn agent_file_application_error(
+    error: buzz_server::AgentFileError,
+) -> buzz_server::api::ApplicationError {
+    match error {
+        buzz_server::AgentFileError::Validation(error) => {
+            buzz_server::api::ApplicationError::Invalid(error)
+        }
+        buzz_server::AgentFileError::PersonaNotFound(_) => {
+            buzz_server::api::ApplicationError::NotFound
+        }
+        buzz_server::AgentFileError::PersonaReferenced { persona_id, agents } => {
+            buzz_server::api::ApplicationError::Conflict(format!(
+                "persona {persona_id} is still used by agents {agents}; purge those agents first"
+            ))
+        }
+        buzz_server::AgentFileError::RuntimeRequired(id) => {
+            buzz_server::api::ApplicationError::Invalid(buzz_server::ValidationError::new(
+                "runtime_id",
+                format!("persona {id} has no runtime; provide --runtime"),
+            ))
+        }
+        buzz_server::AgentFileError::StandaloneRuntimeRequired => {
+            buzz_server::api::ApplicationError::Invalid(buzz_server::ValidationError::new(
+                "runtime_id",
+                "is required when no persona is selected",
+            ))
+        }
+        _ => buzz_server::api::ApplicationError::Internal,
+    }
 }
 
-fn clear_readiness_file(path: &Path) -> Result<(), std::io::Error> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+fn apply_resolved_agent_environment(launch: &mut LaunchSpec, resolved: &ResolvedAgentConfig) {
+    launch.environment.insert(
+        "BUZZ_ACP_DISPLAY_NAME".into(),
+        resolved.spec.display_name.clone(),
+    );
+    if !resolved.agent_args.is_empty() {
+        launch.runtime.arguments.clone_from(&resolved.agent_args);
+    }
+    if !resolved.spec.system_prompt.is_empty() {
+        launch.environment.insert(
+            "BUZZ_ACP_SYSTEM_PROMPT".into(),
+            resolved.spec.system_prompt.clone(),
+        );
+    }
+    launch
+        .environment
+        .insert("BUZZ_ACP_AGENTS".into(), resolved.parallelism.to_string());
+    launch.environment.insert(
+        "BUZZ_ACP_RESPOND_TO".into(),
+        resolved.respond_to.as_str().into(),
+    );
+    if !resolved.respond_to_allowlist.is_empty() {
+        launch.environment.insert(
+            "BUZZ_ACP_RESPOND_TO_ALLOWLIST".into(),
+            resolved.respond_to_allowlist.join(","),
+        );
+    }
+    if let Some(value) = resolved.idle_timeout_seconds {
+        launch
+            .environment
+            .insert("BUZZ_ACP_IDLE_TIMEOUT".into(), value.to_string());
+    }
+    if let Some(value) = resolved.max_turn_duration_seconds {
+        launch
+            .environment
+            .insert("BUZZ_ACP_MAX_TURN_DURATION".into(), value.to_string());
+    }
+    if let Some(value) = resolved.model.as_deref() {
+        launch
+            .environment
+            .insert("BUZZ_ACP_MODEL".into(), value.to_owned());
+        launch
+            .environment
+            .entry("BUZZ_AGENT_MODEL".into())
+            .or_insert_with(|| value.to_owned());
+    }
+    if let Some(value) = resolved.provider.as_deref() {
+        launch
+            .environment
+            .entry("BUZZ_AGENT_PROVIDER".into())
+            .or_insert_with(|| value.to_owned());
     }
 }
 
@@ -1333,16 +2168,10 @@ enum DaemonError {
     Usage,
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
-    #[error("required secret environment variable is unavailable: {0}")]
+    #[error("required secret is unavailable: {0}")]
     MissingSecret(String),
-    #[error("configured agent secret does not match the configured agent identity")]
-    InvalidAgentSecret,
     #[error("configured owner secret is invalid")]
     InvalidOwnerSecret,
-    #[error("authorization tag is invalid")]
-    InvalidAuthorization,
-    #[error("system clock is before the Unix epoch")]
-    Clock,
     #[error("daemon task failed: {0}")]
     Task(String),
     #[error(transparent)]
@@ -1351,6 +2180,8 @@ enum DaemonError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error(transparent)]
+    AgentFile(#[from] buzz_server::AgentFileError),
     #[error(transparent)]
     Catalog(#[from] buzz_server::CatalogError),
     #[error(transparent)]
@@ -1363,12 +2194,6 @@ enum DaemonError {
     Application(#[from] buzz_server::api::ApplicationError),
     #[error(transparent)]
     Transport(#[from] buzz_server::transport::TransportError),
-    #[error(transparent)]
-    Community(#[from] buzz_server::community_session::CommunitySessionError),
-    #[error(transparent)]
-    Relay(#[from] buzz_server::relay_adapter::RelayAdapterError),
-    #[error(transparent)]
-    Signer(#[from] buzz_server::signer_ipc::SignerIpcError),
     #[error(transparent)]
     SignerProtocol(#[from] buzz_server::signer::SignerError),
     #[error(transparent)]
@@ -1386,8 +2211,6 @@ mod tests {
         let source = include_str!("../config/buzz-server.dev.example.json");
         let config: DaemonConfig = serde_json::from_str(source).unwrap();
         config.validate().unwrap();
-        assert_eq!(config.community.id.as_uuid().get_version_num(), 7);
-        assert_eq!(config.agent.id.as_uuid().get_version_num(), 7);
         let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
         value["unknown"] = serde_json::json!(true);
         assert!(serde_json::from_value::<DaemonConfig>(value).is_err());
@@ -1407,8 +2230,6 @@ mod tests {
         assert_eq!(first.workspace, replay.workspace);
         assert_ne!(first.receipt, second.receipt);
         assert_ne!(first.workspace, second.workspace);
-        assert_ne!(first.runtime, config.runtime_path);
-        assert_ne!(first.receipt, config.receipt_file);
         assert!(first.workspace.starts_with(
             config
                 .state_database
@@ -1417,42 +2238,5 @@ mod tests {
                 .join("agents")
                 .join(first_id.to_string())
         ));
-    }
-
-    #[test]
-    fn readiness_file_only_exists_while_session_is_ready() {
-        let directory = tempfile::tempdir().unwrap();
-        let ready_path = directory.path().join("ready");
-        let mut observer = StatusObserver {
-            readiness: Arc::new(CombinedReadiness {
-                ready_path: ready_path.clone(),
-                relay_ready: AtomicBool::new(false),
-                process_ready: AtomicBool::new(true),
-            }),
-        };
-        observer.readiness_changed(buzz_server::community_session::CommunityReadiness::Pending);
-        assert!(!ready_path.exists());
-        observer.readiness_changed(buzz_server::community_session::CommunityReadiness::Ready);
-        assert!(ready_path.exists());
-        observer.readiness_changed(buzz_server::community_session::CommunityReadiness::Degraded);
-        assert!(!ready_path.exists());
-    }
-
-    #[test]
-    fn startup_clears_stale_readiness_from_an_unclean_exit() {
-        let directory = tempfile::tempdir().unwrap();
-        let ready_path = directory.path().join("ready");
-        fs::write(&ready_path, b"ready\n").unwrap();
-
-        clear_readiness_file(&ready_path).unwrap();
-
-        assert!(!ready_path.exists());
-        clear_readiness_file(&ready_path).unwrap();
-    }
-
-    #[test]
-    fn intentional_daemon_restart_preserves_the_managed_agent_for_adoption() {
-        assert!(!should_stop_managed_agent(true));
-        assert!(should_stop_managed_agent(false));
     }
 }

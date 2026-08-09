@@ -20,6 +20,13 @@ use crate::{
     LaunchSpec, ObservedProcessState, ProcessReceipt, ValidationError,
 };
 
+#[cfg(unix)]
+use nix::{
+    errno::Errno,
+    sys::signal::{kill, killpg, Signal},
+    unistd::Pid,
+};
+
 const LAUNCH_MARKER: &str = "BUZZ_SERVER_LAUNCH_ID";
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
@@ -87,6 +94,7 @@ pub struct LocalProcessAdapter {
     children: Mutex<BTreeMap<u32, ManagedChild>>,
     stop_timeout: Duration,
     child_identity: Option<(u32, u32)>,
+    child_home: Option<PathBuf>,
 }
 
 struct ManagedChild {
@@ -110,6 +118,7 @@ impl LocalProcessAdapter {
         logs: LocalLogPolicy,
         stop_timeout: Duration,
         child_identity: Option<(u32, u32)>,
+        child_home: Option<PathBuf>,
     ) -> Result<Self, SupervisorError> {
         logs.validate()?;
         if stop_timeout.is_zero() {
@@ -124,6 +133,7 @@ impl LocalProcessAdapter {
             children: Mutex::new(BTreeMap::new()),
             stop_timeout,
             child_identity,
+            child_home,
         })
     }
 
@@ -176,6 +186,7 @@ impl LocalProcessAdapter {
     }
 
     fn resolve_environment(
+        &self,
         desired: &LaunchSpec,
         secrets: &dyn SecretResolver,
     ) -> Result<BTreeMap<String, String>, SupervisorError> {
@@ -187,12 +198,13 @@ impl LocalProcessAdapter {
         environment
             .entry("PATH".into())
             .or_insert_with(|| format!("{runtime_bin}:/usr/local/bin:/usr/bin:/bin"));
-        environment
-            .entry("HOME".into())
-            .or_insert_with(|| desired.runtime_path.clone());
-        environment
-            .entry("CODEX_HOME".into())
-            .or_insert_with(|| format!("{}/codex-home", desired.runtime_path));
+        environment.entry("HOME".into()).or_insert_with(|| {
+            self.child_home
+                .as_ref()
+                .and_then(|path| path.to_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| desired.runtime_path.clone())
+        });
         environment
             .entry("TMPDIR".into())
             .or_insert_with(|| format!("{}/tmp", desired.runtime_path));
@@ -299,18 +311,28 @@ impl LocalProcessAdapter {
     fn signal_group(pid: u32, signal: &str) -> Result<(), SupervisorError> {
         #[cfg(unix)]
         {
-            let status = Command::new("/bin/kill")
-                .args([signal, "--", &format!("-{pid}")])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()?;
-            if !status.success() && Self::process_exists(pid)? {
-                return Err(SupervisorError::Io(io::Error::other(
-                    "failed to signal process group",
-                )));
+            let signal = match signal {
+                "-TERM" => Signal::SIGTERM,
+                "-KILL" => Signal::SIGKILL,
+                _ => {
+                    return Err(SupervisorError::Io(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "unsupported process-group signal",
+                    )))
+                }
+            };
+            let pid = i32::try_from(pid).map_err(|_| {
+                SupervisorError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "process id exceeds platform range",
+                ))
+            })?;
+            match killpg(Pid::from_raw(pid), signal) {
+                Ok(()) | Err(Errno::ESRCH) => Ok(()),
+                Err(error) => Err(SupervisorError::Io(io::Error::from_raw_os_error(
+                    error as i32,
+                ))),
             }
-            Ok(())
         }
         #[cfg(not(unix))]
         {
@@ -323,19 +345,21 @@ impl LocalProcessAdapter {
     }
 
     fn process_exists(pid: u32) -> Result<bool, SupervisorError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
-            Ok(Path::new(&format!("/proc/{pid}")).exists())
-        }
-        #[cfg(all(unix, not(target_os = "linux")))]
-        {
-            let status = Command::new("/bin/kill")
-                .args(["-0", &pid.to_string()])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()?;
-            Ok(status.success())
+            let pid = i32::try_from(pid).map_err(|_| {
+                SupervisorError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "process id exceeds platform range",
+                ))
+            })?;
+            match kill(Pid::from_raw(pid), None) {
+                Ok(()) | Err(Errno::EPERM) => Ok(true),
+                Err(Errno::ESRCH) => Ok(false),
+                Err(error) => Err(SupervisorError::Io(io::Error::from_raw_os_error(
+                    error as i32,
+                ))),
+            }
         }
         #[cfg(not(unix))]
         {
@@ -398,7 +422,7 @@ impl ProcessSupervisor for LocalProcessAdapter {
         secrets: &dyn SecretResolver,
     ) -> Result<ProcessReceipt, SupervisorError> {
         desired.validate()?;
-        let environment = Self::resolve_environment(desired, secrets)?;
+        let environment = self.resolve_environment(desired, secrets)?;
         self.run_preflight(desired, &environment)?;
 
         let stdout_path = self.prepare_log(&desired.launch_id, false)?;
@@ -681,6 +705,7 @@ mod tests {
             },
             Duration::from_secs(2),
             None,
+            None,
         )
         .unwrap()
     }
@@ -732,6 +757,40 @@ mod tests {
     }
 
     #[test]
+    fn runtime_user_home_is_default_and_codex_home_is_only_explicit() {
+        let directory = tempfile::tempdir().unwrap();
+        let desired = launch(directory.path(), "true");
+        let home = directory.path().join("runtime-user-home");
+        let adapter = LocalProcessAdapter::new(
+            LocalLogPolicy {
+                directory: directory.path().join("logs-home"),
+                max_file_bytes: 1024,
+                max_read_bytes: 1024,
+            },
+            Duration::from_secs(2),
+            None,
+            Some(home.clone()),
+        )
+        .unwrap();
+
+        let environment = adapter.resolve_environment(&desired, &TestSecrets).unwrap();
+        assert_eq!(environment.get("HOME").map(String::as_str), home.to_str());
+        assert!(!environment.contains_key("CODEX_HOME"));
+
+        let mut explicit = desired;
+        explicit
+            .environment
+            .insert("CODEX_HOME".into(), "/explicit/codex".into());
+        let environment = adapter
+            .resolve_environment(&explicit, &TestSecrets)
+            .unwrap();
+        assert_eq!(
+            environment.get("CODEX_HOME").map(String::as_str),
+            Some("/explicit/codex")
+        );
+    }
+
+    #[test]
     fn authoritative_harness_environment_is_exact_and_receipts_do_not_serialize_secrets() {
         let directory = tempfile::tempdir().unwrap();
         let mut desired = launch(directory.path(), "true");
@@ -755,7 +814,9 @@ mod tests {
             },
         );
 
-        let environment = LocalProcessAdapter::resolve_environment(&desired, &TestSecrets).unwrap();
+        let environment = adapter(directory.path(), 1024)
+            .resolve_environment(&desired, &TestSecrets)
+            .unwrap();
         assert_eq!(
             environment[crate::launch::HARNESS_PRIVATE_KEY_ENV],
             "agent-secret-value"

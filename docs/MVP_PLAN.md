@@ -17,9 +17,9 @@ Milestones 1 through 4 are implemented. The repository currently includes:
 - restart-safe process receipts, adoption, reconciliation, and readiness;
 - multiple explicitly configured, isolated communities and relays;
 - authenticated Unix-socket and TLS/NIP-98 lifecycle API adapters;
-- the `buzz-server agent` lifecycle CLI;
+- the `buzz-server agents` lifecycle CLI;
 - create, get/list, update, enable, disable, logs, recoverable delete, purge,
-  operation polling, drafts, and draft promotion;
+  operation inspection, drafts, and draft promotion;
 - trusted `buzz-backend-*` discovery, staged provider negotiation and deployment,
   capability validation, and pinned Kubernetes-provider compatibility fixtures;
 - x86-64 and ARM64 release builds with a glibc 2.34 deployment baseline.
@@ -112,4 +112,4 @@ cargo build --release
 ```
 
 Use fake relays/signers and disposable identities in automated tests. Never place
-the production owner identity in development or CI.
+production community identity keys in development or CI.

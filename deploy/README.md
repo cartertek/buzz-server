@@ -1,15 +1,15 @@
 # Buzz Server host deployment
 
-Releases also install `buzz-server agent`, a machine-readable lifecycle client for
+Releases also install `buzz-server agents`, a machine-readable lifecycle client for
 the authenticated Unix socket. See [`docs/CLI.md`](../docs/CLI.md) for the full
 command reference and [`docs/LIFECYCLE_API.md`](../docs/LIFECYCLE_API.md) for the
 wire and authorization contracts. For example:
 
 ```sh
-buzz-server agent list
-buzz-server agent get --agent agent_...
-buzz-server agent disable --agent agent_... --idempotency disable-1 --correlation maintenance-1
-buzz-server agent operation --operation operation_...
+buzz-server agents list
+buzz-server agents get --agent agent_...
+buzz-server agents disable --agent agent_...
+buzz-server agents operation --operation operation_...
 ```
 
 Create, update, enable, disable, logs, recoverable delete, immediate purge, and
@@ -23,8 +23,11 @@ then attaches the tarballs and SHA-256 files to a GitHub Release. The `current`
 symlink is the only mutable host release pointer. Release tarballs are the first
 deployment format; a GHCR image can be added later without changing this gate.
 Each release is assembled in a same-filesystem staging directory, made
-root-owned and non-writable, and renamed into place atomically. Reinstalling an
-existing version is rejected rather than mutating its directory.
+root-owned and non-writable, and renamed into place atomically. Running the
+installer from a newer or older release switches to that release while preserving
+configuration, secrets, state, workspaces, and logs. If that immutable release is
+already present, the installer verifies that its contents exactly match the supplied
+package and reuses it rather than overwriting it.
 Protect `master` with the CI check, restrict creation/deletion of `v*`
 tags, and grant the release workflow `contents:write` only. Release reruns refuse
 to replace assets on an existing GitHub Release.
@@ -34,16 +37,13 @@ sudo install -D -m 0755 deploy/install-release.sh /usr/libexec/buzz-server/insta
 sudo install -D -m 0755 deploy/buzz-server /usr/local/bin/buzz-server
 sudo install -D -m 0644 deploy/buzz-server.service /etc/systemd/system/buzz-server.service
 sudo install -d -o root -g buzz-server -m 0750 /etc/buzz-server
-sudo install -o root -g buzz-server -m 0640 config/buzz-server.dev.example.json /etc/buzz-server/config.json
-sudo install -o root -g buzz-server -m 0640 /dev/null /etc/buzz-server/secrets.env
-sudo /usr/libexec/buzz-server/install-release.sh v1.0.0 x86_64-unknown-linux-gnu OWNER/REPOSITORY
+sudo BUZZ_CONFIG_FILE=/path/to/config.json \
+  BUZZ_SECRETS_FILE=/path/to/secrets.env \
+  /usr/libexec/buzz-server/install-release.sh v1.0.0 x86_64-unknown-linux-gnu OWNER/REPOSITORY
 sudo buzz-server health
 ```
 
-For a viable unattended first install, set `BUZZ_CONFIG_FILE`,
-`BUZZ_SECRETS_FILE`, and `BUZZ_OWNER_SECRET_FILE` to operator-prepared files;
-the owner secret is installed root-only for systemd `LoadCredential`, and none is overwritten on later
-deployments. The first install must also provision the two immutable executables referenced
+For a viable unattended first install, set `BUZZ_CONFIG_FILE` and `BUZZ_SECRETS_FILE` to operator-prepared files; neither is overwritten on later deployments. Community Nostr identities are supplied later through `buzz-server communities join`. The first install must also provision the two immutable executables referenced
 by the example configuration. Either install complete packages at those exact
 paths before deployment, including their `.package.tar.gz` and
 `.package.sha256` records, or pass `BUZZ_HARNESS_URL`, `BUZZ_HARNESS_SHA256`,
@@ -57,29 +57,24 @@ directories, extracted into same-filesystem staging directories, then renamed
 atomically into root-owned, `buzz-agent`-readable immutable locations. Every
 deployment rechecks the retained archive digest and entrypoint.
 Before changing the live release pointer, the installer runs the exact
-`buzz-acp models --json --agent-command ... --agent-args acp` preflight as the
-isolated `buzz-agent` account with a minimal environment. This catches missing
+`buzz-runtime-probe codex-acp-version` availability/version preflight, copied from Buzz Desktop's bounded `codex-acp --version` probe, as the isolated `buzz-agent` account. This catches missing
 Node, modules, loaders, and execute/read permissions.
 
-`secrets.env` supplies the environment names referenced by configuration. It
-must contain stable, distinct owner and agent secrets plus runtime API secrets.
-The constrained signer derives and verifies the NIP-OA tag at every start;
-no secret belongs in `config.json`, the service unit, or a release directory.
+`secrets.env` supplies runtime API secrets referenced by configuration. Hosted-agent Nostr identities are generated and held in the server's root-only identity custody. Community identities supplied during `communities join` are separately custodied by pubkey under `/var/lib/buzz-server/community-identities`; no community private key belongs in `config.json`, the lifecycle API, the service unit, or a release directory.
 
-Rollback retains state and selects a previously installed immutable binary:
-
-```sh
-sudo buzz-server rollback v1.0.0-x86_64-unknown-linux-gnu
-```
+Updates and rollbacks use the same installer procedure: extract the desired newer
+or older release artifact and run its `deploy/install.sh`. The release pointer is
+switched atomically; if the selected release fails its health check, the previously
+active release is restored automatically.
 
 The installer enables the service for boot and restarts it after switching the
-release pointer. The unit uses `KillMode=process` so a planned service restart
-stops Buzz Server itself while leaving its receipt-bound agent child available
-for validation and adoption by the replacement daemon. Unexpected relay or
-signer failure remains fail-closed in the daemon and terminates the child.
+release pointer. The systemd service uses `KillMode=control-group`; the daemon
+reconciles every hosted agent from durable database state after startup.
 
-Before a live deployment, replace all example IDs, relay, public key, artifact
-paths, versions, and checksums. Install the pinned Sprig/Buzz harness and ACP
-runtime artifacts at those immutable paths. Validate relay reachability, NIP-42
-authentication, NIP-OA authorization, model credentials, writable state paths,
-and the harness preflight command in the service account's restricted context.
+Before a live deployment, replace example artifact paths, versions, and checksums.
+Install the pinned Sprig/Buzz harness and ACP runtime artifacts at those immutable
+paths. After the service is healthy, add communities and hosted agents through
+`buzz-server communities` and `buzz-server agents`. Validate relay reachability,
+NIP-42 authentication, NIP-OA authorization, model credentials, writable state
+paths, and the harness preflight command in the service account's restricted
+context.

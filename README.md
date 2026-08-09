@@ -23,7 +23,7 @@ bridge between Buzz events and ACP-compatible agent runtimes.
 - Multiple isolated Buzz communities and relay connections
 - Authenticated lifecycle API over a Unix socket or TLS with NIP-98
 - Command-line management for server operations, agents, and secrets
-- Create, inspect, update, enable, disable, logs, delete, purge, and operation polling
+- Create, inspect, update, enable, disable, logs, delete, purge, and operation inspection
 - Optional draft submission and promotion workflow
 - Trusted `buzz-backend-*` provider discovery and provider compatibility testing
 - Release artifacts for x86-64 and ARM64 Linux with a glibc 2.34 baseline
@@ -71,56 +71,121 @@ On first install, the installer asks for the required values and creates the Buz
 Server configuration and secret files. The installer is part of the downloaded
 archive and installs that exact build.
 
-The same process is used for updates. Running the installer from a newer or older
-release atomically installs that release over the existing installation while
-preserving configuration, secrets, state, workspaces, and logs. If the new
-release fails its health check, the previous release is restored automatically.
+The same process is used for updates and rollbacks. Running the installer from a
+newer or older release installs that release over the existing installation while
+preserving configuration, secrets, state, workspaces, and logs.
 
 For unattended installation, pass the prompted values as environment variables
 and add `--non-interactive`. See [host deployment details](deploy/README.md) for
 the variable names and lower-level deployment contract.
 
+## Getting started
+
+Buzz Server keeps community and agent lifecycle state in its durable database and keeps
+human-editable agent configuration in files. A clean installation starts with no
+communities or agents. Join an existing community using the Nostr identity that this
+server should use for that community:
+
+```sh
+sudo buzz-server communities join \
+  --display-name 'Engineering' \
+  --relay-url 'wss://relay.example.com/'
+# The CLI prompts for the Nostr private key without echoing it.
+```
+
+Optionally, create a reusable persona for creating new agents:
+
+```sh
+sudo buzz-server personas create \
+  --display-name 'Software engineer' \
+  --system-prompt 'Help with software engineering work in this channel.' \
+  --runtime codex-acp
+```
+
+Create an agent in the target community using the returned `community_...` ID:
+
+```sh
+sudo buzz-server agents create \
+  --community community_... \
+  --display-name 'Build agent' \
+  --runtime codex-acp
+```
+
+Optionally pass either `--persona <persona-id>` or `--system-prompt '...'`.
+
+Creating the agent starts its ACP runtime against the selected community relay.
+The response includes the new `agent_...` ID and the agent's Nostr public key.
+
+Copy the public key from the create response, or get it again later with:
+
+```sh
+sudo buzz-server agents pubkey --agent agent_...
+```
+
+Add the newly created agent to a channel:
+
+```sh
+sudo buzz-server channels add-member \
+  --community community_... \
+  --channel <channel-uuid> \
+  --pubkey <agent-public-key> \
+  --role bot
+```
+
+Once the agent is a channel member, its ACP runtime discovers the membership and
+subscribes automatically. Running agents also pick up newly added channel
+memberships automatically. To have Buzz Server keep an agent joined to every open
+channel in the community, set `"auto_join_open_channels": true` in that agent's
+configuration file.
+
+Use `buzz-server agents list`, `buzz-server agents get --agent agent_...`, and
+`buzz-server agents logs --agent agent_...` to inspect the hosted agent. See
+[`docs/CLI.md`](docs/CLI.md) for the complete Buzz Server command reference.
+
 ## Configuration
 
-Configuration lives in `/etc/buzz-server`. Edit `config.json` for server and
-agent settings; runtime secrets remain in `secrets.env`. The owner key is stored
-through KMS when configured, otherwise through the OS keyring or restricted-file
-fallback. The schema is [`config/buzz-server.schema.json`](config/buzz-server.schema.json).
+Persistent host/runtime configuration lives in `/etc/buzz-server/config.json`; runtime
+secrets remain in `secrets.env`. Human-editable agent configuration lives in
+`/var/lib/buzz-server/agent-config/agents/*.json`, and optional personas live in
+`/var/lib/buzz-server/agent-config/personas/*.json`. Buzz Server reloads those files
+when the service starts. Lifecycle/process state, community records, operations, and
+other machine-managed state remain in SQLite.
 
-## Using the CLI
+Personas can be created and inspected with `buzz-server personas create`, `get`,
+`list`, `update`, and `delete`, or edited directly as JSON. Pass a persona ID to
+`buzz-server agents create --persona ID`. Agent files may override the persona's
+runtime and environment; prompt, model, and provider follow the linked persona, as
+in Buzz Desktop.
 
-The installer places one operator command, `buzz-server`, in `/usr/local/bin`. Service operations are top-level commands; agent lifecycle operations use `buzz-server agent`, and key management uses `buzz-server secret`.
+Set per-agent environment variables in the agent file's `environment` object. Persona
+environment variables are inherited by persona-backed agents, with agent values taking
+precedence. For example, a Codex agent can use a dedicated Codex home and subscribe to
+all messages in every channel it belongs to with:
 
-```sh
-sudo buzz-server agent list
-sudo buzz-server agent get --agent agent_...
-sudo buzz-server agent logs --agent agent_... --limit 100
-sudo buzz-server agent disable \
-  --agent agent_... \
-  --idempotency maintenance-1 \
-  --correlation maintenance-1
-sudo buzz-server agent operation --operation operation_...
+```json
+"environment": {
+  "CODEX_HOME": "/var/lib/buzz-server/agents/agent_.../runtime/codex-home",
+  "BUZZ_ACP_SUBSCRIBE": "all"
+}
 ```
 
-See [`docs/CLI.md`](docs/CLI.md) for every command and option.
+`CODEX_HOME` is consumed by Codex; `BUZZ_ACP_SUBSCRIBE` is consumed by `buzz-acp`.
+Subscription does not grant channel membership. To make Buzz Server automatically
+self-join an agent to current and future open channels, add this top-level agent
+setting:
 
-## Rollback
-
-List installed releases:
-
-```sh
-ls -1 /opt/buzz-server/releases
+```json
+"auto_join_open_channels": true
 ```
 
-Select an earlier installed release by its directory name:
+Auto-join is event-driven: Buzz Server watches channel-creation events and joins the
+agent identity when an open channel appears; existing open channels are reconciled from
+relay history when the service starts or reconnects. Private channels remain invite-only.
 
-```sh
-sudo buzz-server rollback v0.1.4-x86_64-unknown-linux-gnu
-```
+The owner key is stored through KMS when configured, otherwise through the OS keyring
+or restricted-file fallback. The host configuration schema is
+[`config/buzz-server.schema.json`](config/buzz-server.schema.json).
 
-Rollback preserves the database, identities, runtime state, workspaces, and
-configuration. It restores the previous release automatically if the selected
-rollback target fails health checks.
 
 ## Service management
 

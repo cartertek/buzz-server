@@ -5,40 +5,90 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "state_database", "receipt_file", "signer_socket", "log_directory",
-    "working_directory", "workspace_path", "runtime_path", "agent_secret_env",
-    "owner_secret_file", "runtime_user", "expected_agent_pubkey", "signer_conditions",
-    "community", "agent", "runtime_catalog", "harness", "restart", "health"
+    "state_database",
+    "log_directory",
+    "working_directory",
+    "owner_secret_file",
+    "runtime_user",
+    "signer_conditions",
+    "runtime_catalog",
+    "harness",
+    "restart",
+    "health"
   ],
   "properties": {
-    "state_database": { "type": "string", "pattern": "^/var/lib/buzz-server(?:/|$)" },
-    "receipt_file": { "type": "string", "pattern": "^/var/lib/buzz-server(?:/|$)" },
-    "signer_socket": { "type": "string", "pattern": "^/run/buzz-server(?:/|$)" },
-    "log_directory": { "type": "string", "pattern": "^/var/log/buzz-server(?:/|$)" },
-    "working_directory": { "type": "string", "pattern": "^/var/lib/buzz-server(?:/|$)" },
-    "workspace_path": { "type": "string", "pattern": "^/var/lib/buzz-server(?:/|$)" },
-    "runtime_path": { "type": "string", "pattern": "^/var/lib/buzz-server(?:/|$)" },
-    "agent_secret_env": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" },
-    "owner_secret_file": { "const": "/run/buzz-server/credentials/owner-secret" },
-    "runtime_user": { "const": "buzz-agent" },
-    "expected_agent_pubkey": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "signer_conditions": { "type": "string" },
-    "community": { "type": "object" },
-    "agent": { "type": "object" },
-    "runtime_catalog": { "type": "object" },
-    "harness": { "type": "object" },
-    "harness_arguments": { "type": "array", "items": { "type": "string" } },
-    "restart": { "type": "object" },
-    "health": { "type": "object" },
+    "state_database": {
+      "type": "string",
+      "pattern": "^/var/lib/buzz-server(?:/|$)"
+    },
+    "log_directory": {
+      "type": "string",
+      "pattern": "^/var/log/buzz-server(?:/|$)"
+    },
+    "working_directory": {
+      "type": "string",
+      "pattern": "^/var/lib/buzz-server(?:/|$)"
+    },
+    "owner_secret_file": {
+      "const": "/run/buzz-server/credentials/owner-secret"
+    },
+    "runtime_user": {
+      "const": "buzz-agent"
+    },
+    "signer_conditions": {
+      "type": "string"
+    },
+    "runtime_catalog": {
+      "type": "object"
+    },
+    "harness": {
+      "type": "object"
+    },
+    "harness_arguments": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "restart": {
+      "type": "object"
+    },
+    "health": {
+      "type": "object"
+    },
     "lifecycle_api": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "unix_socket": { "type": "string", "pattern": "^/run/buzz-server(?:/|$)" },
-        "administrator_uids": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 0 } },
-        "draft_submitter_uids": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
-        "retention_seconds": { "type": "integer", "minimum": 0 },
-        "tls": { "type": ["object", "null"] }
+        "unix_socket": {
+          "type": "string",
+          "pattern": "^/run/buzz-server(?:/|$)"
+        },
+        "administrator_uids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "draft_submitter_uids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "retention_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tls": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
       }
     }
   }

@@ -1,10 +1,13 @@
 //! Domain foundations for Buzz Server.
 
 pub mod agent;
+pub mod agent_files;
 pub mod api;
 pub mod application;
 pub mod auth;
+pub mod auto_join;
 pub mod community;
+pub mod community_join;
 pub mod community_session;
 pub mod custody;
 pub mod error;
@@ -16,6 +19,7 @@ pub mod provider_discovery;
 pub mod provider_reconcile;
 pub mod reconcile;
 pub mod relay_adapter;
+pub mod relay_projection;
 pub mod runtime;
 pub mod signer;
 pub mod signer_ipc;
@@ -23,7 +27,11 @@ pub mod storage;
 pub mod supervisor;
 pub mod transport;
 
-pub use agent::{AgentSpec, DesiredAgentState, RuntimeSpec};
+pub use agent::{
+    AgentConfigFile, AgentSpec, DesiredAgentState, PersonaDefinition, ResolvedAgentConfig,
+    RespondToMode, RuntimeSpec, DEFAULT_AGENT_PARALLELISM,
+};
+pub use agent_files::{AgentFileError, AgentFileStore};
 pub use community::CommunityConfig;
 pub use error::{ApiError, ErrorCode, ValidationError};
 pub use id::{AgentId, CommunityConfigId, OperationId};

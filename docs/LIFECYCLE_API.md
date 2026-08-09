@@ -13,7 +13,7 @@ response envelope.
 
 Configured callers receive one fixed authority:
 
-- `administrator`: may read and operate agents, purge retained agents, and
+- `administrator`: may manage communities, read and operate agents, purge retained agents, and
   promote drafts;
 - `draft_submitter`: may submit drafts and read only drafts owned by the same
   Unix UID or Nostr public key.
@@ -35,8 +35,8 @@ Successful responses use:
 }
 ```
 
-The `resource` value is one of `agent`, `agents`, `logs`, `operation`, or
-`draft`. The nested `value` is the corresponding resource documented below.
+The `resource` value is one of `community`, `communities`, `agent`, `agents`,
+`logs`, `operation`, or `draft`. The nested `value` is the corresponding resource documented below.
 
 Application errors use:
 
@@ -60,7 +60,7 @@ Unix-socket clients receive the JSON envelope directly.
 
 ## Command metadata
 
-Every mutating request contains:
+Durable agent mutations contain:
 
 ```json
 {
@@ -77,6 +77,43 @@ operations and audit records for tracing.
 ## Requests
 
 Requests are tagged JSON objects with `route` and `request` fields.
+
+### Join a community
+
+```json
+{
+  "route": "join_community",
+  "request": {
+    "display_name": "Engineering",
+    "relay_url": "wss://relay.example.com/",
+    "identity_pubkey": "<64-character hex pubkey>"
+  }
+}
+```
+
+Returns a `community` resource with a generated `community_...` ID. The private key never crosses this lifecycle JSON API: the root CLI custodies it locally first and sends only `identity_pubkey`. The daemon authenticates to the relay with the corresponding custodied key and applies Buzz Desktop-compatible membership checks before persistence. Community configuration changes are synchronous and administrator-only.
+
+### Update, get, list, or remove communities
+
+```json
+{"route":"update_community","request":{"community_id":"community_...","display_name":"Platform Engineering"}}
+{"route":"get_community","request":{"community_id":"community_..."}}
+{"route":"list_communities"}
+{"route":"remove_community","request":{"community_id":"community_..."}}
+```
+
+Community display names are local server labels. Removal returns `conflict` while any enabled or disabled agent still references the community, or while a deleted agent has not completed shutdown. If every remaining agent is successfully deleted, removal purges those retained deleted-agent records before removing the community. Community state is stored only in the Buzz Server state database.
+
+### Await an operation
+
+```json
+{"route":"await_operation","request":{"operation_id":"operation_..."}}
+```
+
+The request returns immediately if the operation is already terminal. Otherwise the
+server waits for an in-process completion notification and then returns the terminal
+operation. If the daemon exits, the connection closes so clients can report the transport
+failure instead of silently waiting on stale state.
 
 ### Create an agent
 
@@ -98,8 +135,10 @@ Requests are tagged JSON objects with `route` and `request` fields.
 }
 ```
 
-Returns an `operation` resource. Creation is asynchronous; poll the operation
-until it becomes terminal.
+Returns an `operation` resource. Creation is durable and asynchronous. Clients that want
+synchronous command behavior should send one `await_operation` request for the returned
+operation ID; the server holds that request until the operation becomes terminal or the
+server-side wait window expires. Repeated polling is not required.
 
 ### Get an agent
 
@@ -118,12 +157,13 @@ until it becomes terminal.
 {
   "route": "list_agents",
   "request": {
-    "community_config_id": null
+    "community_config_id": null,
+    "include_deleted": false
   }
 }
 ```
 
-Set `community_config_id` to restrict results to one configured community.
+Set `community_config_id` to restrict results to one configured community. Recoverably deleted agents are excluded by default; set `include_deleted` to `true` to include them.
 
 ### Update an agent
 
@@ -220,7 +260,7 @@ Purge stops the deployment and atomically removes retained state after successfu
 reconciliation. Purged agent IDs are tombstoned and are not recreated by stale
 operations.
 
-### Poll an operation
+### Inspect an operation
 
 ```json
 {
@@ -366,7 +406,7 @@ have a 10-second I/O timeout.
 The server authenticates the connection with `SO_PEERCRED`. UIDs are mapped by
 `lifecycle_api.administrator_uids` and `lifecycle_api.draft_submitter_uids`.
 Filesystem ownership is not accepted as identity, and an unlisted UID is rejected.
-The supplied `buzz-server agent` client implements this framing.
+The supplied `buzz-server agents` client implements this framing.
 
 ## HTTPS and NIP-98 transport
 
