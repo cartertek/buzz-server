@@ -34,6 +34,12 @@ pub trait LifecycleEffects: Send + Sync {
     /// Called after the last community reference to an internally custodied identity is removed.
     fn community_identity_unreferenced(&self, _pubkey: &str) {}
 
+    /// Called after community deletion commits purges for retained deleted agents.
+    /// Human-authored config files must disappear before the delete command returns.
+    fn community_agents_purged(&self, _agent_ids: &[AgentId]) -> Result<(), ApplicationError> {
+        Ok(())
+    }
+
     fn create_persona(
         &self,
         _request: &CreatePersonaRequest,
@@ -449,8 +455,10 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
 
     fn remove_community(&self, id: CommunityConfigId) -> Result<CommunityConfig, ApplicationError> {
         let community = self.get_community(id)?;
-        self.store
+        let purged_agents = self
+            .store
             .delete_community_with_deleted_agents(id, (self.now)())?;
+        self.effects.community_agents_purged(&purged_agents)?;
         self.effects.community_changed(id);
         if let Some(pubkey) = community.identity_pubkey.as_deref() {
             let still_referenced = self

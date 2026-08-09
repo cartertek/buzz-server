@@ -321,6 +321,21 @@ impl LifecycleEffects for LifecycleWake {
             .send(RelayPublicationWork::Wake);
     }
 
+    fn community_agents_purged(
+        &self,
+        agent_ids: &[buzz_server::AgentId],
+    ) -> Result<(), buzz_server::api::ApplicationError> {
+        for agent_id in agent_ids {
+            match self.agent_files.remove_agent(*agent_id) {
+                Ok(()) => {}
+                Err(buzz_server::AgentFileError::Io(error))
+                    if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(agent_file_application_error(error)),
+            }
+        }
+        Ok(())
+    }
+
     fn community_identity_unreferenced(&self, pubkey: &str) {
         match self.store.has_pending_relay_publications_for_owner(pubkey) {
             Ok(true) => return,
