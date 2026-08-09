@@ -142,9 +142,22 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: github.event_name == 'push'
         with:
           name: release-payload-${{ matrix.target }}
           path: payload/${{ matrix.target }}
           if-no-files-found: error
-          retention-days: 90
+          retention-days: ${{ github.event_name == 'push' && 90 || 7 }}
+
+  release-dry-run:
+    if: github.event_name == 'pull_request'
+    needs: [test, build]
+    uses: ./.github/workflows/release-core.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      source_sha: ${{ github.sha }}
+      source_run_id: ${{ github.run_id }}
+      expected_event: pull_request
+      bump: patch
+      publish: false
