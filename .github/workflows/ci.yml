@@ -19,7 +19,7 @@ jobs:
       - name: Validate deployment scripts and units
         run: |
           set -eu
-          for script in deploy/*.sh deploy/buzz-server deploy/buzz-serverctl; do sh -n "$script"; done
+          for script in deploy/*.sh deploy/buzz-server deploy/buzz-serverctl scripts/package-artifact.sh scripts/prepare-ci-payload.sh scripts/verify-package-artifact.sh; do sh -n "$script"; done
           sudo install -d /opt/buzz-server/current/share/deploy
           sudo install -m 0755 /bin/true /opt/buzz-server/current/buzz-server
           sudo install -m 0755 /bin/true /opt/buzz-server/current/share/deploy/prepare-owner-credential.sh
@@ -42,7 +42,7 @@ jobs:
     container: public.ecr.aws/amazonlinux/amazonlinux@sha256:601289f29d1b67fc542a451beda8ac6ca542d40289c99f71faa3ba37fe0d133a
     steps:
       - name: Install glibc 2.34 build prerequisites
-        run: dnf install -y gcc gcc-c++ git tar gzip findutils binutils
+        run: dnf install -y gcc gcc-c++ git tar gzip findutils binutils diffutils
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Install pinned Rust toolchain
         env:
@@ -74,33 +74,77 @@ jobs:
               exit 1
             fi
           done
-      - name: Package PR artifact
+      - name: Prepare canonical build payload
         env:
           TARGET: ${{ matrix.target }}
-          VERSION: v0.0.0-pr-${{ github.sha }}
+        run: scripts/prepare-ci-payload.sh "$TARGET" upstream-buzz "payload/$TARGET"
+      - name: Package downloadable CI artifact
+        env:
+          TARGET: ${{ matrix.target }}
+          BUILD_SHA: ${{ github.sha }}
         run: |
           set -eu
-          package="buzz-server"
-          mkdir -p "dist/${package}/config" "dist/${package}/deploy"
-          install -m 0755 "target/${TARGET}/release/buzz-server" "dist/${package}/buzz-server-daemon"
-          sed "s/@BUZZ_SERVER_VERSION@/${VERSION}/g" deploy/buzz-server > "dist/${package}/buzz-server"
-          chmod 0755 "dist/${package}/buzz-server"
-          install -m 0755 "target/${TARGET}/release/buzz-agentctl" "dist/${package}/buzz-agentctl"
-          install -m 0755 "target/${TARGET}/release/buzz-secretsctl" "dist/${package}/buzz-secretsctl"
-          install -m 0755 "target/${TARGET}/release/buzz-runtime-probe" "dist/${package}/buzz-runtime-probe"
-          install -m 0755 "upstream-buzz/target/${TARGET}/release/buzz" "dist/${package}/buzz-cli"
-          install -m 0644 config/buzz-server.dev.example.json config/buzz-server.schema.json "dist/${package}/config/"
-          install -m 0644 deploy/buzz-server.service deploy/buzz-server-healthcheck.service deploy/buzz-server-healthcheck.timer deploy/README.md "dist/${package}/deploy/"
-          sed -e "s/@BUZZ_SERVER_VERSION@/${VERSION}/g" -e "s/@BUZZ_SERVER_TARGET@/${TARGET}/g" deploy/install.sh > "dist/${package}/deploy/install.sh"
-          chmod 0755 "dist/${package}/deploy/install.sh"
-          install -m 0755 deploy/install-release.sh deploy/buzz-serverctl deploy/provision-runtimes.sh deploy/prepare-owner-credential.sh deploy/backup.sh deploy/restore.sh deploy/rotate-owner.sh deploy/healthcheck.sh deploy/disaster-recovery-exercise.sh "dist/${package}/deploy/"
-          asset="buzz-server-${TARGET}.tar.gz"
-          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C dist -cf - "${package}" | gzip -n > "dist/${asset}"
-          (cd dist && sha256sum "${asset}" > "${asset}.sha256")
+          scripts/package-artifact.sh "payload/$TARGET" "${BUILD_SHA}" "$TARGET" dist
+      - name: Verify finished CI artifact
+        env:
+          TARGET: ${{ matrix.target }}
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          scripts/verify-package-artifact.sh \
+            "dist/buzz-server-${TARGET}.tar.gz" \
+            "dist/buzz-server-${TARGET}.tar.gz.sha256" \
+            "$BUILD_SHA" "$TARGET" "payload/$TARGET"
+      - name: Record build identity
+        env:
+          TARGET: ${{ matrix.target }}
+          BUILD_SHA: ${{ github.sha }}
+          BUILD_REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -eu
+          metadata="dist/build-metadata-${TARGET}.txt"
+          {
+            printf 'event=%s\n' "$EVENT_NAME"
+            printf 'target=%s\n' "$TARGET"
+            printf 'tested_ref=%s\n' "$BUILD_REF"
+            printf 'tested_sha=%s\n' "$BUILD_SHA"
+            if [ "$EVENT_NAME" = pull_request ]; then
+              printf 'pr_number=%s\n' "$PR_NUMBER"
+              printf 'pr_head_sha=%s\n' "$PR_HEAD_SHA"
+              printf 'pr_base_sha=%s\n' "$PR_BASE_SHA"
+            fi
+          } > "$metadata"
+          cp "$metadata" "payload/$TARGET/build-metadata.txt"
+
+          {
+            printf '### Build identity — `%s`\n\n' "$TARGET"
+            printf '| Field | Value |\n|---|---|\n'
+            printf '| Event | `%s` |\n' "$EVENT_NAME"
+            printf '| Tested ref | `%s` |\n' "$BUILD_REF"
+            printf '| Tested SHA | `%s` |\n' "$BUILD_SHA"
+            if [ "$EVENT_NAME" = pull_request ]; then
+              printf '| PR | #%s |\n' "$PR_NUMBER"
+              printf '| PR head SHA | `%s` |\n' "$PR_HEAD_SHA"
+              printf '| PR base SHA | `%s` |\n' "$PR_BASE_SHA"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: buzz-server-${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
+            dist/build-metadata-${{ matrix.target }}.txt
           if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: github.event_name == 'push'
+        with:
+          name: release-payload-${{ matrix.target }}
+          path: payload/${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 90

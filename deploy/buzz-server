@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version='@BUZZ_SERVER_VERSION@'
+identity='@BUZZ_SERVER_IDENTITY@'
 
 self=$(readlink -f "$0" 2>/dev/null || printf '%s\n' "$0")
 release=$(dirname "$self")
@@ -317,7 +317,14 @@ case "$command" in
     help
     ;;
   -V|--version|version)
-    if is_help "${2:-}"; then command_help version; else printf 'buzz-server %s\n' "$version"; fi
+    if is_help "${2:-}"; then
+      command_help version
+    else
+      case "$identity" in
+        v[0-9]*) printf 'buzz-server %s\n' "$identity" ;;
+        *) printf 'buzz-server build %s\n' "$identity" ;;
+      esac
+    fi
     ;;
   communities)
     shift
