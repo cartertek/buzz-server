@@ -1,172 +1,159 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      bump:
+        description: Version increment from the latest published release
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
+  actions: read
+  id-token: write
+  attestations: write
 
 jobs:
-  verify:
+  promote:
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt,clippy
-      - run: rustup override set 1.88.0
-      - name: Validate immutable tag matches Cargo version
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -eu
-          cargo_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
-          test "$TAG" = "v$cargo_version"
-      - run: cargo fmt --check
-      - run: cargo test --all-targets --locked
-      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
-      - run: cargo build --release --locked
-
-  build:
-    needs: verify
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-    runs-on: ${{ matrix.runner }}
-    container: public.ecr.aws/amazonlinux/amazonlinux@sha256:601289f29d1b67fc542a451beda8ac6ca542d40289c99f71faa3ba37fe0d133a
-    steps:
-      - name: Install glibc 2.34 build prerequisites
-        run: dnf install -y gcc gcc-c++ git tar gzip findutils binutils
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Install pinned Rust toolchain
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs |
-            sh -s -- -y --profile minimal --default-toolchain 1.88.0 --target "$TARGET"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - run: cargo build --release --locked --target '${{ matrix.target }}' --bins
-      - name: Build pinned upstream Buzz CLI
-        env:
-          TARGET: ${{ matrix.target }}
-          BUZZ_REV: 79c52166cfe6b6d36bdc7686f943595c74e2f578
-        run: |
-          set -eu
-          git clone --filter=blob:none https://github.com/block/buzz.git upstream-buzz
-          git -C upstream-buzz fetch --depth 1 origin "$BUZZ_REV"
-          git -C upstream-buzz checkout --detach FETCH_HEAD
-          (cd upstream-buzz && cargo build --release --locked --target "$TARGET" -p buzz-cli)
-      - name: Enforce deployment-host glibc compatibility
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          set -eu
-          for binary in "target/${TARGET}/release/buzz-server" "upstream-buzz/target/${TARGET}/release/buzz"; do
-            if readelf --version-info "$binary" | grep -Eq 'Name: GLIBC_2\.(3[5-9]|[4-9][0-9])'; then
-              echo "$binary requires a glibc version newer than the supported 2.34 baseline" >&2
-              readelf --version-info "$binary" | grep 'Name: GLIBC_' >&2
-              exit 1
-            fi
-          done
-      - name: Package immutable release
-        env:
-          TARGET: ${{ matrix.target }}
-          VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.0.0-pr' }}
-        run: |
-          set -eu
-          package="buzz-server"
-          mkdir -p "dist/${package}/config" "dist/${package}/deploy"
-          install -m 0755 "target/${TARGET}/release/buzz-server" "dist/${package}/buzz-server-daemon"
-          sed "s/@BUZZ_SERVER_VERSION@/${VERSION}/g" deploy/buzz-server > "dist/${package}/buzz-server"
-          chmod 0755 "dist/${package}/buzz-server"
-          install -m 0755 "target/${TARGET}/release/buzz-agentctl" "dist/${package}/buzz-agentctl"
-          install -m 0755 "target/${TARGET}/release/buzz-secretsctl" "dist/${package}/buzz-secretsctl"
-          install -m 0755 "target/${TARGET}/release/buzz-runtime-probe" "dist/${package}/buzz-runtime-probe"
-          install -m 0755 "upstream-buzz/target/${TARGET}/release/buzz" "dist/${package}/buzz-cli"
-          install -m 0644 config/buzz-server.dev.example.json config/buzz-server.schema.json "dist/${package}/config/"
-          install -m 0644 deploy/buzz-server.service deploy/buzz-server-healthcheck.service deploy/buzz-server-healthcheck.timer deploy/README.md "dist/${package}/deploy/"
-          sed -e "s/@BUZZ_SERVER_VERSION@/${VERSION}/g" -e "s/@BUZZ_SERVER_TARGET@/${TARGET}/g" deploy/install.sh > "dist/${package}/deploy/install.sh"
-          chmod 0755 "dist/${package}/deploy/install.sh"
-          install -m 0755 deploy/install-release.sh deploy/buzz-serverctl deploy/provision-runtimes.sh deploy/prepare-owner-credential.sh deploy/backup.sh deploy/restore.sh deploy/rotate-owner.sh deploy/healthcheck.sh deploy/disaster-recovery-exercise.sh "dist/${package}/deploy/"
-          asset="buzz-server-${TARGET}.tar.gz"
-          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C dist -cf - "${package}" | gzip -n > "dist/${asset}"
-          (cd dist && sha256sum "${asset}" > "${asset}.sha256")
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: release-${{ matrix.target }}
-          path: |
-            dist/*.tar.gz
-            dist/*.tar.gz.sha256
-          if-no-files-found: error
-
-  publish:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          pattern: release-*
-          path: dist
-          merge-multiple: true
-      - name: Verify complete release set
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -eu
-          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-            test -f "dist/buzz-server-${target}.tar.gz"
-            test -f "dist/buzz-server-${target}.tar.gz.sha256"
-          done
-          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 4
-          (cd dist && sha256sum -c ./*.tar.gz.sha256)
-      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
-        with:
-          subject-path: dist/*.tar.gz
-      - name: Attach assets to immutable GitHub Release
+          ref: master
+          fetch-depth: 0
+      - name: Resolve release version and successful master CI run
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          BUMP: ${{ inputs.bump }}
         run: |
           set -eu
-          tag='${{ github.ref_name }}'
-          verify_remote() {
-            rm -rf remote-assets
-            mkdir remote-assets
-            gh release download "$tag" --dir remote-assets
-            test "$(find remote-assets -maxdepth 1 -type f | wc -l)" -eq 4
-            for local_asset in dist/*; do
-              remote_asset="remote-assets/$(basename "$local_asset")"
-              test -f "$remote_asset"
-              cmp "$local_asset" "$remote_asset"
-            done
+          master_sha=$(git rev-parse HEAD)
+          remote_master=$(gh api "repos/${GH_REPO}/git/ref/heads/master" --jq .object.sha)
+          test "$master_sha" = "$remote_master" || {
+            echo "checked-out master moved during release initialization" >&2
+            exit 1
           }
-          if gh release view "$tag" >/dev/null 2>&1; then
-            # Release assets are immutable, including while a release is a draft.
-            # An interrupted first publication must be investigated rather than
-            # repaired by replacing or appending assets on a rerun.
-            verify_remote
-            draft=$(gh release view "$tag" --json isDraft --jq .isDraft)
-            if [ "$draft" != true ]; then
-              echo "published release already contains the exact immutable assets"
-              exit 0
-            fi
-            echo "draft release already contains the exact immutable assets"
+
+          run_id=$(gh api --paginate "repos/${GH_REPO}/actions/workflows/ci.yml/runs?branch=master&event=push&status=success&per_page=100" \
+            --jq ".workflow_runs[] | select(.head_sha == \"${master_sha}\") | .id" | head -1)
+          test -n "$run_id" || {
+            echo "current master ${master_sha} does not have a successful push CI run" >&2
+            exit 1
+          }
+
+          latest=$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq \
+            '[.[].tagName | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) | sub("^v"; "") | split(".") | map(tonumber)] | sort | last | @tsv')
+          if [ -z "$latest" ] || [ "$latest" = null ]; then
+            major=0; minor=0; patch=0
           else
-            gh release create "$tag" --draft --verify-tag --generate-notes --title "$tag"
-            # If another publisher won a race, the upload fails without replacing
-            # any asset and the next run performs an exact comparison.
-            gh release upload "$tag" dist/*
-            verify_remote
+            set -- $latest
+            major=$1; minor=$2; patch=$3
           fi
-          gh release edit "$tag" --draft=false
+          case "$BUMP" in
+            patch) patch=$((patch + 1)) ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            *) echo "unsupported version bump: $BUMP" >&2; exit 64 ;;
+          esac
+          tag="v${major}.${minor}.${patch}"
+          tag_sha=$(gh api "repos/${GH_REPO}/git/ref/tags/${tag}" --jq .object.sha 2>/dev/null || true)
+          if [ -n "$tag_sha" ] && [ "$tag_sha" != "$master_sha" ]; then
+            echo "tag ${tag} already exists at ${tag_sha}; refusing to move an immutable release identity" >&2
+            exit 1
+          fi
+
+          printf 'sha=%s\n' "$master_sha" >> "$GITHUB_OUTPUT"
+          printf 'run_id=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          echo "Promoting CI run ${run_id} for ${master_sha} as ${tag}"
+      - name: Download canonical CI payloads
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: ${{ steps.release.outputs.run_id }}
+          github-token: ${{ github.token }}
+          pattern: release-payload-*
+          path: payloads
+      - name: Verify payload identities and package release
+        env:
+          SHA: ${{ steps.release.outputs.sha }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -eu
+          mkdir dist
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            payload="payloads/release-payload-${target}"
+            test -d "$payload"
+            grep -Fx "build_sha=${SHA}" "$payload/build-metadata.txt"
+            grep -Fx 'event=push' "$payload/build-metadata.txt"
+            grep -Fx "target=${target}" "$payload/build-metadata.txt"
+            scripts/package-artifact.sh "$payload" "$TAG" "$target" dist
+          done
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 4
+          (cd dist && sha256sum -c ./*.tar.gz.sha256)
+      - name: Create immutable tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ steps.release.outputs.sha }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -eu
+          existing=$(gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq .object.sha 2>/dev/null || true)
+          if [ -z "$existing" ]; then
+            gh api --method POST "repos/${GH_REPO}/git/refs" -f ref="refs/tags/${TAG}" -f sha="$SHA" >/dev/null
+          else
+            test "$existing" = "$SHA"
+          fi
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-path: dist/*.tar.gz
+      - name: Publish immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -eu
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+            test "$draft" = true || {
+              echo "release ${TAG} is already published" >&2
+              exit 1
+            }
+          else
+            gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG"
+          fi
+
+          rm -rf /tmp/release-assets
+          mkdir -p /tmp/release-assets
+          for asset in dist/*; do
+            name=$(basename "$asset")
+            if gh release download "$TAG" --pattern "$name" --dir /tmp/release-assets >/dev/null 2>&1; then
+              cmp "$asset" "/tmp/release-assets/$name"
+              rm -f "/tmp/release-assets/$name"
+            else
+              gh release upload "$TAG" "$asset"
+            fi
+          done
+
+          rm -rf /tmp/release-assets
+          mkdir -p /tmp/release-assets
+          gh release download "$TAG" --dir /tmp/release-assets
+          test "$(find /tmp/release-assets -maxdepth 1 -type f | wc -l)" -eq 4
+          for asset in dist/*; do
+            cmp "$asset" "/tmp/release-assets/$(basename "$asset")"
+          done
+          gh release edit "$TAG" --draft=false

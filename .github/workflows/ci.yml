@@ -19,7 +19,7 @@ jobs:
       - name: Validate deployment scripts and units
         run: |
           set -eu
-          for script in deploy/*.sh deploy/buzz-server deploy/buzz-serverctl; do sh -n "$script"; done
+          for script in deploy/*.sh deploy/buzz-server deploy/buzz-serverctl scripts/package-artifact.sh scripts/prepare-ci-payload.sh; do sh -n "$script"; done
           sudo install -d /opt/buzz-server/current/share/deploy
           sudo install -m 0755 /bin/true /opt/buzz-server/current/buzz-server
           sudo install -m 0755 /bin/true /opt/buzz-server/current/share/deploy/prepare-owner-credential.sh
@@ -74,29 +74,33 @@ jobs:
               exit 1
             fi
           done
-      - name: Package PR artifact
+      - name: Prepare canonical build payload
         env:
           TARGET: ${{ matrix.target }}
-          VERSION: v0.0.0-pr-${{ github.sha }}
+        run: scripts/prepare-ci-payload.sh "$TARGET" upstream-buzz "payload/$TARGET"
+      - name: Package downloadable CI artifact
+        env:
+          TARGET: ${{ matrix.target }}
+          BUILD_SHA: ${{ github.sha }}
         run: |
           set -eu
-          package="buzz-server"
-          mkdir -p "dist/${package}/config" "dist/${package}/deploy"
-          install -m 0755 "target/${TARGET}/release/buzz-server" "dist/${package}/buzz-server-daemon"
-          sed "s/@BUZZ_SERVER_VERSION@/${VERSION}/g" deploy/buzz-server > "dist/${package}/buzz-server"
-          chmod 0755 "dist/${package}/buzz-server"
-          install -m 0755 "target/${TARGET}/release/buzz-agentctl" "dist/${package}/buzz-agentctl"
-          install -m 0755 "target/${TARGET}/release/buzz-secretsctl" "dist/${package}/buzz-secretsctl"
-          install -m 0755 "target/${TARGET}/release/buzz-runtime-probe" "dist/${package}/buzz-runtime-probe"
-          install -m 0755 "upstream-buzz/target/${TARGET}/release/buzz" "dist/${package}/buzz-cli"
-          install -m 0644 config/buzz-server.dev.example.json config/buzz-server.schema.json "dist/${package}/config/"
-          install -m 0644 deploy/buzz-server.service deploy/buzz-server-healthcheck.service deploy/buzz-server-healthcheck.timer deploy/README.md "dist/${package}/deploy/"
-          sed -e "s/@BUZZ_SERVER_VERSION@/${VERSION}/g" -e "s/@BUZZ_SERVER_TARGET@/${TARGET}/g" deploy/install.sh > "dist/${package}/deploy/install.sh"
-          chmod 0755 "dist/${package}/deploy/install.sh"
-          install -m 0755 deploy/install-release.sh deploy/buzz-serverctl deploy/provision-runtimes.sh deploy/prepare-owner-credential.sh deploy/backup.sh deploy/restore.sh deploy/rotate-owner.sh deploy/healthcheck.sh deploy/disaster-recovery-exercise.sh "dist/${package}/deploy/"
-          asset="buzz-server-${TARGET}.tar.gz"
-          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C dist -cf - "${package}" | gzip -n > "dist/${asset}"
-          (cd dist && sha256sum "${asset}" > "${asset}.sha256")
+          scripts/package-artifact.sh "payload/$TARGET" "v0.0.0-pr.${BUILD_SHA}" "$TARGET" dist
+      - name: Record build identity
+        env:
+          TARGET: ${{ matrix.target }}
+          BUILD_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          {
+            printf 'build_sha=%s\n' "$BUILD_SHA"
+            printf 'event=%s\n' "$EVENT_NAME"
+            printf 'target=%s\n' "$TARGET"
+            if [ "$EVENT_NAME" = pull_request ]; then
+              printf 'pr_head_sha=%s\n' "$PR_HEAD_SHA"
+            fi
+          } > "payload/$TARGET/build-metadata.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: buzz-server-${{ matrix.target }}
@@ -104,3 +108,11 @@ jobs:
             dist/*.tar.gz
             dist/*.tar.gz.sha256
           if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: github.event_name == 'push'
+        with:
+          name: release-payload-${{ matrix.target }}
+          path: payload/${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 90
