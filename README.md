@@ -71,10 +71,9 @@ On first install, the installer asks for the required values and creates the Buz
 Server configuration and secret files. The installer is part of the downloaded
 archive and installs that exact build.
 
-The same process is used for updates. Running the installer from a newer or older
-release atomically installs that release over the existing installation while
-preserving configuration, secrets, state, workspaces, and logs. If the new
-release fails its health check, the previous release is restored automatically.
+The same process is used for updates and rollbacks. Running the installer from a
+newer or older release installs that release over the existing installation while
+preserving configuration, secrets, state, workspaces, and logs.
 
 For unattended installation, pass the prompted values as environment variables
 and add `--non-interactive`. See [host deployment details](deploy/README.md) for
@@ -102,20 +101,16 @@ sudo buzz-server agents create \
   --runtime codex-acp
 ```
 
-The CLI waits on a server-side completion notification for the durable create operation and then returns the
-created agent resource, including its new `agent_...` ID. It does not poll the lifecycle API. Creating the agent also
-generates and custodies its Buzz/Nostr identity and starts its ACP runtime against
-the selected community relay.
+Creating the agent starts its ACP runtime against the selected community relay.
+The response includes the new `agent_...` ID and the agent's Nostr public key.
 
-Get the generated Nostr public key without exposing the private key:
+Copy the public key from the create response, or get it again later with:
 
 ```sh
 sudo buzz-server agents pubkey --agent agent_...
 ```
 
-Buzz Server bundles the compatible upstream Buzz CLI and exposes channel
-operations through its own namespace. Add the new agent identity to the target
-channel as a bot:
+Add the newly created agent to a channel:
 
 ```sh
 sudo buzz-server channels add-member \
@@ -125,12 +120,9 @@ sudo buzz-server channels add-member \
   --role bot
 ```
 
-The channel command uses the identity associated with the selected community and that community's relay URL; no separate Buzz CLI installation or login is required.
-Once the relay records the membership, `buzz-acp` discovers the channel and
-subscribes according to its configured subscription behavior. No Buzz Server
-restart or separate subscribe command is required.
-
-Normal `buzz-server agents list` output excludes recoverably deleted agents; use `buzz-server agents list --include-deleted` to inspect retained deleted records.
+Once the agent is a channel member, its ACP runtime discovers the membership and
+subscribes automatically. Running agents also pick up newly added channel
+memberships automatically.
 
 Use `buzz-server agents list`, `buzz-server agents get --agent agent_...`, and
 `buzz-server agents logs --agent agent_...` to inspect the hosted agent. See
@@ -139,19 +131,19 @@ Use `buzz-server agents list`, `buzz-server agents get --agent agent_...`, and
 ## Configuration
 
 Persistent host/runtime configuration lives in `/etc/buzz-server/config.json`; runtime
-secrets remain in `secrets.env`. Community and hosted-agent state lives only in the
-Buzz Server state database. The owner key is stored
-through KMS when configured, otherwise through the OS keyring or restricted-file
-fallback. The schema is [`config/buzz-server.schema.json`](config/buzz-server.schema.json).
+secrets remain in `secrets.env`. Human-editable agent configuration lives in
+`/var/lib/buzz-server/agent-config/agents/*.json`, and optional personas live in
+`/var/lib/buzz-server/agent-config/personas/*.json`. Buzz Server reloads those files
+when the service starts. Lifecycle/process state, community records, operations, and
+other machine-managed state remain in SQLite.
 
+To create an agent from a persona, add a persona JSON file and pass its `id` to
+`buzz-server agents create --persona ID`. Agent files may override the persona's
+runtime and environment; prompt, model, and provider follow the linked persona, as
+in Buzz Desktop. The owner key is stored through KMS when configured, otherwise
+through the OS keyring or restricted-file fallback. The host configuration schema
+is [`config/buzz-server.schema.json`](config/buzz-server.schema.json).
 
-## Rollback
-
-Updates and rollbacks use the same procedure: extract the desired newer or older
-release artifact and run its bundled `deploy/install.sh`. The installer switches
-releases atomically while preserving configuration, secrets, database state,
-identities, workspaces, and logs. If the selected release fails its health check,
-the previously active release is restored automatically.
 
 ## Service management
 

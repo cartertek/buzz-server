@@ -1,10 +1,20 @@
-//! Desired agent configuration independent of a deployment backend.
+//! Desired agent lifecycle state plus human-authored file configuration.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{community::validate_nonempty, AgentId, CommunityConfigId, RuntimeId, ValidationError};
+
+pub const DEFAULT_AGENT_PARALLELISM: u32 = 10;
+
+const fn default_agent_parallelism() -> u32 {
+    DEFAULT_AGENT_PARALLELISM
+}
+
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -15,10 +25,27 @@ pub enum DesiredAgentState {
     Deleted,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RespondToMode {
+    #[default]
+    OwnerOnly,
+    Allowlist,
+    Anyone,
+}
+
+impl RespondToMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OwnerOnly => "owner-only",
+            Self::Allowlist => "allowlist",
+            Self::Anyone => "anyone",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RuntimeSpec {
-    /// Selects one immutable catalog entry. Executable identity and default
-    /// arguments are resolved from the catalog, never copied into agent intent.
     pub runtime_id: RuntimeId,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, String>,
@@ -40,6 +67,8 @@ impl RuntimeSpec {
     }
 }
 
+/// The lifecycle cache persisted in SQLite. Human-authored configuration is
+/// authoritative in the corresponding agent/persona files.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AgentSpec {
     pub id: AgentId,
@@ -54,9 +83,201 @@ pub struct AgentSpec {
 impl AgentSpec {
     pub fn validate(&self) -> Result<(), ValidationError> {
         validate_nonempty("display_name", &self.display_name, 120)?;
-        validate_nonempty("system_prompt", &self.system_prompt, 65_536)?;
+        if !self.system_prompt.is_empty() {
+            validate_nonempty("system_prompt", &self.system_prompt, 65_536)?;
+        }
         self.runtime.validate()
     }
+}
+
+/// Desktop-compatible keyless agent definition/persona stored as an individual
+/// human-editable file on Buzz Server.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersonaDefinition {
+    pub id: String,
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    pub system_prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub name_pool: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub respond_to: Option<RespondToMode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub respond_to_allowlist: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallelism: Option<u32>,
+    #[serde(default)]
+    pub is_builtin: bool,
+    #[serde(default = "default_true")]
+    pub is_active: bool,
+    #[serde(default)]
+    pub shared: bool,
+}
+
+impl PersonaDefinition {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        validate_identifier("persona.id", &self.id)?;
+        validate_nonempty("persona.display_name", &self.display_name, 120)?;
+        validate_nonempty("persona.system_prompt", &self.system_prompt, 65_536)?;
+        validate_environment(&self.environment)?;
+        validate_behavior(
+            self.parallelism,
+            self.respond_to,
+            &self.respond_to_allowlist,
+        )
+    }
+}
+
+/// Human-authored managed-agent instance. Desktop semantics are preserved:
+/// linked definitions own prompt/model/provider and definition env is layered
+/// below instance env; runtime is inherited unless explicitly overridden;
+/// avatar/access/parallelism are mint-time instance values.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentConfigFile {
+    pub id: AgentId,
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, String>,
+    /// Per-instance ACP runtime arguments. Empty means use the selected runtime
+    /// catalog defaults, matching Desktop's normalized-agent-args behavior.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_args: Vec<String>,
+    #[serde(default = "default_agent_parallelism")]
+    pub parallelism: u32,
+    #[serde(default)]
+    pub respond_to: RespondToMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub respond_to_allowlist: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turn_duration_seconds: Option<u64>,
+}
+
+impl AgentConfigFile {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        validate_nonempty("display_name", &self.display_name, 120)?;
+        if let Some(persona_id) = self.persona_id.as_deref() {
+            validate_identifier("persona_id", persona_id)?;
+        }
+        if let Some(prompt) = self.system_prompt.as_deref() {
+            validate_nonempty("system_prompt", prompt, 65_536)?;
+        }
+        validate_environment(&self.environment)?;
+        validate_agent_args(&self.agent_args)?;
+        validate_behavior(
+            Some(self.parallelism),
+            Some(self.respond_to),
+            &self.respond_to_allowlist,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedAgentConfig {
+    pub spec: AgentSpec,
+    pub persona_id: Option<String>,
+    pub avatar_url: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub agent_args: Vec<String>,
+    pub parallelism: u32,
+    pub respond_to: RespondToMode,
+    pub respond_to_allowlist: Vec<String>,
+    pub idle_timeout_seconds: Option<u64>,
+    pub max_turn_duration_seconds: Option<u64>,
+}
+
+fn validate_identifier(field: &'static str, value: &str) -> Result<(), ValidationError> {
+    validate_nonempty(field, value, 120)?;
+    if !value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(ValidationError::new(
+            field,
+            "must contain only letters, numbers, '-' or '_'",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_environment(environment: &BTreeMap<String, String>) -> Result<(), ValidationError> {
+    if environment.keys().any(|key| !valid_environment_key(key)) {
+        return Err(ValidationError::new(
+            "environment",
+            "contains an invalid environment variable name",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_agent_args(args: &[String]) -> Result<(), ValidationError> {
+    if args.len() > 256
+        || args
+            .iter()
+            .any(|arg| arg.is_empty() || arg.contains('\0') || arg.contains(','))
+    {
+        return Err(ValidationError::new(
+            "agent_args",
+            "must contain at most 256 non-empty, comma-free, NUL-free arguments",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_behavior(
+    parallelism: Option<u32>,
+    respond_to: Option<RespondToMode>,
+    allowlist: &[String],
+) -> Result<(), ValidationError> {
+    if let Some(value) = parallelism {
+        if !(1..=32).contains(&value) {
+            return Err(ValidationError::new(
+                "parallelism",
+                "must be between 1 and 32",
+            ));
+        }
+    }
+    if respond_to == Some(RespondToMode::Allowlist) && allowlist.is_empty() {
+        return Err(ValidationError::new(
+            "respond_to_allowlist",
+            "must contain at least one pubkey in allowlist mode",
+        ));
+    }
+    if allowlist
+        .iter()
+        .any(|key| key.len() != 64 || !key.chars().all(|c| c.is_ascii_hexdigit()))
+    {
+        return Err(ValidationError::new(
+            "respond_to_allowlist",
+            "entries must be 64-character hex pubkeys",
+        ));
+    }
+    Ok(())
 }
 
 fn valid_environment_key(key: &str) -> bool {
@@ -87,7 +308,6 @@ mod tests {
     fn agent_spec_validates_and_round_trips() {
         let spec = valid_spec();
         spec.validate().unwrap();
-
         let encoded = serde_json::to_string(&spec).unwrap();
         assert_eq!(serde_json::from_str::<AgentSpec>(&encoded).unwrap(), spec);
     }
@@ -98,7 +318,6 @@ mod tests {
         spec.runtime
             .environment
             .insert("invalid-key".to_owned(), "secret".to_owned());
-
         assert_eq!(spec.validate().unwrap_err().field, "runtime.environment");
     }
 }

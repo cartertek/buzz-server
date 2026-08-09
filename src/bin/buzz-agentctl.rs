@@ -315,8 +315,9 @@ fn create_input(options: &BTreeMap<String, String>) -> Result<CreateAgentInput, 
     Ok(CreateAgentInput {
         community_config_id: parse(required(options, "--community")?, "community ID")?,
         display_name: required(options, "--display-name")?.into(),
-        system_prompt: required(options, "--system-prompt")?.into(),
-        runtime_id: parse(required(options, "--runtime")?, "runtime ID")?,
+        persona_id: options.get("--persona").cloned(),
+        system_prompt: options.get("--system-prompt").cloned(),
+        runtime_id: optional_parse(options, "--runtime", "runtime ID")?,
     })
 }
 

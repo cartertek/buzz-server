@@ -11,7 +11,7 @@ use crate::{
         AgentCommandRequest, AgentLogsRequest, AgentLogsResource, AgentResource, ApplicationError,
         ChangeAgentStateRequest, CommandMetadata, CreateAgentInput, DraftResource,
         JoinCommunityRequest, LifecycleApplication, ListAgentsRequest, OperationResource,
-        SubmitDraftRequest, UpdateAgentRequest,
+        SubmitDraftRequest, UpdateAgentInput, UpdateAgentRequest,
     },
     auth::{AuthenticatedPrincipal, Principal},
     storage::{AgentCommandMutation, DurableOperation, IdempotencyRecord, NewAuditRecord},
@@ -29,6 +29,58 @@ pub trait LifecycleEffects: Send + Sync {
 
     /// Called after the last community reference to an internally custodied identity is removed.
     fn community_identity_unreferenced(&self, _pubkey: &str) {}
+
+    /// Resolve create input into the daemon's effective lifecycle cache. Production
+    /// resolves file/persona semantics; the default keeps application tests transport-neutral.
+    fn prepare_agent_create(
+        &self,
+        id: AgentId,
+        input: &CreateAgentInput,
+    ) -> Result<AgentSpec, ApplicationError> {
+        let runtime_id = input.runtime_id.clone().ok_or_else(|| {
+            ApplicationError::Invalid(crate::ValidationError::new(
+                "runtime_id",
+                "is required when no file-backed persona resolver is installed",
+            ))
+        })?;
+        Ok(AgentSpec {
+            id,
+            community_config_id: input.community_config_id,
+            display_name: input.display_name.clone(),
+            system_prompt: input.system_prompt.clone().unwrap_or_default(),
+            runtime: RuntimeSpec {
+                runtime_id,
+                environment: Default::default(),
+            },
+            desired_state: DesiredAgentState::Enabled,
+        })
+    }
+
+    /// Persist the human-authored configuration after the durable create commit
+    /// and before reconciliation is awakened. Implementations must not overwrite
+    /// an existing hand-edited file on an idempotent replay.
+    fn persist_agent_create(
+        &self,
+        _agent: &AgentSpec,
+        _input: &CreateAgentInput,
+    ) -> Result<(), ApplicationError> {
+        Ok(())
+    }
+
+    /// Mirror legacy CLI update fields into the human-authored file. Direct file
+    /// edits remain the primary configuration interface.
+    fn prepare_agent_update(
+        &self,
+        _current: &AgentSpec,
+        _changes: &UpdateAgentInput,
+    ) -> Result<(), ApplicationError> {
+        Ok(())
+    }
+
+    /// Return the public half of a custodied agent identity for API resources.
+    fn agent_public_key(&self, _agent_id: AgentId) -> Option<String> {
+        None
+    }
 
     /// Wakes the reconciler after the complete durable command transaction commits.
     fn operation_ready(&self, operation: &DurableOperation) -> Result<(), ApplicationError>;
@@ -100,6 +152,7 @@ struct ExecutionPlan<'a> {
     community_id: crate::CommunityConfigId,
     mutation: AgentCommandMutation<'a>,
     promoted_draft_id: Option<&'a str>,
+    wake_immediately: bool,
 }
 
 impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
@@ -156,6 +209,7 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
             community_id,
             mutation,
             promoted_draft_id,
+            wake_immediately,
         } = plan;
         let now = (self.now)();
         let operation = DurableOperation {
@@ -198,10 +252,12 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
                 redacted_detail: None,
             },
         )?;
-        if matches!(
-            operation.status,
-            OperationStatus::Pending | OperationStatus::Running
-        ) {
+        if wake_immediately
+            && matches!(
+                operation.status,
+                OperationStatus::Pending | OperationStatus::Running
+            )
+        {
             self.effects.operation_ready(&operation)?;
         }
         Ok(operation_resource(&operation))
@@ -387,19 +443,9 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
         metadata: &CommandMetadata,
         input: &CreateAgentInput,
     ) -> Result<OperationResource, ApplicationError> {
-        let agent = AgentSpec {
-            id: AgentId::new(),
-            community_config_id: input.community_config_id,
-            display_name: input.display_name.clone(),
-            system_prompt: input.system_prompt.clone(),
-            runtime: RuntimeSpec {
-                runtime_id: input.runtime_id.clone(),
-                environment: Default::default(),
-            },
-            desired_state: DesiredAgentState::Enabled,
-        };
+        let agent = self.effects.prepare_agent_create(AgentId::new(), input)?;
         agent.validate().map_err(ApplicationError::Invalid)?;
-        self.execute(
+        let resource = self.execute(
             actor,
             metadata,
             input,
@@ -409,8 +455,27 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
                 community_id: agent.community_config_id,
                 mutation: AgentCommandMutation::Create(&agent),
                 promoted_draft_id: None,
+                wake_immediately: false,
             },
-        )
+        )?;
+        let committed_agent_id = resource.agent_id.ok_or(ApplicationError::Internal)?;
+        let committed_agent = if committed_agent_id == agent.id {
+            agent
+        } else {
+            self.store
+                .get_agent(committed_agent_id)?
+                .ok_or(ApplicationError::NotFound)?
+        };
+        self.effects.persist_agent_create(&committed_agent, input)?;
+        if let Some(operation) = self.store.get_operation(resource.id)? {
+            if matches!(
+                operation.status,
+                OperationStatus::Pending | OperationStatus::Running
+            ) {
+                self.effects.operation_ready(&operation)?;
+            }
+        }
+        Ok(resource)
     }
 
     fn update_agent(
@@ -418,7 +483,13 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
         actor: &AuthenticatedPrincipal,
         request: &UpdateAgentRequest,
     ) -> Result<OperationResource, ApplicationError> {
-        let community = self.existing_community(request.agent_id)?;
+        let current = self
+            .store
+            .get_agent(request.agent_id)?
+            .ok_or(ApplicationError::NotFound)?;
+        let community = current.community_config_id;
+        self.effects
+            .prepare_agent_update(&current, &request.changes)?;
         self.execute(
             actor,
             &request.metadata,
@@ -432,6 +503,7 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
                     changes: &request.changes,
                 },
                 promoted_draft_id: None,
+                wake_immediately: true,
             },
         )
     }
@@ -466,6 +538,7 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
                     retention_deadline: None,
                 },
                 promoted_draft_id: None,
+                wake_immediately: true,
             },
         )
     }
@@ -493,11 +566,13 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
             .store
             .get_agent(id)?
             .ok_or(ApplicationError::NotFound)?;
+        let public_key = self.effects.agent_public_key(id);
         Ok(agent_resource(
             agent,
             self.store
                 .agent_retention(id)?
                 .map(|value| value.purge_after),
+            public_key,
         ))
     }
 
@@ -517,7 +592,8 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
                     .store
                     .agent_retention(agent.id)?
                     .map(|value| value.purge_after);
-                Ok(agent_resource(agent, purge_after))
+                let public_key = self.effects.agent_public_key(agent.id);
+                Ok(agent_resource(agent, purge_after, public_key))
             })
             .collect::<Result<Vec<_>, StorageError>>()?)
     }
@@ -606,18 +682,11 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
     ) -> Result<OperationResource, ApplicationError> {
         let draft = self.get_draft(&request.draft_id)?;
         draft.agent.validate().map_err(ApplicationError::Invalid)?;
-        let agent = AgentSpec {
-            id: AgentId::new(),
-            community_config_id: draft.agent.community_config_id,
-            display_name: draft.agent.display_name.clone(),
-            system_prompt: draft.agent.system_prompt.clone(),
-            runtime: RuntimeSpec {
-                runtime_id: draft.agent.runtime_id.clone(),
-                environment: Default::default(),
-            },
-            desired_state: DesiredAgentState::Enabled,
-        };
-        self.execute(
+        let agent = self
+            .effects
+            .prepare_agent_create(AgentId::new(), &draft.agent)?;
+        agent.validate().map_err(ApplicationError::Invalid)?;
+        let resource = self.execute(
             actor,
             &request.metadata,
             request,
@@ -627,8 +696,28 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
                 community_id: agent.community_config_id,
                 mutation: AgentCommandMutation::Create(&agent),
                 promoted_draft_id: Some(&request.draft_id),
+                wake_immediately: false,
             },
-        )
+        )?;
+        let committed_agent_id = resource.agent_id.ok_or(ApplicationError::Internal)?;
+        let committed_agent = if committed_agent_id == agent.id {
+            agent
+        } else {
+            self.store
+                .get_agent(committed_agent_id)?
+                .ok_or(ApplicationError::NotFound)?
+        };
+        self.effects
+            .persist_agent_create(&committed_agent, &draft.agent)?;
+        if let Some(operation) = self.store.get_operation(resource.id)? {
+            if matches!(
+                operation.status,
+                OperationStatus::Pending | OperationStatus::Running
+            ) {
+                self.effects.operation_ready(&operation)?;
+            }
+        }
+        Ok(resource)
     }
 }
 
@@ -670,6 +759,7 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
                     retention_deadline,
                 },
                 promoted_draft_id: None,
+                wake_immediately: true,
             },
         )
     }
@@ -704,7 +794,11 @@ const fn authentication_method(actor: &AuthenticatedPrincipal) -> &'static str {
     }
 }
 
-fn agent_resource(agent: AgentSpec, purge_after: Option<i64>) -> AgentResource {
+fn agent_resource(
+    agent: AgentSpec,
+    purge_after: Option<i64>,
+    public_key: Option<String>,
+) -> AgentResource {
     AgentResource {
         id: agent.id,
         community_config_id: agent.community_config_id,
@@ -713,6 +807,7 @@ fn agent_resource(agent: AgentSpec, purge_after: Option<i64>) -> AgentResource {
         runtime_id: agent.runtime.runtime_id,
         desired_state: agent.desired_state,
         purge_after,
+        public_key,
     }
 }
 
@@ -799,8 +894,9 @@ mod tests {
                 &CreateAgentInput {
                     community_config_id: community.id,
                     display_name: "Builder".into(),
-                    system_prompt: "Build safely.".into(),
-                    runtime_id: "codex-acp".parse().unwrap(),
+                    persona_id: None,
+                    system_prompt: Some("Build safely.".into()),
+                    runtime_id: Some("codex-acp".parse().unwrap()),
                 },
             )
             .unwrap();
@@ -835,8 +931,9 @@ mod tests {
             agent: CreateAgentInput {
                 community_config_id: community.id,
                 display_name: "Builder".into(),
-                system_prompt: "Build safely.".into(),
-                runtime_id: "codex-acp".parse().unwrap(),
+                persona_id: None,
+                system_prompt: Some("Build safely.".into()),
+                runtime_id: Some("codex-acp".parse().unwrap()),
             },
         };
         let first_id;
@@ -883,8 +980,9 @@ mod tests {
                 &CreateAgentInput {
                     community_config_id: community.id,
                     display_name: "Builder".into(),
-                    system_prompt: "Build safely.".into(),
-                    runtime_id: "codex-acp".parse().unwrap(),
+                    persona_id: None,
+                    system_prompt: Some("Build safely.".into()),
+                    runtime_id: Some("codex-acp".parse().unwrap()),
                 },
             )
             .unwrap();
@@ -938,8 +1036,9 @@ mod tests {
                     agent: CreateAgentInput {
                         community_config_id: community.id,
                         display_name: "Builder".into(),
-                        system_prompt: "Build safely.".into(),
-                        runtime_id: "codex-acp".parse().unwrap(),
+                        persona_id: None,
+                        system_prompt: Some("Build safely.".into()),
+                        runtime_id: Some("codex-acp".parse().unwrap()),
                     },
                 },
             )
@@ -994,8 +1093,9 @@ mod tests {
                 &CreateAgentInput {
                     community_config_id: community.id,
                     display_name: "Builder".into(),
-                    system_prompt: "Build safely.".into(),
-                    runtime_id: "codex-acp".parse().unwrap(),
+                    persona_id: None,
+                    system_prompt: Some("Build safely.".into()),
+                    runtime_id: Some("codex-acp".parse().unwrap()),
                 },
             )
             .unwrap();

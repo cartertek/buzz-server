@@ -73,6 +73,8 @@ restart, transport failure, or operator interruption.
 
 ### `create`
 
+Create a standalone agent:
+
 ```sh
 sudo buzz-server agents create \
   --community community_... \
@@ -80,6 +82,22 @@ sudo buzz-server agents create \
   --system-prompt 'Build and verify requested changes.' \
   --runtime codex-acp
 ```
+
+Or create an agent from a persona stored in
+`/var/lib/buzz-server/agent-config/personas/<id>.json`:
+
+```sh
+sudo buzz-server agents create \
+  --community community_... \
+  --display-name 'Reviewer' \
+  --persona reviewer
+```
+
+`--system-prompt` is optional. `--runtime` is required for a standalone agent and
+optional for a persona-backed agent, where it acts as an explicit runtime override.
+The resulting agent configuration is written to
+`/var/lib/buzz-server/agent-config/agents/<agent-id>.json` and is reloaded when the
+service restarts.
 
 ### `get` / `list`
 

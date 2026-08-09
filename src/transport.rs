@@ -580,10 +580,11 @@ mod tests {
                 id,
                 community_config_id: input.community_config_id,
                 display_name: input.display_name.clone(),
-                system_prompt: input.system_prompt.clone(),
-                runtime_id: input.runtime_id.clone(),
+                system_prompt: input.system_prompt.clone().unwrap_or_default(),
+                runtime_id: input.runtime_id.clone().expect("test input has runtime"),
                 desired_state: crate::DesiredAgentState::Enabled,
                 purge_after: None,
+                public_key: None,
             });
             Ok(OperationResource {
                 id: crate::OperationId::new(),
@@ -697,8 +698,9 @@ mod tests {
             agent: CreateAgentInput {
                 community_config_id,
                 display_name: "Builder".into(),
-                system_prompt: "Build safely.".into(),
-                runtime_id: "codex-acp".parse().unwrap(),
+                persona_id: None,
+                system_prompt: Some("Build safely.".into()),
+                runtime_id: Some("codex-acp".parse().unwrap()),
             },
         });
         let created = router.handle(&administrator(), &serde_json::to_vec(&create).unwrap());

@@ -30,8 +30,8 @@ use buzz_server::{
         LifecycleJsonRouter, SqliteReplayGuard, TlsLifecycleServer, TlsNip98Authenticator,
         UnixLifecycleServer,
     },
-    DurableOperation, LaunchSpec, LocalLaunchContext, ProcessReceipt, RuntimeCatalog, SqliteStore,
-    StorageError,
+    AgentFileStore, DurableOperation, LaunchSpec, LocalLaunchContext, ProcessReceipt,
+    ResolvedAgentConfig, RuntimeCatalog, SqliteStore, StorageError,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -192,6 +192,8 @@ struct LifecycleWake {
     sender: Sender<ReconcileWork>,
     community_join: buzz_server::community_join::DesktopCommunityJoinVerifier,
     community_identity_root: PathBuf,
+    agent_files: AgentFileStore,
+    custody: FilesystemAgentIdentityCustody,
 }
 
 impl LifecycleEffects for LifecycleWake {
@@ -223,6 +225,87 @@ impl LifecycleEffects for LifecycleWake {
                     buzz_server::api::ApplicationError::Unavailable(error.to_string())
                 }
             })
+    }
+
+    fn prepare_agent_create(
+        &self,
+        id: buzz_server::AgentId,
+        input: &buzz_server::api::CreateAgentInput,
+    ) -> Result<buzz_server::AgentSpec, buzz_server::api::ApplicationError> {
+        let file = self
+            .agent_files
+            .build_create_file(
+                id,
+                input.display_name.clone(),
+                input.persona_id.clone(),
+                input.system_prompt.clone(),
+                input.runtime_id.clone(),
+            )
+            .map_err(agent_file_application_error)?;
+        self.agent_files
+            .resolve(
+                &file,
+                input.community_config_id,
+                buzz_server::DesiredAgentState::Enabled,
+            )
+            .map(|resolved| resolved.spec)
+            .map_err(agent_file_application_error)
+    }
+
+    fn persist_agent_create(
+        &self,
+        agent: &buzz_server::AgentSpec,
+        input: &buzz_server::api::CreateAgentInput,
+    ) -> Result<(), buzz_server::api::ApplicationError> {
+        if self.agent_files.agent_path(agent.id).exists() {
+            return Ok(());
+        }
+        let file = self
+            .agent_files
+            .build_create_file(
+                agent.id,
+                input.display_name.clone(),
+                input.persona_id.clone(),
+                input.system_prompt.clone(),
+                input.runtime_id.clone(),
+            )
+            .map_err(agent_file_application_error)?;
+        self.agent_files
+            .write_agent(&file)
+            .map_err(agent_file_application_error)
+    }
+
+    fn prepare_agent_update(
+        &self,
+        current: &buzz_server::AgentSpec,
+        changes: &buzz_server::api::UpdateAgentInput,
+    ) -> Result<(), buzz_server::api::ApplicationError> {
+        self.agent_files
+            .ensure_agent_file(current)
+            .map_err(agent_file_application_error)?;
+        let mut file = self
+            .agent_files
+            .load_agent(current.id)
+            .map_err(agent_file_application_error)?;
+        if let Some(value) = &changes.display_name {
+            file.display_name.clone_from(value);
+        }
+        if let Some(value) = &changes.system_prompt {
+            file.system_prompt = Some(value.clone());
+        }
+        if let Some(value) = &changes.runtime_id {
+            file.runtime = Some(value.clone());
+        }
+        self.agent_files
+            .write_agent(&file)
+            .map_err(agent_file_application_error)
+    }
+
+    fn agent_public_key(&self, agent_id: buzz_server::AgentId) -> Option<String> {
+        self.custody
+            .load(agent_id)
+            .ok()
+            .map(|keys| keys.public_key().to_hex())
     }
 
     fn operation_ready(
@@ -380,6 +463,13 @@ async fn main() -> Result<(), DaemonError> {
         .ok_or_else(|| DaemonError::InvalidConfig("state database has no parent".into()))?
         .join("identities");
     let custody = FilesystemAgentIdentityCustody::new(custody_root, 0);
+    let agent_files = AgentFileStore::new(
+        config
+            .state_database
+            .parent()
+            .ok_or_else(|| DaemonError::InvalidConfig("state database has no parent".into()))?
+            .join("agent-config"),
+    )?;
     let config = Arc::new(config);
     let (operation_tx, operation_rx) = mpsc::channel();
     let community_identity_root = config
@@ -397,6 +487,8 @@ async fn main() -> Result<(), DaemonError> {
             sender: operation_tx.clone(),
             community_join,
             community_identity_root,
+            agent_files: agent_files.clone(),
+            custody: custody.clone(),
         }),
         unix_seconds_i64,
     )
@@ -410,6 +502,7 @@ async fn main() -> Result<(), DaemonError> {
             config: Arc::clone(&config),
             legacy_owner_keys,
             custody,
+            agent_files: agent_files.clone(),
             supervisor,
             child_identity,
         },
@@ -421,6 +514,11 @@ async fn main() -> Result<(), DaemonError> {
             .map_err(|_| DaemonError::Task("reconciliation worker stopped".into()))?;
     }
     for agent in store.list_agents(None)? {
+        agent_files.ensure_agent_file(&agent)?;
+        let file = agent_files.load_agent(agent.id)?;
+        let resolved =
+            agent_files.resolve(&file, agent.community_config_id, agent.desired_state)?;
+        store.put_agent(&resolved.spec, unix_seconds_i64())?;
         operation_tx
             .send(ReconcileWork::StartupAgent(agent.id))
             .map_err(|_| DaemonError::Task("reconciliation worker stopped".into()))?;
@@ -502,6 +600,7 @@ struct ReconcileContext {
     config: Arc<DaemonConfig>,
     legacy_owner_keys: Option<Keys>,
     custody: FilesystemAgentIdentityCustody,
+    agent_files: AgentFileStore,
     supervisor: LocalProcessAdapter,
     child_identity: (u32, u32),
 }
@@ -749,10 +848,19 @@ fn reconcile_dynamic_lifecycle_operation(
     finish_operation: bool,
 ) -> Result<(), DaemonError> {
     let agent_id = operation.agent_id.ok_or(StorageError::NotFound)?;
-    let agent = context
+    let cached_agent = context
         .store
         .get_agent(agent_id)?
         .ok_or(StorageError::NotFound)?;
+    context.agent_files.ensure_agent_file(&cached_agent)?;
+    let file = context.agent_files.load_agent(agent_id)?;
+    let resolved = context.agent_files.resolve(
+        &file,
+        cached_agent.community_config_id,
+        cached_agent.desired_state,
+    )?;
+    let agent = resolved.spec.clone();
+    context.store.put_agent(&agent, unix_seconds_i64())?;
     let community = context
         .store
         .get_community(agent.community_config_id)?
@@ -846,6 +954,7 @@ fn reconcile_dynamic_lifecycle_operation(
             version: Some(authorization_generation),
         },
     );
+    apply_resolved_agent_environment(&mut dynamic_launch, &resolved);
     dynamic_launch
         .validate()
         .map_err(buzz_server::LaunchResolutionError::Validation)?;
@@ -892,6 +1001,10 @@ fn reconcile_dynamic_lifecycle_operation(
             context
                 .custody
                 .purge(agent_id)
+                .map_err(std::io::Error::other)?;
+            context
+                .agent_files
+                .remove_agent(agent_id)
                 .map_err(std::io::Error::other)
         }) {
             eprintln!("dynamic purge cleanup failed: {error}");
@@ -1049,6 +1162,89 @@ fn store_operation(resource: &buzz_server::api::OperationResource) -> DurableOpe
     }
 }
 
+fn agent_file_application_error(
+    error: buzz_server::AgentFileError,
+) -> buzz_server::api::ApplicationError {
+    match error {
+        buzz_server::AgentFileError::Validation(error) => {
+            buzz_server::api::ApplicationError::Invalid(error)
+        }
+        buzz_server::AgentFileError::PersonaNotFound(id) => {
+            buzz_server::api::ApplicationError::Invalid(buzz_server::ValidationError::new(
+                "persona_id",
+                format!("persona {id} not found"),
+            ))
+        }
+        buzz_server::AgentFileError::RuntimeRequired(id) => {
+            buzz_server::api::ApplicationError::Invalid(buzz_server::ValidationError::new(
+                "runtime_id",
+                format!("persona {id} has no runtime; provide --runtime"),
+            ))
+        }
+        buzz_server::AgentFileError::StandaloneRuntimeRequired => {
+            buzz_server::api::ApplicationError::Invalid(buzz_server::ValidationError::new(
+                "runtime_id",
+                "is required when no persona is selected",
+            ))
+        }
+        _ => buzz_server::api::ApplicationError::Internal,
+    }
+}
+
+fn apply_resolved_agent_environment(launch: &mut LaunchSpec, resolved: &ResolvedAgentConfig) {
+    launch.environment.insert(
+        "BUZZ_ACP_DISPLAY_NAME".into(),
+        resolved.spec.display_name.clone(),
+    );
+    if !resolved.agent_args.is_empty() {
+        launch.runtime.arguments.clone_from(&resolved.agent_args);
+    }
+    if !resolved.spec.system_prompt.is_empty() {
+        launch.environment.insert(
+            "BUZZ_ACP_SYSTEM_PROMPT".into(),
+            resolved.spec.system_prompt.clone(),
+        );
+    }
+    launch
+        .environment
+        .insert("BUZZ_ACP_AGENTS".into(), resolved.parallelism.to_string());
+    launch.environment.insert(
+        "BUZZ_ACP_RESPOND_TO".into(),
+        resolved.respond_to.as_str().into(),
+    );
+    if !resolved.respond_to_allowlist.is_empty() {
+        launch.environment.insert(
+            "BUZZ_ACP_RESPOND_TO_ALLOWLIST".into(),
+            resolved.respond_to_allowlist.join(","),
+        );
+    }
+    if let Some(value) = resolved.idle_timeout_seconds {
+        launch
+            .environment
+            .insert("BUZZ_ACP_IDLE_TIMEOUT".into(), value.to_string());
+    }
+    if let Some(value) = resolved.max_turn_duration_seconds {
+        launch
+            .environment
+            .insert("BUZZ_ACP_MAX_TURN_DURATION".into(), value.to_string());
+    }
+    if let Some(value) = resolved.model.as_deref() {
+        launch
+            .environment
+            .insert("BUZZ_ACP_MODEL".into(), value.to_owned());
+        launch
+            .environment
+            .entry("BUZZ_AGENT_MODEL".into())
+            .or_insert_with(|| value.to_owned());
+    }
+    if let Some(value) = resolved.provider.as_deref() {
+        launch
+            .environment
+            .entry("BUZZ_AGENT_PROVIDER".into())
+            .or_insert_with(|| value.to_owned());
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 enum DaemonError {
     #[error("usage: buzz-server --config /etc/buzz-server/config.json")]
@@ -1067,6 +1263,8 @@ enum DaemonError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error(transparent)]
+    AgentFile(#[from] buzz_server::AgentFileError),
     #[error(transparent)]
     Catalog(#[from] buzz_server::CatalogError),
     #[error(transparent)]

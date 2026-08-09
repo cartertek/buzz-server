@@ -42,14 +42,27 @@ impl CommandMetadata {
 pub struct CreateAgentInput {
     pub community_config_id: CommunityConfigId,
     pub display_name: String,
-    pub system_prompt: String,
-    pub runtime_id: RuntimeId,
+    #[serde(default)]
+    pub persona_id: Option<String>,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub runtime_id: Option<RuntimeId>,
 }
 
 impl CreateAgentInput {
     pub fn validate(&self) -> Result<(), ValidationError> {
         validate_token("display_name", &self.display_name, 120)?;
-        validate_token("system_prompt", &self.system_prompt, 65_536)
+        if let Some(prompt) = self.system_prompt.as_deref() {
+            validate_token("system_prompt", prompt, 65_536)?;
+        }
+        if self.persona_id.is_none() && self.runtime_id.is_none() {
+            return Err(ValidationError::new(
+                "runtime_id",
+                "is required when no persona is selected",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -107,6 +120,8 @@ pub struct AgentResource {
     pub runtime_id: RuntimeId,
     pub desired_state: DesiredAgentState,
     pub purge_after: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -754,8 +769,9 @@ mod tests {
         CreateAgentInput {
             community_config_id: CommunityConfigId::new(),
             display_name: "Builder".into(),
-            system_prompt: "Build safely.".into(),
-            runtime_id: "codex-acp".parse().unwrap(),
+            persona_id: None,
+            system_prompt: Some("Build safely.".into()),
+            runtime_id: Some("codex-acp".parse().unwrap()),
         }
     }
 
