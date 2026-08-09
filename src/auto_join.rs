@@ -72,13 +72,10 @@ pub async fn next_open_channel(
                 }
             }
             message = connection.next_event(Duration::from_secs(24 * 60 * 60)) => {
-                match message.map_err(|e| e.to_string())? {
-                    RelayMessage::Event { event, .. } => {
-                        if let Some(channel_id) = open_channel_id(&event) {
-                            return Ok(Some(channel_id));
-                        }
+                if let RelayMessage::Event { event, .. } = message.map_err(|e| e.to_string())? {
+                    if let Some(channel_id) = open_channel_id(&event) {
+                        return Ok(Some(channel_id));
                     }
-                    _ => {}
                 }
             }
         }
