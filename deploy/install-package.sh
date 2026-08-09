@@ -146,7 +146,7 @@ install -d -o root -g buzz-server -m 0755 /var/lib/buzz-server
 install -d -o buzz-server -g buzz-server -m 0700 /var/log/buzz-server
 install -d -o root -g root -m 0755 /usr/libexec/buzz-server
 log "Staging immutable release $identity-$target"
-release_staging=$(mktemp -d "/opt/buzz-server/releases/.${version}-${target}.staging.XXXXXX")
+release_staging=$(mktemp -d "/opt/buzz-server/releases/.${identity}-${target}.staging.XXXXXX")
 install -o root -g root -m 0555 "$source_directory/buzz-server" "$release_staging/buzz-server"
 install -o root -g root -m 0555 "$source_directory/buzz-server-daemon" "$release_staging/buzz-server-daemon"
 install -o root -g root -m 0555 "$source_directory/buzz-agentctl" "$release_staging/buzz-agentctl"
