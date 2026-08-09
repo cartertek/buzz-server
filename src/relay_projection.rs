@@ -289,9 +289,9 @@ fn query_latest(
     if !status.is_success() {
         return Err(RelayProjectionError::Rejected(text));
     }
-    let mut events: Vec<Event> =
+    let events: Vec<Event> =
         serde_json::from_str(&text).map_err(|e| RelayProjectionError::Invalid(e.to_string()))?;
-    Ok(events.drain(..).next())
+    Ok(events.into_iter().next())
 }
 
 fn submit_event(
