@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 : "${RELEASE_TEST_STATE:?RELEASE_TEST_STATE is required}"
+: "${RELEASE_TEST_SOURCE_SHA:?RELEASE_TEST_SOURCE_SHA is required}"
+: "${RELEASE_REAL_GH:?RELEASE_REAL_GH is required}"
 state=$RELEASE_TEST_STATE
 mkdir -p "$state/assets"
 
@@ -10,6 +12,25 @@ shift
 
 case "$command" in
   api)
+    # Preserve real repository reads used by release resolution, except make the
+    # source SHA appear as current master so the production safety check runs.
+    case "${1:-}" in
+      repos/*/git/ref/heads/master)
+        printf '%s\n' "$RELEASE_TEST_SOURCE_SHA"
+        exit 0
+        ;;
+      repos/*/git/matching-refs/tags/v)
+        exec "$RELEASE_REAL_GH" api "$@"
+        ;;
+      repos/*/git/ref/tags/*)
+        if [ -f "$state/tag-sha" ]; then
+          cat "$state/tag-sha"
+          exit 0
+        fi
+        exec "$RELEASE_REAL_GH" api "$@"
+        ;;
+    esac
+
     method=GET
     endpoint=
     sha=
@@ -28,14 +49,6 @@ case "$command" in
       esac
     done
     case "$method:$endpoint" in
-      GET:repos/*/git/ref/tags/*)
-        if [ -f "$state/tag-sha" ]; then
-          cat "$state/tag-sha"
-        else
-          printf '%s\n' '{"message":"Not Found","status":"404"}'
-          exit 1
-        fi
-        ;;
       POST:repos/*/git/refs)
         [ -n "$ref" ] && [ -n "$sha" ] || { echo "mock gh: missing ref or sha" >&2; exit 64; }
         printf '%s\n' "$sha" > "$state/tag-sha"

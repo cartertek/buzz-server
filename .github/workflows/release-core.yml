@@ -38,37 +38,20 @@ jobs:
         run: |
           set -eu
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-
-          latest=$(gh api "repos/${GH_REPO}/releases?per_page=100" --paginate --jq \
-            '[.[] | select(.draft == false and .prerelease == false) | .tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) | sub("^v"; "") | split(".") | map(tonumber)] | sort | last | @tsv')
-          if [ -z "$latest" ] || [ "$latest" = null ]; then
-            major=0; minor=0; patch=0
-          else
-            set -- $latest
-            major=$1; minor=$2; patch=$3
-          fi
-          case "$BUMP" in
-            patch) patch=$((patch + 1)) ;;
-            minor) minor=$((minor + 1)); patch=0 ;;
-            major) major=$((major + 1)); minor=0; patch=0 ;;
-            *) echo "unsupported version bump: $BUMP" >&2; exit 64 ;;
-          esac
-          tag="v${major}.${minor}.${patch}"
-
-          # Always exercise tag resolution, including in PR dry-runs.
-          tag_sha=$(scripts/github-tag-sha.sh "$GH_REPO" "$tag")
           if [ "$PUBLISH" = true ]; then
-            remote_master=$(gh api "repos/${GH_REPO}/git/ref/heads/master" --jq .object.sha)
-            test "$SOURCE_SHA" = "$remote_master" || {
-              echo "release source ${SOURCE_SHA} is no longer current master ${remote_master}" >&2
-              exit 1
-            }
-            if [ -n "$tag_sha" ] && [ "$tag_sha" != "$SOURCE_SHA" ]; then
-              echo "tag ${tag} already exists at ${tag_sha}; refusing to move an immutable release identity" >&2
-              exit 1
-            fi
+            tag=$(scripts/resolve-release.sh "$GH_REPO" "$SOURCE_SHA" "$BUMP")
+          else
+            shim=$(mktemp -d)
+            ln -s "$PWD/scripts/mock-gh-release.sh" "$shim/gh"
+            state=$(mktemp -d)
+            real_gh=$(command -v gh)
+            tag=$(env \
+              RELEASE_TEST_STATE="$state" \
+              RELEASE_TEST_SOURCE_SHA="$SOURCE_SHA" \
+              RELEASE_REAL_GH="$real_gh" \
+              PATH="$shim:$PATH" \
+              scripts/resolve-release.sh "$GH_REPO" "$SOURCE_SHA" "$BUMP")
           fi
-
           printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
           {
             printf '### Release promotion\n\n'
@@ -135,10 +118,14 @@ jobs:
           else
             mock_bin=$(mktemp -d)
             ln -s "$PWD/scripts/mock-gh-release.sh" "$mock_bin/gh"
+            real_gh=$(command -v gh)
 
             # Fresh release: absent tag, create draft, upload every asset, verify, publish.
             fresh=$(mktemp -d)
-            PATH="$mock_bin:$PATH" RELEASE_TEST_STATE="$fresh" \
+            PATH="$mock_bin:$PATH" \
+            RELEASE_TEST_STATE="$fresh" \
+            RELEASE_TEST_SOURCE_SHA="$SHA" \
+            RELEASE_REAL_GH="$real_gh" \
               scripts/publish-release.sh "$TAG" "$SHA" dist
             test "$(cat "$fresh/tag-sha")" = "$SHA"
             test "$(cat "$fresh/release-state")" = published
@@ -151,7 +138,10 @@ jobs:
             printf 'draft\n' > "$retry/release-state"
             first=$(find dist -maxdepth 1 -type f | sort | head -1)
             cp "$first" "$retry/assets/$(basename "$first")"
-            PATH="$mock_bin:$PATH" RELEASE_TEST_STATE="$retry" \
+            PATH="$mock_bin:$PATH" \
+            RELEASE_TEST_STATE="$retry" \
+            RELEASE_TEST_SOURCE_SHA="$SHA" \
+            RELEASE_REAL_GH="$real_gh" \
               scripts/publish-release.sh "$TAG" "$SHA" dist
             test "$(cat "$retry/release-state")" = published
             test "$(find "$retry/assets" -maxdepth 1 -type f | wc -l)" -eq 4
