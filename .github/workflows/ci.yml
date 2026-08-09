@@ -99,24 +99,46 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           BUILD_SHA: ${{ github.sha }}
+          BUILD_REF: ${{ github.ref }}
           EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -eu
+          metadata="dist/build-metadata-${TARGET}.txt"
           {
-            printf 'build_sha=%s\n' "$BUILD_SHA"
             printf 'event=%s\n' "$EVENT_NAME"
             printf 'target=%s\n' "$TARGET"
+            printf 'tested_ref=%s\n' "$BUILD_REF"
+            printf 'tested_sha=%s\n' "$BUILD_SHA"
             if [ "$EVENT_NAME" = pull_request ]; then
+              printf 'pr_number=%s\n' "$PR_NUMBER"
               printf 'pr_head_sha=%s\n' "$PR_HEAD_SHA"
+              printf 'pr_base_sha=%s\n' "$PR_BASE_SHA"
             fi
-          } > "payload/$TARGET/build-metadata.txt"
+          } > "$metadata"
+          cp "$metadata" "payload/$TARGET/build-metadata.txt"
+
+          {
+            printf '### Build identity — `%s`\n\n' "$TARGET"
+            printf '| Field | Value |\n|---|---|\n'
+            printf '| Event | `%s` |\n' "$EVENT_NAME"
+            printf '| Tested ref | `%s` |\n' "$BUILD_REF"
+            printf '| Tested SHA | `%s` |\n' "$BUILD_SHA"
+            if [ "$EVENT_NAME" = pull_request ]; then
+              printf '| PR | #%s |\n' "$PR_NUMBER"
+              printf '| PR head SHA | `%s` |\n' "$PR_HEAD_SHA"
+              printf '| PR base SHA | `%s` |\n' "$PR_BASE_SHA"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: buzz-server-${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
+            dist/build-metadata-${{ matrix.target }}.txt
           if-no-files-found: error
           retention-days: 30
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
