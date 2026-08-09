@@ -1,7 +1,7 @@
 //! Minimal Buzz Server development daemon.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -2122,9 +2122,7 @@ fn apply_resolved_agent_environment(launch: &mut LaunchSpec, resolved: &Resolved
             resolved.spec.system_prompt.clone(),
         );
     }
-    launch
-        .environment
-        .insert("BUZZ_ACP_AGENTS".into(), resolved.parallelism.to_string());
+    apply_acp_pool_environment(&mut launch.environment, resolved.parallelism);
     launch.environment.insert(
         "BUZZ_ACP_RESPOND_TO".into(),
         resolved.respond_to.as_str().into(),
@@ -2160,6 +2158,14 @@ fn apply_resolved_agent_environment(launch: &mut LaunchSpec, resolved: &Resolved
             .entry("BUZZ_AGENT_PROVIDER".into())
             .or_insert_with(|| value.to_owned());
     }
+}
+
+fn apply_acp_pool_environment(environment: &mut BTreeMap<String, String>, parallelism: u32) {
+    environment.insert("BUZZ_ACP_AGENTS".into(), parallelism.to_string());
+    // Match Buzz Desktop's managed-agent launch contract. Without lazy pool
+    // initialization, every enabled agent eagerly starts `parallelism` ACP/LLM
+    // subprocesses even while idle, exhausting the shared service task budget.
+    environment.insert("BUZZ_ACP_LAZY_POOL".into(), "true".into());
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -2238,5 +2244,21 @@ mod tests {
                 .join("agents")
                 .join(first_id.to_string())
         ));
+    }
+
+    #[test]
+    fn local_agent_pool_preserves_parallelism_and_starts_lazily() {
+        let mut environment = BTreeMap::new();
+
+        apply_acp_pool_environment(&mut environment, 10);
+
+        assert_eq!(
+            environment.get("BUZZ_ACP_AGENTS").map(String::as_str),
+            Some("10")
+        );
+        assert_eq!(
+            environment.get("BUZZ_ACP_LAZY_POOL").map(String::as_str),
+            Some("true")
+        );
     }
 }
