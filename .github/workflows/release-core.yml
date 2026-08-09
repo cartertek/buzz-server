@@ -1,0 +1,175 @@
+name: Release Core
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      source_run_id:
+        required: true
+        type: string
+      expected_event:
+        required: true
+        type: string
+      bump:
+        required: true
+        type: string
+      publish:
+        required: true
+        type: boolean
+
+jobs:
+  promote:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+      - name: Resolve release version
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          BUMP: ${{ inputs.bump }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+          latest=$(gh api "repos/${GH_REPO}/releases?per_page=100" --paginate --jq \
+            '[.[] | select(.draft == false and .prerelease == false) | .tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) | sub("^v"; "") | split(".") | map(tonumber)] | sort | last | @tsv')
+          if [ -z "$latest" ] || [ "$latest" = null ]; then
+            major=0; minor=0; patch=0
+          else
+            set -- $latest
+            major=$1; minor=$2; patch=$3
+          fi
+          case "$BUMP" in
+            patch) patch=$((patch + 1)) ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            *) echo "unsupported version bump: $BUMP" >&2; exit 64 ;;
+          esac
+          tag="v${major}.${minor}.${patch}"
+
+          if [ "$PUBLISH" = true ]; then
+            remote_master=$(gh api "repos/${GH_REPO}/git/ref/heads/master" --jq .object.sha)
+            test "$SOURCE_SHA" = "$remote_master" || {
+              echo "release source ${SOURCE_SHA} is no longer current master ${remote_master}" >&2
+              exit 1
+            }
+            tag_sha=$(gh api "repos/${GH_REPO}/git/ref/tags/${tag}" --jq .object.sha 2>/dev/null || true)
+            if [ -n "$tag_sha" ] && [ "$tag_sha" != "$SOURCE_SHA" ]; then
+              echo "tag ${tag} already exists at ${tag_sha}; refusing to move an immutable release identity" >&2
+              exit 1
+            fi
+          fi
+
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          {
+            printf '### Release promotion\n\n'
+            printf '| Field | Value |\n|---|---|\n'
+            printf '| Mode | `%s` |\n' "$(if [ "$PUBLISH" = true ]; then printf publish; else printf dry-run; fi)"
+            printf '| Source SHA | `%s` |\n' "$SOURCE_SHA"
+            printf '| Source CI run | `%s` |\n' '${{ inputs.source_run_id }}'
+            printf '| Expected source event | `%s` |\n' '${{ inputs.expected_event }}'
+            printf '| Calculated tag | `%s` |\n' "$tag"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Download canonical CI payloads
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+          pattern: release-payload-*
+          path: payloads
+      - name: Verify payload identities and package release
+        env:
+          SHA: ${{ inputs.source_sha }}
+          TAG: ${{ steps.release.outputs.tag }}
+          EXPECTED_EVENT: ${{ inputs.expected_event }}
+        run: |
+          set -eu
+          mkdir dist
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            payload="payloads/release-payload-${target}"
+            test -d "$payload"
+            grep -Fx "tested_sha=${SHA}" "$payload/build-metadata.txt"
+            grep -Fx "event=${EXPECTED_EVENT}" "$payload/build-metadata.txt"
+            grep -Fx "target=${target}" "$payload/build-metadata.txt"
+            scripts/package-artifact.sh "$payload" "$TAG" "$target" dist
+          done
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 4
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            scripts/verify-package-artifact.sh \
+              "dist/buzz-server-${target}.tar.gz" \
+              "dist/buzz-server-${target}.tar.gz.sha256" \
+              "$TAG" "$target" "payloads/release-payload-${target}"
+          done
+      - name: Upload dry-run release artifacts
+        if: ${{ !inputs.publish }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-dry-run
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Create immutable tag
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ inputs.source_sha }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -eu
+          existing=$(gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq .object.sha 2>/dev/null || true)
+          if [ -z "$existing" ]; then
+            gh api --method POST "repos/${GH_REPO}/git/refs" -f ref="refs/tags/${TAG}" -f sha="$SHA" >/dev/null
+          else
+            test "$existing" = "$SHA"
+          fi
+      - if: ${{ inputs.publish }}
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-path: dist/*.tar.gz
+      - name: Publish immutable GitHub release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -eu
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+            test "$draft" = true || {
+              echo "release ${TAG} is already published" >&2
+              exit 1
+            }
+          else
+            gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG"
+          fi
+
+          rm -rf /tmp/release-assets
+          mkdir -p /tmp/release-assets
+          for asset in dist/*; do
+            name=$(basename "$asset")
+            if gh release download "$TAG" --pattern "$name" --dir /tmp/release-assets >/dev/null 2>&1; then
+              cmp "$asset" "/tmp/release-assets/$name"
+              rm -f "/tmp/release-assets/$name"
+            else
+              gh release upload "$TAG" "$asset"
+            fi
+          done
+
+          rm -rf /tmp/release-assets
+          mkdir -p /tmp/release-assets
+          gh release download "$TAG" --dir /tmp/release-assets
+          test "$(find /tmp/release-assets -maxdepth 1 -type f | wc -l)" -eq 4
+          for asset in dist/*; do
+            cmp "$asset" "/tmp/release-assets/$(basename "$asset")"
+          done
+          gh release edit "$TAG" --draft=false
