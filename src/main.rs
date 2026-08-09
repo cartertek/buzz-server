@@ -1957,6 +1957,7 @@ fn cleanup_purged_agent_artifacts(context: &ReconcileContext) -> Result<(), Daem
             &layout.launch_id,
         )?;
         context.custody.purge(agent_id)?;
+        context.agent_files.remove_agent(agent_id)?;
         if let Some(state_root) = layout.receipt.parent() {
             match fs::remove_dir_all(state_root) {
                 Ok(()) => {}
