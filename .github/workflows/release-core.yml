@@ -44,11 +44,13 @@ jobs:
             shim=$(mktemp -d)
             ln -s "$PWD/scripts/mock-gh-release.sh" "$shim/gh"
             state=$(mktemp -d)
-            RELEASE_TEST_STATE="$state" \
-            RELEASE_TEST_SOURCE_SHA="$SOURCE_SHA" \
-            RELEASE_REAL_GH="$(command -v gh)" \
-            PATH="$shim:$PATH" \
-              tag=$(scripts/resolve-release.sh "$GH_REPO" "$SOURCE_SHA" "$BUMP")
+            real_gh=$(command -v gh)
+            tag=$(env \
+              RELEASE_TEST_STATE="$state" \
+              RELEASE_TEST_SOURCE_SHA="$SOURCE_SHA" \
+              RELEASE_REAL_GH="$real_gh" \
+              PATH="$shim:$PATH" \
+              scripts/resolve-release.sh "$GH_REPO" "$SOURCE_SHA" "$BUMP")
           fi
           printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
           {
