@@ -120,7 +120,7 @@ impl AgentFileStore {
         Ok(values)
     }
 
-    pub fn remove_persona(&self, id: &str) -> Result<PersonaDefinition, AgentFileError> {
+    pub fn ensure_persona_removable(&self, id: &str) -> Result<PersonaDefinition, AgentFileError> {
         let persona = self.load_persona(id)?;
         let mut linked = Vec::new();
         for entry in fs::read_dir(self.agents_dir())? {
@@ -141,6 +141,11 @@ impl AgentFileStore {
                 agents: linked.join(", "),
             });
         }
+        Ok(persona)
+    }
+
+    pub fn remove_persona(&self, id: &str) -> Result<PersonaDefinition, AgentFileError> {
+        let persona = self.ensure_persona_removable(id)?;
         fs::remove_file(self.persona_path(id)?)?;
         Ok(persona)
     }

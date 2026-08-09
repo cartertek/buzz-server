@@ -1,7 +1,7 @@
 //! Minimal Buzz Server development daemon.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -188,22 +188,124 @@ enum ReconcileWork {
     Shutdown,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum RelayPublicationWork {
+    Wake,
+    Shutdown,
+}
+
 #[derive(Clone)]
 struct LifecycleWake {
     sender: Sender<ReconcileWork>,
+    relay_publication_sender: Sender<RelayPublicationWork>,
+    store: Arc<SqliteStore>,
     community_join: buzz_server::community_join::DesktopCommunityJoinVerifier,
     community_identity_root: PathBuf,
     agent_files: AgentFileStore,
     custody: FilesystemAgentIdentityCustody,
+    legacy_owner_keys: Option<Keys>,
     auto_join_sender: tokio::sync::mpsc::UnboundedSender<buzz_server::CommunityConfigId>,
+}
+
+impl LifecycleWake {
+    fn owner_keys_for_community(
+        &self,
+        community: &buzz_server::CommunityConfig,
+    ) -> Result<Keys, buzz_server::api::ApplicationError> {
+        if let Some(pubkey) = community.identity_pubkey.as_deref() {
+            let path = self
+                .community_identity_root
+                .join(format!("{pubkey}.secret"));
+            let secret = fs::read_to_string(path)
+                .map_err(|_| buzz_server::api::ApplicationError::Internal)?;
+            let keys = Keys::parse(secret.trim())
+                .map_err(|_| buzz_server::api::ApplicationError::Internal)?;
+            if !keys.public_key().to_hex().eq_ignore_ascii_case(pubkey) {
+                return Err(buzz_server::api::ApplicationError::Internal);
+            }
+            return Ok(keys);
+        }
+        self.legacy_owner_keys
+            .clone()
+            .ok_or(buzz_server::api::ApplicationError::Internal)
+    }
+
+    fn sync_persona_references(&self, persona: &buzz_server::PersonaDefinition) {
+        let mut communities = HashSet::new();
+        if let Ok(agents) = self.store.list_agents(None) {
+            for agent in agents {
+                if self
+                    .agent_files
+                    .load_agent(agent.id)
+                    .ok()
+                    .and_then(|file| file.persona_id)
+                    .as_deref()
+                    == Some(persona.id.as_str())
+                {
+                    communities.insert(agent.community_config_id);
+                }
+            }
+        }
+        if let Ok(scopes) = self.store.relay_projection_scopes(
+            buzz_server::storage::RelayProjectionKind::Persona,
+            &persona.id,
+        ) {
+            communities.extend(scopes.into_iter().map(|scope| scope.community_config_id));
+        }
+        for community_id in communities {
+            let Ok(Some(community)) = self.store.get_community(community_id) else {
+                continue;
+            };
+            let Ok(owner_keys) = self.owner_keys_for_community(&community) else {
+                eprintln!("persona projection owner key unavailable for {community_id}");
+                continue;
+            };
+            match buzz_server::relay_projection::sync_persona(
+                &community.relay_url,
+                &owner_keys,
+                persona,
+            ) {
+                Ok(()) => {
+                    if let Err(error) = self.store.record_relay_projection(
+                        community.id,
+                        buzz_server::storage::RelayProjectionKind::Persona,
+                        &persona.id,
+                        community.relay_url.as_str(),
+                        &owner_keys.public_key().to_hex(),
+                        &buzz_server::relay_projection::persona_d_tag(&persona.id),
+                        unix_seconds_i64(),
+                    ) {
+                        eprintln!(
+                            "failed to record persona projection {}: {error}",
+                            persona.id
+                        );
+                    }
+                }
+                Err(error) => {
+                    eprintln!("persona projection sync failed for {}: {error}", persona.id)
+                }
+            }
+        }
+    }
 }
 
 impl LifecycleEffects for LifecycleWake {
     fn community_changed(&self, community_id: buzz_server::CommunityConfigId) {
         let _ = self.auto_join_sender.send(community_id);
+        let _ = self
+            .relay_publication_sender
+            .send(RelayPublicationWork::Wake);
     }
 
     fn community_identity_unreferenced(&self, pubkey: &str) {
+        match self.store.has_pending_relay_publications_for_owner(pubkey) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("community identity cleanup deferred for {pubkey}: {error}");
+                return;
+            }
+        }
         let path = self
             .community_identity_root
             .join(format!("{pubkey}.secret"));
@@ -257,6 +359,7 @@ impl LifecycleEffects for LifecycleWake {
         self.agent_files
             .write_persona(&persona)
             .map_err(agent_file_application_error)?;
+        self.sync_persona_references(&persona);
         Ok(persona)
     }
 
@@ -280,6 +383,7 @@ impl LifecycleEffects for LifecycleWake {
         self.agent_files
             .write_persona(&persona)
             .map_err(agent_file_application_error)?;
+        self.sync_persona_references(&persona);
         Ok(persona)
     }
 
@@ -305,8 +409,32 @@ impl LifecycleEffects for LifecycleWake {
         id: &str,
     ) -> Result<buzz_server::PersonaDefinition, buzz_server::api::ApplicationError> {
         self.agent_files
+            .ensure_persona_removable(id)
+            .map_err(agent_file_application_error)?;
+        let scopes = self
+            .store
+            .relay_projection_scopes(buzz_server::storage::RelayProjectionKind::Persona, id)
+            .map_err(buzz_server::api::ApplicationError::from)?;
+        for scope in &scopes {
+            self.store
+                .enqueue_relay_publication(
+                    buzz_server::storage::RelayPublicationAction::TombstonePersona,
+                    scope,
+                    id,
+                    unix_seconds_i64(),
+                )
+                .map_err(buzz_server::api::ApplicationError::from)?;
+        }
+        let persona = self
+            .agent_files
             .remove_persona(id)
-            .map_err(agent_file_application_error)
+            .map_err(agent_file_application_error)?;
+        if !scopes.is_empty() {
+            let _ = self
+                .relay_publication_sender
+                .send(RelayPublicationWork::Wake);
+        }
+        Ok(persona)
     }
 
     fn prepare_agent_create(
@@ -562,6 +690,7 @@ async fn main() -> Result<(), DaemonError> {
     )?;
     let config = Arc::new(config);
     let (operation_tx, operation_rx) = mpsc::channel();
+    let (relay_publication_tx, relay_publication_rx) = mpsc::channel();
     let community_identity_root = config
         .state_database
         .parent()
@@ -577,10 +706,13 @@ async fn main() -> Result<(), DaemonError> {
         Arc::clone(&store),
         Arc::new(LifecycleWake {
             sender: operation_tx.clone(),
+            relay_publication_sender: relay_publication_tx.clone(),
+            store: Arc::clone(&store),
             community_join,
             community_identity_root: community_identity_root.clone(),
             agent_files: agent_files.clone(),
             custody: custody.clone(),
+            legacy_owner_keys: legacy_owner_keys.clone(),
             auto_join_sender: auto_join_tx.clone(),
         }),
         unix_seconds_i64,
@@ -598,8 +730,18 @@ async fn main() -> Result<(), DaemonError> {
             agent_files: agent_files.clone(),
             supervisor,
             child_identity,
+            relay_publication_sender: relay_publication_tx.clone(),
         },
     );
+    let relay_publication_worker = spawn_relay_publication_worker(
+        relay_publication_rx,
+        RelayPublicationContext {
+            store: Arc::clone(&store),
+            community_identity_root: community_identity_root.clone(),
+            legacy_owner_keys: legacy_owner_keys.clone(),
+        },
+    );
+    let _ = relay_publication_tx.send(RelayPublicationWork::Wake);
 
     for operation in store.nonterminal_operations()? {
         operation_tx
@@ -700,9 +842,13 @@ async fn main() -> Result<(), DaemonError> {
     }
     auto_join_task.abort();
     let _ = operation_tx.send(ReconcileWork::Shutdown);
+    let _ = relay_publication_tx.send(RelayPublicationWork::Shutdown);
     worker
         .join()
         .map_err(|_| DaemonError::Task("reconciliation worker panicked".into()))?;
+    relay_publication_worker
+        .join()
+        .map_err(|_| DaemonError::Task("relay publication worker panicked".into()))?;
     Ok(())
 }
 
@@ -948,6 +1094,160 @@ async fn auto_join_wait_or_shutdown(
     }
 }
 
+#[derive(Clone)]
+struct RelayPublicationContext {
+    store: Arc<SqliteStore>,
+    community_identity_root: PathBuf,
+    legacy_owner_keys: Option<Keys>,
+}
+
+fn spawn_relay_publication_worker(
+    receiver: Receiver<RelayPublicationWork>,
+    context: RelayPublicationContext,
+) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name("buzz-relay-publications".into())
+        .spawn(move || loop {
+            match receiver.recv_timeout(Duration::from_secs(30)) {
+                Ok(RelayPublicationWork::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
+                Ok(RelayPublicationWork::Wake) | Err(RecvTimeoutError::Timeout) => {
+                    if let Err(error) = drain_relay_publications(&context) {
+                        eprintln!("relay publication drain failed: {error}");
+                    }
+                }
+            }
+        })
+        .expect("failed to spawn relay publication worker")
+}
+
+fn drain_relay_publications(context: &RelayPublicationContext) -> Result<(), DaemonError> {
+    for publication in context.store.pending_relay_publications()? {
+        let relay_url = url::Url::parse(&publication.relay_url)
+            .map_err(|error| DaemonError::Task(format!("invalid retained relay URL: {error}")))?;
+        let owner_keys = match relay_publication_owner_keys(context, &publication.owner_pubkey) {
+            Ok(keys) => keys,
+            Err(error) => {
+                context.store.fail_relay_publication(
+                    &publication.id,
+                    &error.to_string(),
+                    unix_seconds_i64(),
+                )?;
+                continue;
+            }
+        };
+        let result = match publication.action {
+            buzz_server::storage::RelayPublicationAction::TombstoneManagedAgent => {
+                buzz_server::relay_projection::tombstone_managed_agent(
+                    &relay_url,
+                    &owner_keys,
+                    &publication.d_tag,
+                )
+            }
+            buzz_server::storage::RelayPublicationAction::ArchiveIdentity => {
+                buzz_server::relay_projection::archive_identity(
+                    &relay_url,
+                    &owner_keys,
+                    &publication.d_tag,
+                )
+            }
+            buzz_server::storage::RelayPublicationAction::TombstonePersona => {
+                buzz_server::relay_projection::tombstone_persona(
+                    &relay_url,
+                    &owner_keys,
+                    &publication.subject_id,
+                )
+            }
+        };
+        match result {
+            Ok(()) => {
+                context.store.complete_relay_publication(&publication.id)?;
+                if let Some(community_id) = publication.community_config_id {
+                    let projection = match publication.action {
+                        buzz_server::storage::RelayPublicationAction::TombstoneManagedAgent => {
+                            Some(buzz_server::storage::RelayProjectionKind::ManagedAgent)
+                        }
+                        buzz_server::storage::RelayPublicationAction::TombstonePersona => {
+                            Some(buzz_server::storage::RelayProjectionKind::Persona)
+                        }
+                        buzz_server::storage::RelayPublicationAction::ArchiveIdentity => None,
+                    };
+                    if let Some(kind) = projection {
+                        context.store.remove_relay_projection(
+                            community_id,
+                            kind,
+                            &publication.subject_id,
+                        )?;
+                    }
+                }
+                cleanup_unreferenced_projection_owner(context, &publication.owner_pubkey)?;
+            }
+            Err(error) => {
+                context.store.fail_relay_publication(
+                    &publication.id,
+                    &error.to_string(),
+                    unix_seconds_i64(),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn relay_publication_owner_keys(
+    context: &RelayPublicationContext,
+    owner_pubkey: &str,
+) -> Result<Keys, DaemonError> {
+    let path = context
+        .community_identity_root
+        .join(format!("{owner_pubkey}.secret"));
+    if path.exists() {
+        let secret = fs::read_to_string(path)?;
+        let keys = Keys::parse(secret.trim()).map_err(|_| DaemonError::InvalidOwnerSecret)?;
+        if keys
+            .public_key()
+            .to_hex()
+            .eq_ignore_ascii_case(owner_pubkey)
+        {
+            return Ok(keys);
+        }
+        return Err(DaemonError::InvalidOwnerSecret);
+    }
+    context
+        .legacy_owner_keys
+        .clone()
+        .filter(|keys| {
+            keys.public_key()
+                .to_hex()
+                .eq_ignore_ascii_case(owner_pubkey)
+        })
+        .ok_or_else(|| DaemonError::Task(format!("owner key {owner_pubkey} is unavailable")))
+}
+
+fn cleanup_unreferenced_projection_owner(
+    context: &RelayPublicationContext,
+    owner_pubkey: &str,
+) -> Result<(), DaemonError> {
+    if context
+        .store
+        .has_pending_relay_publications_for_owner(owner_pubkey)?
+        || context
+            .store
+            .list_communities()?
+            .iter()
+            .any(|community| community.identity_pubkey.as_deref() == Some(owner_pubkey))
+    {
+        return Ok(());
+    }
+    let path = context
+        .community_identity_root
+        .join(format!("{owner_pubkey}.secret"));
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 struct ReconcileContext {
     application: SqliteLifecycleApplication<LifecycleWake>,
     store: Arc<SqliteStore>,
@@ -957,6 +1257,7 @@ struct ReconcileContext {
     agent_files: AgentFileStore,
     supervisor: LocalProcessAdapter,
     child_identity: (u32, u32),
+    relay_publication_sender: Sender<RelayPublicationWork>,
 }
 
 fn spawn_reconciliation_worker(
@@ -1248,14 +1549,50 @@ fn reconcile_dynamic_lifecycle_operation(
     let identity = context.custody.provision(agent_id)?;
     let agent_keys = context.custody.load(agent_id)?;
     let owner_keys = community_owner_keys(context, &community)?;
-    if let Err(error) = buzz_server::relay_projection::sync_agent(
+    if let Err(error) = buzz_server::relay_projection::sync_agent_profile(
         &community.relay_url,
         &owner_keys,
         &agent_keys,
         &file,
+    ) {
+        eprintln!("agent profile sync failed for {agent_id}: {error}");
+    }
+    let agent_pubkey = agent_keys.public_key().to_hex();
+    match buzz_server::relay_projection::sync_managed_agent_projection(
+        &community.relay_url,
+        &owner_keys,
+        &agent_keys,
         &resolved,
     ) {
-        eprintln!("relay projection sync failed for {agent_id}: {error}");
+        Ok(()) => context.store.record_relay_projection(
+            community.id,
+            buzz_server::storage::RelayProjectionKind::ManagedAgent,
+            &agent_id.to_string(),
+            community.relay_url.as_str(),
+            &owner_keys.public_key().to_hex(),
+            &agent_pubkey,
+            unix_seconds_i64(),
+        )?,
+        Err(error) => eprintln!("managed-agent projection sync failed for {agent_id}: {error}"),
+    }
+    if let Some(persona_id) = resolved.persona_id.as_deref() {
+        let persona = context.agent_files.load_persona(persona_id)?;
+        match buzz_server::relay_projection::sync_persona(
+            &community.relay_url,
+            &owner_keys,
+            &persona,
+        ) {
+            Ok(()) => context.store.record_relay_projection(
+                community.id,
+                buzz_server::storage::RelayProjectionKind::Persona,
+                &persona.id,
+                community.relay_url.as_str(),
+                &owner_keys.public_key().to_hex(),
+                &buzz_server::relay_projection::persona_d_tag(&persona.id),
+                unix_seconds_i64(),
+            )?,
+            Err(error) => eprintln!("persona projection sync failed for {}: {error}", persona.id),
+        }
     }
     let signer = DisposableSigner::from_owner_keys(
         owner_keys.clone(),
@@ -1353,6 +1690,27 @@ fn reconcile_dynamic_lifecycle_operation(
     if status == buzz_server::OperationStatus::Succeeded
         && operation.kind == buzz_server::OperationKind::PurgeAgent
     {
+        let scope = buzz_server::storage::RelayProjectionScope {
+            community_config_id: community.id,
+            relay_url: community.relay_url.to_string(),
+            owner_pubkey: owner_keys.public_key().to_hex(),
+            d_tag: agent_pubkey.clone(),
+        };
+        context.store.enqueue_relay_publication(
+            buzz_server::storage::RelayPublicationAction::TombstoneManagedAgent,
+            &scope,
+            &agent_id.to_string(),
+            unix_seconds_i64(),
+        )?;
+        context.store.enqueue_relay_publication(
+            buzz_server::storage::RelayPublicationAction::ArchiveIdentity,
+            &scope,
+            &agent_id.to_string(),
+            unix_seconds_i64(),
+        )?;
+        let _ = context
+            .relay_publication_sender
+            .send(RelayPublicationWork::Wake);
         if let Err(error) = purge_agent_paths(
             &layout.workspace,
             &layout.runtime,

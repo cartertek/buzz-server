@@ -18,6 +18,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_initial.sql")),
     (2, include_str!("../migrations/0002_lifecycle.sql")),
     (3, include_str!("../migrations/0003_retention.sql")),
+    (4, include_str!("../migrations/0004_relay_publications.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -85,6 +86,69 @@ pub struct NewAuditRecord<'a> {
     pub subject_id: Option<&'a str>,
     pub outcome: &'a str,
     pub redacted_detail: Option<&'a str>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RelayProjectionKind {
+    ManagedAgent,
+    Persona,
+}
+
+impl RelayProjectionKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ManagedAgent => "managed_agent",
+            Self::Persona => "persona",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RelayPublicationAction {
+    TombstoneManagedAgent,
+    ArchiveIdentity,
+    TombstonePersona,
+}
+
+impl RelayPublicationAction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TombstoneManagedAgent => "tombstone_managed_agent",
+            Self::ArchiveIdentity => "archive_identity",
+            Self::TombstonePersona => "tombstone_persona",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, StorageError> {
+        match value {
+            "tombstone_managed_agent" => Ok(Self::TombstoneManagedAgent),
+            "archive_identity" => Ok(Self::ArchiveIdentity),
+            "tombstone_persona" => Ok(Self::TombstonePersona),
+            other => Err(StorageError::InvalidData(format!(
+                "unknown relay publication action {other}"
+            ))),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelayProjectionScope {
+    pub community_config_id: CommunityConfigId,
+    pub relay_url: String,
+    pub owner_pubkey: String,
+    pub d_tag: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelayPublication {
+    pub id: String,
+    pub action: RelayPublicationAction,
+    pub community_config_id: Option<CommunityConfigId>,
+    pub relay_url: String,
+    pub owner_pubkey: String,
+    pub subject_id: String,
+    pub d_tag: String,
+    pub attempts: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -296,6 +360,24 @@ impl SqliteStore {
         }
 
         for agent_id in &deleted_agents {
+            if let Some((relay_url, owner_pubkey, d_tag)) = transaction
+                .query_row(
+                    "SELECT relay_url, owner_pubkey, d_tag FROM relay_projection_state WHERE community_config_id=?1 AND projection_kind='managed_agent' AND subject_id=?2",
+                    params![id.to_string(), agent_id.to_string()],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+                )
+                .optional()?
+            {
+                for action in [
+                    RelayPublicationAction::TombstoneManagedAgent,
+                    RelayPublicationAction::ArchiveIdentity,
+                ] {
+                    transaction.execute(
+                        "INSERT INTO relay_publication_outbox(id, action, community_config_id, relay_url, owner_pubkey, subject_id, d_tag, created_at, updated_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) ON CONFLICT(action, relay_url, owner_pubkey, subject_id, d_tag) DO NOTHING",
+                        params![uuid::Uuid::now_v7().to_string(), action.as_str(), id.to_string(), &relay_url, &owner_pubkey, agent_id.to_string(), &d_tag, now],
+                    )?;
+                }
+            }
             let purge_operation = OperationId::new();
             transaction.execute(
                 "INSERT INTO operations(id, kind, status, agent_id, error_code, created_at, updated_at, correlation_id) VALUES(?1, 'purge_agent', 'succeeded', ?2, NULL, ?3, ?3, ?4)",
@@ -333,6 +415,145 @@ impl SqliteStore {
             .into_iter()
             .map(|value| parse_id(&value))
             .collect()
+    }
+
+    pub fn record_relay_projection(
+        &self,
+        community_config_id: CommunityConfigId,
+        kind: RelayProjectionKind,
+        subject_id: &str,
+        relay_url: &str,
+        owner_pubkey: &str,
+        d_tag: &str,
+        now: i64,
+    ) -> Result<(), StorageError> {
+        self.connection()?.execute(
+            "INSERT INTO relay_projection_state(community_config_id, projection_kind, subject_id, relay_url, owner_pubkey, d_tag, updated_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(community_config_id, projection_kind, subject_id) DO UPDATE SET relay_url=excluded.relay_url, owner_pubkey=excluded.owner_pubkey, d_tag=excluded.d_tag, updated_at=excluded.updated_at",
+            params![community_config_id.to_string(), kind.as_str(), subject_id, relay_url, owner_pubkey, d_tag, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn relay_projection_scopes(
+        &self,
+        kind: RelayProjectionKind,
+        subject_id: &str,
+    ) -> Result<Vec<RelayProjectionScope>, StorageError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT community_config_id, relay_url, owner_pubkey, d_tag FROM relay_projection_state WHERE projection_kind=?1 AND subject_id=?2 ORDER BY community_config_id",
+        )?;
+        let rows = statement.query_map(params![kind.as_str(), subject_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (community, relay_url, owner_pubkey, d_tag) = row?;
+            Ok(RelayProjectionScope {
+                community_config_id: parse_id(&community)?,
+                relay_url,
+                owner_pubkey,
+                d_tag,
+            })
+        })
+        .collect()
+    }
+
+    pub fn enqueue_relay_publication(
+        &self,
+        action: RelayPublicationAction,
+        scope: &RelayProjectionScope,
+        subject_id: &str,
+        now: i64,
+    ) -> Result<(), StorageError> {
+        self.connection()?.execute(
+            "INSERT INTO relay_publication_outbox(id, action, community_config_id, relay_url, owner_pubkey, subject_id, d_tag, created_at, updated_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) ON CONFLICT(action, relay_url, owner_pubkey, subject_id, d_tag) DO NOTHING",
+            params![uuid::Uuid::now_v7().to_string(), action.as_str(), scope.community_config_id.to_string(), scope.relay_url, scope.owner_pubkey, subject_id, scope.d_tag, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn pending_relay_publications(&self) -> Result<Vec<RelayPublication>, StorageError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, action, community_config_id, relay_url, owner_pubkey, subject_id, d_tag, attempts FROM relay_publication_outbox ORDER BY created_at, id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, i64>(7)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, action, community, relay_url, owner_pubkey, subject_id, d_tag, attempts) =
+                row?;
+            Ok(RelayPublication {
+                id,
+                action: RelayPublicationAction::parse(&action)?,
+                community_config_id: community.as_deref().map(parse_id).transpose()?,
+                relay_url,
+                owner_pubkey,
+                subject_id,
+                d_tag,
+                attempts,
+            })
+        })
+        .collect()
+    }
+
+    pub fn complete_relay_publication(&self, id: &str) -> Result<(), StorageError> {
+        self.connection()?
+            .execute("DELETE FROM relay_publication_outbox WHERE id=?1", [id])?;
+        Ok(())
+    }
+
+    pub fn fail_relay_publication(
+        &self,
+        id: &str,
+        error: &str,
+        now: i64,
+    ) -> Result<(), StorageError> {
+        self.connection()?.execute(
+            "UPDATE relay_publication_outbox SET attempts=attempts+1, last_error=?2, updated_at=?3 WHERE id=?1",
+            params![id, error, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn has_pending_relay_publications_for_owner(
+        &self,
+        owner_pubkey: &str,
+    ) -> Result<bool, StorageError> {
+        self.connection()?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM relay_publication_outbox WHERE owner_pubkey=?1)",
+                [owner_pubkey],
+                |row| row.get(0),
+            )
+            .map_err(StorageError::from)
+    }
+
+    pub fn remove_relay_projection(
+        &self,
+        community_config_id: CommunityConfigId,
+        kind: RelayProjectionKind,
+        subject_id: &str,
+    ) -> Result<(), StorageError> {
+        self.connection()?.execute(
+            "DELETE FROM relay_projection_state WHERE community_config_id=?1 AND projection_kind=?2 AND subject_id=?3",
+            params![community_config_id.to_string(), kind.as_str(), subject_id],
+        )?;
+        Ok(())
     }
 
     pub fn put_agent(&self, spec: &AgentSpec, now: i64) -> Result<(), StorageError> {
@@ -1519,5 +1740,57 @@ mod tests {
             ),
             Err(StorageError::NotFound)
         ));
+    }
+
+    #[test]
+    fn relay_publication_outbox_tracks_projection_and_retry_state() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let community_id = CommunityConfigId::new();
+        let subject_id = AgentId::new().to_string();
+        store
+            .record_relay_projection(
+                community_id,
+                RelayProjectionKind::ManagedAgent,
+                &subject_id,
+                "wss://relay.example.com/",
+                "owner-pubkey",
+                "agent-pubkey",
+                10,
+            )
+            .unwrap();
+        let scopes = store
+            .relay_projection_scopes(RelayProjectionKind::ManagedAgent, &subject_id)
+            .unwrap();
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].d_tag, "agent-pubkey");
+        store
+            .enqueue_relay_publication(
+                RelayPublicationAction::TombstoneManagedAgent,
+                &scopes[0],
+                &subject_id,
+                11,
+            )
+            .unwrap();
+        let pending = store.pending_relay_publications().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].attempts, 0);
+        assert!(store
+            .has_pending_relay_publications_for_owner("owner-pubkey")
+            .unwrap());
+        store
+            .fail_relay_publication(&pending[0].id, "offline", 12)
+            .unwrap();
+        assert_eq!(store.pending_relay_publications().unwrap()[0].attempts, 1);
+        store.complete_relay_publication(&pending[0].id).unwrap();
+        assert!(!store
+            .has_pending_relay_publications_for_owner("owner-pubkey")
+            .unwrap());
+        store
+            .remove_relay_projection(community_id, RelayProjectionKind::ManagedAgent, &subject_id)
+            .unwrap();
+        assert!(store
+            .relay_projection_scopes(RelayProjectionKind::ManagedAgent, &subject_id)
+            .unwrap()
+            .is_empty());
     }
 }

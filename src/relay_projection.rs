@@ -68,16 +68,25 @@ struct PersonaEventContent<'a> {
     parallelism: Option<u32>,
 }
 
-pub fn sync_agent(
+pub fn sync_agent_profile(
     relay_url: &Url,
     owner_keys: &Keys,
     agent_keys: &Keys,
     file: &AgentConfigFile,
+) -> Result<(), RelayProjectionError> {
+    let client = client()?;
+    let api_base = relay_http_base_url(relay_url);
+    sync_profile(&client, &api_base, owner_keys, agent_keys, file)
+}
+
+pub fn sync_managed_agent_projection(
+    relay_url: &Url,
+    owner_keys: &Keys,
+    agent_keys: &Keys,
     resolved: &ResolvedAgentConfig,
 ) -> Result<(), RelayProjectionError> {
     let client = client()?;
     let api_base = relay_http_base_url(relay_url);
-    sync_profile(&client, &api_base, owner_keys, agent_keys, file)?;
     sync_managed_agent(&client, &api_base, owner_keys, agent_keys, resolved)
 }
 
@@ -173,17 +182,14 @@ fn sync_managed_agent(
     submit_event(client, api_base, owner_keys, &event, None)
 }
 
-pub fn sync_shared_persona(
+pub fn sync_persona(
     relay_url: &Url,
     owner_keys: &Keys,
     persona: &PersonaDefinition,
 ) -> Result<(), RelayProjectionError> {
-    if !persona.shared {
-        return Ok(());
-    }
     let client = client()?;
     let api_base = relay_http_base_url(relay_url);
-    let d_tag = normalize_persona_d_tag(&persona.id);
+    let d_tag = persona_d_tag(&persona.id);
     let content = PersonaEventContent {
         display_name: &persona.display_name,
         system_prompt: Some(&persona.system_prompt),
@@ -209,18 +215,27 @@ pub fn sync_shared_persona(
             "limit": 1
         }),
     )?;
-    if current
-        .as_ref()
-        .is_some_and(|event| event.content == content)
-    {
+    if current.as_ref().is_some_and(|event| {
+        let current_shared = event.tags.iter().any(|tag| {
+            let values = tag.as_slice();
+            values.first().map(String::as_str) == Some("shared")
+                && values.get(1).map(String::as_str) == Some("true")
+        });
+        event.content == content && current_shared == persona.shared
+    }) {
         return Ok(());
     }
     let d = Tag::parse(["d", d_tag.as_str()])
         .map_err(|e| RelayProjectionError::Invalid(e.to_string()))?;
-    let shared =
-        Tag::parse(["shared", "true"]).map_err(|e| RelayProjectionError::Invalid(e.to_string()))?;
+    let mut tags = vec![d];
+    if persona.shared {
+        tags.push(
+            Tag::parse(["shared", "true"])
+                .map_err(|e| RelayProjectionError::Invalid(e.to_string()))?,
+        );
+    }
     let event = EventBuilder::new(Kind::Custom(KIND_PERSONA), content)
-        .tags([d, shared])
+        .tags(tags)
         .sign_with_keys(owner_keys)
         .map_err(|e| RelayProjectionError::Invalid(e.to_string()))?;
     submit_event(&client, &api_base, owner_keys, &event, None)
@@ -234,6 +249,35 @@ pub fn tombstone_managed_agent(
     tombstone_coordinate(relay_url, owner_keys, KIND_MANAGED_AGENT, agent_pubkey)
 }
 
+pub fn archive_identity(
+    relay_url: &Url,
+    owner_keys: &Keys,
+    agent_pubkey: &str,
+) -> Result<(), RelayProjectionError> {
+    let target = nostr::PublicKey::from_hex(agent_pubkey)
+        .map_err(|e| RelayProjectionError::Invalid(e.to_string()))?;
+    let auth_json = buzz_sdk::nip_oa::compute_auth_tag(owner_keys, &target, "")
+        .map_err(|e| RelayProjectionError::Invalid(e.to_string()))?;
+    let parts: Vec<String> = serde_json::from_str(&auth_json)
+        .map_err(|e| RelayProjectionError::Invalid(e.to_string()))?;
+    let auth: [String; 4] = parts.try_into().map_err(|_| {
+        RelayProjectionError::Invalid("archive auth tag must have four elements".into())
+    })?;
+    let event = buzz_sdk::builders::build_archive_identity_request(
+        agent_pubkey,
+        "",
+        Some("retired"),
+        None,
+        Some(&auth),
+    )
+    .map_err(|e| RelayProjectionError::Invalid(e.to_string()))?
+    .sign_with_keys(owner_keys)
+    .map_err(|e| RelayProjectionError::Invalid(e.to_string()))?;
+    let client = client()?;
+    let api_base = relay_http_base_url(relay_url);
+    submit_event(&client, &api_base, owner_keys, &event, None)
+}
+
 pub fn tombstone_persona(
     relay_url: &Url,
     owner_keys: &Keys,
@@ -243,7 +287,7 @@ pub fn tombstone_persona(
         relay_url,
         owner_keys,
         KIND_PERSONA,
-        &normalize_persona_d_tag(persona_id),
+        &persona_d_tag(persona_id),
     )
 }
 
@@ -367,7 +411,7 @@ fn relay_http_base_url(relay_url: &Url) -> String {
     value
 }
 
-fn normalize_persona_d_tag(raw: &str) -> String {
+pub fn persona_d_tag(raw: &str) -> String {
     let mut out: String = raw
         .chars()
         .map(|c| {
@@ -396,8 +440,8 @@ mod tests {
 
     #[test]
     fn persona_d_tag_matches_desktop_normalization() {
-        assert_eq!(normalize_persona_d_tag("CodeReviewer"), "codereviewer");
-        assert_eq!(normalize_persona_d_tag("_ops"), "a_ops");
+        assert_eq!(persona_d_tag("CodeReviewer"), "codereviewer");
+        assert_eq!(persona_d_tag("_ops"), "a_ops");
     }
 
     #[test]
