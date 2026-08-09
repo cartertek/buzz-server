@@ -440,17 +440,14 @@ impl SqliteStore {
 
     pub fn record_relay_projection(
         &self,
-        community_config_id: CommunityConfigId,
         kind: RelayProjectionKind,
         subject_id: &str,
-        relay_url: &str,
-        owner_pubkey: &str,
-        d_tag: &str,
+        scope: &RelayProjectionScope,
         now: i64,
     ) -> Result<(), StorageError> {
         self.connection()?.execute(
             "INSERT INTO relay_projection_state(community_config_id, projection_kind, subject_id, relay_url, owner_pubkey, d_tag, updated_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(community_config_id, projection_kind, subject_id) DO UPDATE SET relay_url=excluded.relay_url, owner_pubkey=excluded.owner_pubkey, d_tag=excluded.d_tag, updated_at=excluded.updated_at",
-            params![community_config_id.to_string(), kind.as_str(), subject_id, relay_url, owner_pubkey, d_tag, now],
+            params![scope.community_config_id.to_string(), kind.as_str(), subject_id, scope.relay_url, scope.owner_pubkey, scope.d_tag, now],
         )?;
         Ok(())
     }
@@ -1770,12 +1767,14 @@ mod tests {
         let subject_id = AgentId::new().to_string();
         store
             .record_relay_projection(
-                community_id,
                 RelayProjectionKind::ManagedAgent,
                 &subject_id,
-                "wss://relay.example.com/",
-                "owner-pubkey",
-                "agent-pubkey",
+                &RelayProjectionScope {
+                    community_config_id: community_id,
+                    relay_url: "wss://relay.example.com/".into(),
+                    owner_pubkey: "owner-pubkey".into(),
+                    d_tag: "agent-pubkey".into(),
+                },
                 10,
             )
             .unwrap();

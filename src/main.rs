@@ -266,13 +266,16 @@ impl LifecycleWake {
                 persona,
             ) {
                 Ok(()) => {
+                    let scope = buzz_server::storage::RelayProjectionScope {
+                        community_config_id: community.id,
+                        relay_url: community.relay_url.to_string(),
+                        owner_pubkey: owner_keys.public_key().to_hex(),
+                        d_tag: buzz_server::relay_projection::persona_d_tag(&persona.id),
+                    };
                     if let Err(error) = self.store.record_relay_projection(
-                        community.id,
                         buzz_server::storage::RelayProjectionKind::Persona,
                         &persona.id,
-                        community.relay_url.as_str(),
-                        &owner_keys.public_key().to_hex(),
-                        &buzz_server::relay_projection::persona_d_tag(&persona.id),
+                        &scope,
                         unix_seconds_i64(),
                     ) {
                         eprintln!(
@@ -1564,15 +1567,20 @@ fn reconcile_dynamic_lifecycle_operation(
         &agent_keys,
         &resolved,
     ) {
-        Ok(()) => context.store.record_relay_projection(
-            community.id,
-            buzz_server::storage::RelayProjectionKind::ManagedAgent,
-            &agent_id.to_string(),
-            community.relay_url.as_str(),
-            &owner_keys.public_key().to_hex(),
-            &agent_pubkey,
-            unix_seconds_i64(),
-        )?,
+        Ok(()) => {
+            let scope = buzz_server::storage::RelayProjectionScope {
+                community_config_id: community.id,
+                relay_url: community.relay_url.to_string(),
+                owner_pubkey: owner_keys.public_key().to_hex(),
+                d_tag: agent_pubkey.clone(),
+            };
+            context.store.record_relay_projection(
+                buzz_server::storage::RelayProjectionKind::ManagedAgent,
+                &agent_id.to_string(),
+                &scope,
+                unix_seconds_i64(),
+            )?
+        }
         Err(error) => eprintln!("managed-agent projection sync failed for {agent_id}: {error}"),
     }
     if let Some(persona_id) = resolved.persona_id.as_deref() {
@@ -1582,15 +1590,20 @@ fn reconcile_dynamic_lifecycle_operation(
             &owner_keys,
             &persona,
         ) {
-            Ok(()) => context.store.record_relay_projection(
-                community.id,
-                buzz_server::storage::RelayProjectionKind::Persona,
-                &persona.id,
-                community.relay_url.as_str(),
-                &owner_keys.public_key().to_hex(),
-                &buzz_server::relay_projection::persona_d_tag(&persona.id),
-                unix_seconds_i64(),
-            )?,
+            Ok(()) => {
+                let scope = buzz_server::storage::RelayProjectionScope {
+                    community_config_id: community.id,
+                    relay_url: community.relay_url.to_string(),
+                    owner_pubkey: owner_keys.public_key().to_hex(),
+                    d_tag: buzz_server::relay_projection::persona_d_tag(&persona.id),
+                };
+                context.store.record_relay_projection(
+                    buzz_server::storage::RelayProjectionKind::Persona,
+                    &persona.id,
+                    &scope,
+                    unix_seconds_i64(),
+                )?
+            }
             Err(error) => eprintln!("persona projection sync failed for {}: {error}", persona.id),
         }
     }
