@@ -1,8 +1,7 @@
 #!/bin/sh
 set -eu
 
-repository=${BUZZ_SERVER_REPOSITORY:-cartertek/buzz-server}
-version='@BUZZ_SERVER_VERSION@'
+identity='@BUZZ_SERVER_IDENTITY@'
 target='@BUZZ_SERVER_TARGET@'
 non_interactive=false
 
@@ -21,13 +20,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-case "$version" in
-  v[0-9]*) ;;
-  *) echo "this installer is not bound to a Buzz Server release" >&2; exit 64 ;;
-esac
-case "$repository" in
-  *[!A-Za-z0-9._/-]*|*/*/*|'') echo "invalid BUZZ_SERVER_REPOSITORY" >&2; exit 64 ;;
-esac
+case "$identity" in *[!A-Za-z0-9._-]*|'') echo "invalid package identity" >&2; exit 64;; esac
 
 case "$(uname -m)" in
   x86_64|amd64) host_target=x86_64-unknown-linux-gnu ;;
@@ -125,6 +118,4 @@ fi
 
 script_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 package_directory=$(dirname "$script_directory")
-BUZZ_RELEASE_SOURCE_DIR="$package_directory"
-export BUZZ_RELEASE_SOURCE_DIR
-"$script_directory/install-release.sh" "$version" "$target" "$repository"
+"$script_directory/install-package.sh" "$identity" "$target" "$package_directory"

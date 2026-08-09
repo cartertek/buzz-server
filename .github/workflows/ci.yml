@@ -84,7 +84,7 @@ jobs:
           BUILD_SHA: ${{ github.sha }}
         run: |
           set -eu
-          scripts/package-artifact.sh "payload/$TARGET" "v0.0.0-pr.${BUILD_SHA}" "$TARGET" dist
+          scripts/package-artifact.sh "payload/$TARGET" "${BUILD_SHA}" "$TARGET" dist
       - name: Record build identity
         env:
           TARGET: ${{ matrix.target }}
