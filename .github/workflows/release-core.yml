@@ -117,60 +117,42 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 7
-      - name: Create immutable tag
-        if: ${{ inputs.publish }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          SHA: ${{ inputs.source_sha }}
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -eu
-          existing=$(scripts/github-tag-sha.sh "$GH_REPO" "$TAG")
-          if [ -z "$existing" ]; then
-            gh api --method POST "repos/${GH_REPO}/git/refs" -f ref="refs/tags/${TAG}" -f sha="$SHA" >/dev/null
-          else
-            test "$existing" = "$SHA"
-          fi
       - if: ${{ inputs.publish }}
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
         with:
           subject-path: dist/*.tar.gz
-      - name: Publish immutable GitHub release
-        if: ${{ inputs.publish }}
+      - name: Execute release publication logic
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ steps.release.outputs.tag }}
+          SHA: ${{ inputs.source_sha }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
           set -eu
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
-            test "$draft" = true || {
-              echo "release ${TAG} is already published" >&2
-              exit 1
-            }
+          if [ "$PUBLISH" = true ]; then
+            scripts/publish-release.sh "$TAG" "$SHA" dist
           else
-            gh release create "$TAG" --draft --verify-tag --generate-notes --title "$TAG"
+            mock_bin=$(mktemp -d)
+            ln -s "$PWD/scripts/mock-gh-release.sh" "$mock_bin/gh"
+
+            # Fresh release: absent tag, create draft, upload every asset, verify, publish.
+            fresh=$(mktemp -d)
+            PATH="$mock_bin:$PATH" RELEASE_TEST_STATE="$fresh" \
+              scripts/publish-release.sh "$TAG" "$SHA" dist
+            test "$(cat "$fresh/tag-sha")" = "$SHA"
+            test "$(cat "$fresh/release-state")" = published
+            test "$(find "$fresh/assets" -maxdepth 1 -type f | wc -l)" -eq 4
+
+            # Retry release: existing tag + draft + one already-uploaded asset.
+            retry=$(mktemp -d)
+            mkdir -p "$retry/assets"
+            printf '%s\n' "$SHA" > "$retry/tag-sha"
+            printf 'draft\n' > "$retry/release-state"
+            first=$(find dist -maxdepth 1 -type f | sort | head -1)
+            cp "$first" "$retry/assets/$(basename "$first")"
+            PATH="$mock_bin:$PATH" RELEASE_TEST_STATE="$retry" \
+              scripts/publish-release.sh "$TAG" "$SHA" dist
+            test "$(cat "$retry/release-state")" = published
+            test "$(find "$retry/assets" -maxdepth 1 -type f | wc -l)" -eq 4
           fi
-
-          rm -rf /tmp/release-assets
-          mkdir -p /tmp/release-assets
-          for asset in dist/*; do
-            name=$(basename "$asset")
-            if gh release download "$TAG" --pattern "$name" --dir /tmp/release-assets >/dev/null 2>&1; then
-              cmp "$asset" "/tmp/release-assets/$name"
-              rm -f "/tmp/release-assets/$name"
-            else
-              gh release upload "$TAG" "$asset"
-            fi
-          done
-
-          rm -rf /tmp/release-assets
-          mkdir -p /tmp/release-assets
-          gh release download "$TAG" --dir /tmp/release-assets
-          test "$(find /tmp/release-assets -maxdepth 1 -type f | wc -l)" -eq 4
-          for asset in dist/*; do
-            cmp "$asset" "/tmp/release-assets/$(basename "$asset")"
-          done
-          gh release edit "$TAG" --draft=false

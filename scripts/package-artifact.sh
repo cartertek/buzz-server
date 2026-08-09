@@ -34,4 +34,5 @@ done
 
 asset="buzz-server-${target}.tar.gz"
 tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C "$output_dir" -cf - "$package" | gzip -n > "$output_dir/$asset"
+rm -rf "$stage"
 (cd "$output_dir" && sha256sum "$asset" > "$asset.sha256")
