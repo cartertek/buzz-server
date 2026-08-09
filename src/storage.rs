@@ -105,6 +105,8 @@ impl RelayProjectionKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RelayPublicationAction {
+    SyncManagedAgent,
+    SyncPersona,
     TombstoneManagedAgent,
     ArchiveIdentity,
     TombstonePersona,
@@ -113,6 +115,8 @@ pub enum RelayPublicationAction {
 impl RelayPublicationAction {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::SyncManagedAgent => "sync_managed_agent",
+            Self::SyncPersona => "sync_persona",
             Self::TombstoneManagedAgent => "tombstone_managed_agent",
             Self::ArchiveIdentity => "archive_identity",
             Self::TombstonePersona => "tombstone_persona",
@@ -121,6 +125,8 @@ impl RelayPublicationAction {
 
     fn parse(value: &str) -> Result<Self, StorageError> {
         match value {
+            "sync_managed_agent" => Ok(Self::SyncManagedAgent),
+            "sync_persona" => Ok(Self::SyncPersona),
             "tombstone_managed_agent" => Ok(Self::TombstoneManagedAgent),
             "archive_identity" => Ok(Self::ArchiveIdentity),
             "tombstone_persona" => Ok(Self::TombstonePersona),

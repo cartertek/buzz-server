@@ -285,7 +285,28 @@ impl LifecycleWake {
                     }
                 }
                 Err(error) => {
-                    eprintln!("persona projection sync failed for {}: {error}", persona.id)
+                    eprintln!("persona projection sync failed for {}: {error}", persona.id);
+                    let scope = buzz_server::storage::RelayProjectionScope {
+                        community_config_id: community.id,
+                        relay_url: community.relay_url.to_string(),
+                        owner_pubkey: owner_keys.public_key().to_hex(),
+                        d_tag: buzz_server::relay_projection::persona_d_tag(&persona.id),
+                    };
+                    if let Err(queue_error) = self.store.enqueue_relay_publication(
+                        buzz_server::storage::RelayPublicationAction::SyncPersona,
+                        &scope,
+                        &persona.id,
+                        unix_seconds_i64(),
+                    ) {
+                        eprintln!(
+                            "failed to queue persona projection {}: {queue_error}",
+                            persona.id
+                        );
+                    } else {
+                        let _ = self
+                            .relay_publication_sender
+                            .send(RelayPublicationWork::Wake);
+                    }
                 }
             }
         }
@@ -742,6 +763,8 @@ async fn main() -> Result<(), DaemonError> {
             store: Arc::clone(&store),
             community_identity_root: community_identity_root.clone(),
             legacy_owner_keys: legacy_owner_keys.clone(),
+            agent_files: agent_files.clone(),
+            custody: custody.clone(),
         },
     );
     let _ = relay_publication_tx.send(RelayPublicationWork::Wake);
@@ -1102,6 +1125,8 @@ struct RelayPublicationContext {
     store: Arc<SqliteStore>,
     community_identity_root: PathBuf,
     legacy_owner_keys: Option<Keys>,
+    agent_files: AgentFileStore,
+    custody: FilesystemAgentIdentityCustody,
 }
 
 fn spawn_relay_publication_worker(
@@ -1138,13 +1163,20 @@ fn drain_relay_publications(context: &RelayPublicationContext) -> Result<(), Dae
                 continue;
             }
         };
-        let result = match publication.action {
+        let result: Result<(), String> = match publication.action {
+            buzz_server::storage::RelayPublicationAction::SyncManagedAgent => {
+                retry_managed_agent_projection(context, &publication, &relay_url, &owner_keys)
+            }
+            buzz_server::storage::RelayPublicationAction::SyncPersona => {
+                retry_persona_projection(context, &publication, &relay_url, &owner_keys)
+            }
             buzz_server::storage::RelayPublicationAction::TombstoneManagedAgent => {
                 buzz_server::relay_projection::tombstone_managed_agent(
                     &relay_url,
                     &owner_keys,
                     &publication.d_tag,
                 )
+                .map_err(|error| error.to_string())
             }
             buzz_server::storage::RelayPublicationAction::ArchiveIdentity => {
                 buzz_server::relay_projection::archive_identity(
@@ -1152,6 +1184,7 @@ fn drain_relay_publications(context: &RelayPublicationContext) -> Result<(), Dae
                     &owner_keys,
                     &publication.d_tag,
                 )
+                .map_err(|error| error.to_string())
             }
             buzz_server::storage::RelayPublicationAction::TombstonePersona => {
                 buzz_server::relay_projection::tombstone_persona(
@@ -1159,6 +1192,7 @@ fn drain_relay_publications(context: &RelayPublicationContext) -> Result<(), Dae
                     &owner_keys,
                     &publication.subject_id,
                 )
+                .map_err(|error| error.to_string())
             }
         };
         match result {
@@ -1172,7 +1206,9 @@ fn drain_relay_publications(context: &RelayPublicationContext) -> Result<(), Dae
                         buzz_server::storage::RelayPublicationAction::TombstonePersona => {
                             Some(buzz_server::storage::RelayProjectionKind::Persona)
                         }
-                        buzz_server::storage::RelayPublicationAction::ArchiveIdentity => None,
+                        buzz_server::storage::RelayPublicationAction::SyncManagedAgent
+                        | buzz_server::storage::RelayPublicationAction::SyncPersona
+                        | buzz_server::storage::RelayPublicationAction::ArchiveIdentity => None,
                     };
                     if let Some(kind) = projection {
                         context.store.remove_relay_projection(
@@ -1194,6 +1230,102 @@ fn drain_relay_publications(context: &RelayPublicationContext) -> Result<(), Dae
         }
     }
     Ok(())
+}
+
+fn retry_managed_agent_projection(
+    context: &RelayPublicationContext,
+    publication: &buzz_server::storage::RelayPublication,
+    relay_url: &url::Url,
+    owner_keys: &Keys,
+) -> Result<(), String> {
+    let agent_id: buzz_server::AgentId = publication
+        .subject_id
+        .parse()
+        .map_err(|error| format!("invalid retained agent id: {error}"))?;
+    let Some(agent) = context
+        .store
+        .get_agent(agent_id)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    if !context.agent_files.agent_path(agent_id).exists() {
+        return Ok(());
+    }
+    let file = context
+        .agent_files
+        .load_agent(agent_id)
+        .map_err(|error| error.to_string())?;
+    let resolved = context
+        .agent_files
+        .resolve(&file, agent.community_config_id, agent.desired_state)
+        .map_err(|error| error.to_string())?;
+    let agent_keys = context
+        .custody
+        .load(agent_id)
+        .map_err(|error| error.to_string())?;
+    buzz_server::relay_projection::sync_managed_agent_projection(
+        relay_url,
+        owner_keys,
+        &agent_keys,
+        &resolved,
+    )
+    .map_err(|error| error.to_string())?;
+    let community_id = publication
+        .community_config_id
+        .ok_or_else(|| "managed-agent projection retry has no community".to_string())?;
+    context
+        .store
+        .record_relay_projection(
+            buzz_server::storage::RelayProjectionKind::ManagedAgent,
+            &publication.subject_id,
+            &buzz_server::storage::RelayProjectionScope {
+                community_config_id: community_id,
+                relay_url: publication.relay_url.clone(),
+                owner_pubkey: publication.owner_pubkey.clone(),
+                d_tag: agent_keys.public_key().to_hex(),
+            },
+            unix_seconds_i64(),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn retry_persona_projection(
+    context: &RelayPublicationContext,
+    publication: &buzz_server::storage::RelayPublication,
+    relay_url: &url::Url,
+    owner_keys: &Keys,
+) -> Result<(), String> {
+    let path = context
+        .agent_files
+        .persona_path(&publication.subject_id)
+        .map_err(|error| error.to_string())?;
+    if !path.exists() {
+        return Ok(());
+    }
+    let persona = context
+        .agent_files
+        .load_persona(&publication.subject_id)
+        .map_err(|error| error.to_string())?;
+    buzz_server::relay_projection::sync_persona(relay_url, owner_keys, &persona)
+        .map_err(|error| error.to_string())?;
+    let community_id = publication
+        .community_config_id
+        .ok_or_else(|| "persona projection retry has no community".to_string())?;
+    context
+        .store
+        .record_relay_projection(
+            buzz_server::storage::RelayProjectionKind::Persona,
+            &publication.subject_id,
+            &buzz_server::storage::RelayProjectionScope {
+                community_config_id: community_id,
+                relay_url: publication.relay_url.clone(),
+                owner_pubkey: publication.owner_pubkey.clone(),
+                d_tag: buzz_server::relay_projection::persona_d_tag(&publication.subject_id),
+            },
+            unix_seconds_i64(),
+        )
+        .map_err(|error| error.to_string())
 }
 
 fn relay_publication_owner_keys(
@@ -1581,7 +1713,24 @@ fn reconcile_dynamic_lifecycle_operation(
                 unix_seconds_i64(),
             )?
         }
-        Err(error) => eprintln!("managed-agent projection sync failed for {agent_id}: {error}"),
+        Err(error) => {
+            eprintln!("managed-agent projection sync failed for {agent_id}: {error}");
+            let scope = buzz_server::storage::RelayProjectionScope {
+                community_config_id: community.id,
+                relay_url: community.relay_url.to_string(),
+                owner_pubkey: owner_keys.public_key().to_hex(),
+                d_tag: agent_pubkey.clone(),
+            };
+            context.store.enqueue_relay_publication(
+                buzz_server::storage::RelayPublicationAction::SyncManagedAgent,
+                &scope,
+                &agent_id.to_string(),
+                unix_seconds_i64(),
+            )?;
+            let _ = context
+                .relay_publication_sender
+                .send(RelayPublicationWork::Wake);
+        }
     }
     if let Some(persona_id) = resolved.persona_id.as_deref() {
         let persona = context.agent_files.load_persona(persona_id)?;
@@ -1604,7 +1753,24 @@ fn reconcile_dynamic_lifecycle_operation(
                     unix_seconds_i64(),
                 )?
             }
-            Err(error) => eprintln!("persona projection sync failed for {}: {error}", persona.id),
+            Err(error) => {
+                eprintln!("persona projection sync failed for {}: {error}", persona.id);
+                let scope = buzz_server::storage::RelayProjectionScope {
+                    community_config_id: community.id,
+                    relay_url: community.relay_url.to_string(),
+                    owner_pubkey: owner_keys.public_key().to_hex(),
+                    d_tag: buzz_server::relay_projection::persona_d_tag(&persona.id),
+                };
+                context.store.enqueue_relay_publication(
+                    buzz_server::storage::RelayPublicationAction::SyncPersona,
+                    &scope,
+                    &persona.id,
+                    unix_seconds_i64(),
+                )?;
+                let _ = context
+                    .relay_publication_sender
+                    .send(RelayPublicationWork::Wake);
+            }
         }
     }
     let signer = DisposableSigner::from_owner_keys(
