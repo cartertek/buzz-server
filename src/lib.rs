@@ -5,6 +5,7 @@ pub mod agent_files;
 pub mod api;
 pub mod application;
 pub mod auth;
+pub mod auto_join;
 pub mod community;
 pub mod community_join;
 pub mod community_session;

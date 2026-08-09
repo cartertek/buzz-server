@@ -1,6 +1,7 @@
 //! Minimal Buzz Server development daemon.
 
 use std::{
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -194,9 +195,14 @@ struct LifecycleWake {
     community_identity_root: PathBuf,
     agent_files: AgentFileStore,
     custody: FilesystemAgentIdentityCustody,
+    auto_join_sender: tokio::sync::mpsc::UnboundedSender<buzz_server::CommunityConfigId>,
 }
 
 impl LifecycleEffects for LifecycleWake {
+    fn community_changed(&self, community_id: buzz_server::CommunityConfigId) {
+        let _ = self.auto_join_sender.send(community_id);
+    }
+
     fn community_identity_unreferenced(&self, pubkey: &str) {
         let path = self
             .community_identity_root
@@ -565,14 +571,17 @@ async fn main() -> Result<(), DaemonError> {
         community_identity_root.clone(),
     )
     .map_err(|error| DaemonError::Task(format!("community join verifier: {error}")))?;
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (auto_join_tx, auto_join_rx) = tokio::sync::mpsc::unbounded_channel();
     let lifecycle_application = SqliteLifecycleApplication::new(
         Arc::clone(&store),
         Arc::new(LifecycleWake {
             sender: operation_tx.clone(),
             community_join,
-            community_identity_root,
+            community_identity_root: community_identity_root.clone(),
             agent_files: agent_files.clone(),
             custody: custody.clone(),
+            auto_join_sender: auto_join_tx.clone(),
         }),
         unix_seconds_i64,
     )
@@ -584,8 +593,8 @@ async fn main() -> Result<(), DaemonError> {
             application: lifecycle_application.clone(),
             store: Arc::clone(&store),
             config: Arc::clone(&config),
-            legacy_owner_keys,
-            custody,
+            legacy_owner_keys: legacy_owner_keys.clone(),
+            custody: custody.clone(),
             agent_files: agent_files.clone(),
             supervisor,
             child_identity,
@@ -608,7 +617,22 @@ async fn main() -> Result<(), DaemonError> {
             .map_err(|_| DaemonError::Task("reconciliation worker stopped".into()))?;
     }
 
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let auto_join_context = AutoJoinContext {
+        store: Arc::clone(&store),
+        agent_files: agent_files.clone(),
+        custody: custody.clone(),
+        community_identity_root: community_identity_root.clone(),
+        legacy_owner_keys: legacy_owner_keys.clone(),
+    };
+    let mut auto_join_task = tokio::spawn(run_auto_join_manager(
+        auto_join_rx,
+        shutdown_rx.clone(),
+        auto_join_context,
+    ));
+    for community in store.list_communities()? {
+        let _ = auto_join_tx.send(community.id);
+    }
+
     let unix_lifecycle = UnixLifecycleServer::new(
         &config.lifecycle_api.unix_socket,
         UnixAuthorityPolicy {
@@ -649,12 +673,14 @@ async fn main() -> Result<(), DaemonError> {
 
     enum Completion {
         Lifecycle(Result<(), buzz_server::transport::TransportError>),
+        AutoJoin(Result<(), DaemonError>),
         Signal,
     }
     let completion = loop {
         tokio::select! {
             result = &mut unix_lifecycle_task => break Completion::Lifecycle(result.map_err(|error| buzz_server::transport::TransportError::Task(error.to_string()))?),
             result = async { tls_lifecycle_task.as_mut().expect("guarded").await }, if tls_lifecycle_task.is_some() => break Completion::Lifecycle(result.map_err(|error| buzz_server::transport::TransportError::Task(error.to_string()))?),
+            result = &mut auto_join_task => break Completion::AutoJoin(result?),
             signal = tokio::signal::ctrl_c() => { signal?; break Completion::Signal },
             _ = terminate.recv() => break Completion::Signal,
             _ = retention_tick.tick() => {
@@ -665,17 +691,261 @@ async fn main() -> Result<(), DaemonError> {
     let _ = shutdown_tx.send(true);
     match completion {
         Completion::Lifecycle(result) => result?,
+        Completion::AutoJoin(result) => result?,
         Completion::Signal => {}
     }
     unix_lifecycle_task.abort();
     if let Some(task) = tls_lifecycle_task {
         task.abort();
     }
+    auto_join_task.abort();
     let _ = operation_tx.send(ReconcileWork::Shutdown);
     worker
         .join()
         .map_err(|_| DaemonError::Task("reconciliation worker panicked".into()))?;
     Ok(())
+}
+
+#[derive(Clone)]
+struct AutoJoinContext {
+    store: Arc<SqliteStore>,
+    agent_files: AgentFileStore,
+    custody: FilesystemAgentIdentityCustody,
+    community_identity_root: PathBuf,
+    legacy_owner_keys: Option<Keys>,
+}
+
+async fn run_auto_join_manager(
+    mut changes: tokio::sync::mpsc::UnboundedReceiver<buzz_server::CommunityConfigId>,
+    mut shutdown: watch::Receiver<bool>,
+    context: AutoJoinContext,
+) -> Result<(), DaemonError> {
+    let mut watchers: HashMap<buzz_server::CommunityConfigId, tokio::task::JoinHandle<()>> =
+        HashMap::new();
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+            }
+            community_id = changes.recv() => {
+                let Some(community_id) = community_id else { break; };
+                if let Some(task) = watchers.remove(&community_id) {
+                    task.abort();
+                }
+                let Some(community) = context.store.get_community(community_id)? else {
+                    continue;
+                };
+                let task_context = context.clone();
+                let task_shutdown = shutdown.clone();
+                watchers.insert(community_id, tokio::spawn(async move {
+                    if let Err(error) = run_community_auto_join(task_context, community, task_shutdown).await {
+                        eprintln!("auto-join watcher failed for community {community_id}: {error}");
+                    }
+                }));
+            }
+        }
+    }
+    for (_, task) in watchers {
+        task.abort();
+    }
+    Ok(())
+}
+
+async fn run_community_auto_join(
+    context: AutoJoinContext,
+    community: buzz_server::CommunityConfig,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), DaemonError> {
+    let owner_keys = auto_join_owner_keys(&context, &community)?;
+    let subscription_id = format!("server-auto-join-{}", community.id);
+    let request = buzz_server::auto_join::channel_creation_subscription(&subscription_id);
+    let mut backoff = Duration::from_secs(1);
+    while !*shutdown.borrow() {
+        let connection = tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() { return Ok(()); }
+                continue;
+            }
+            result = buzz_ws_client::NostrWsConnection::connect_authenticated(
+                community.relay_url.as_str(),
+                &owner_keys,
+                None,
+            ) => result,
+        };
+        let mut connection = match connection {
+            Ok(connection) => connection,
+            Err(error) => {
+                eprintln!(
+                    "auto-join relay connection failed for {}: {error}",
+                    community.id
+                );
+                if auto_join_wait_or_shutdown(backoff, &mut shutdown).await {
+                    return Ok(());
+                }
+                backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+                continue;
+            }
+        };
+        if let Err(error) = connection.send_raw(&request).await {
+            eprintln!(
+                "auto-join subscription failed for {}: {error}",
+                community.id
+            );
+            let _ = connection.disconnect().await;
+            if auto_join_wait_or_shutdown(backoff, &mut shutdown).await {
+                return Ok(());
+            }
+            backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+            continue;
+        }
+        backoff = Duration::from_secs(1);
+        loop {
+            match buzz_server::auto_join::next_open_channel(&mut connection, &mut shutdown).await {
+                Ok(Some(channel_id)) => {
+                    reconcile_auto_join_channel(&context, &community, &owner_keys, channel_id).await
+                }
+                Ok(None) => {
+                    let _ = connection.disconnect().await;
+                    return Ok(());
+                }
+                Err(error) => {
+                    eprintln!(
+                        "auto-join relay stream failed for {}: {error}",
+                        community.id
+                    );
+                    let _ = connection.disconnect().await;
+                    break;
+                }
+            }
+        }
+        if auto_join_wait_or_shutdown(backoff, &mut shutdown).await {
+            return Ok(());
+        }
+        backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+    }
+    Ok(())
+}
+
+async fn reconcile_auto_join_channel(
+    context: &AutoJoinContext,
+    community: &buzz_server::CommunityConfig,
+    owner_keys: &Keys,
+    channel_id: uuid::Uuid,
+) {
+    let agents = match context.store.list_agents(Some(community.id)) {
+        Ok(agents) => agents,
+        Err(error) => {
+            eprintln!(
+                "auto-join could not list agents for {}: {error}",
+                community.id
+            );
+            return;
+        }
+    };
+    for agent in agents {
+        if agent.desired_state == buzz_server::DesiredAgentState::Deleted {
+            continue;
+        }
+        let file = match context.agent_files.load_agent(agent.id) {
+            Ok(file) => file,
+            Err(error) => {
+                eprintln!("auto-join could not read config for {}: {error}", agent.id);
+                continue;
+            }
+        };
+        if !file.auto_join_open_channels {
+            continue;
+        }
+        let agent_keys = match context.custody.provision(agent.id) {
+            Ok(identity) => match context.custody.load(agent.id) {
+                Ok(keys) if keys.public_key().to_hex() == identity.public_key => keys,
+                Ok(_) => {
+                    eprintln!("auto-join identity mismatch for {}", agent.id);
+                    continue;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "auto-join could not load identity for {}: {error}",
+                        agent.id
+                    );
+                    continue;
+                }
+            },
+            Err(error) => {
+                eprintln!(
+                    "auto-join could not provision identity for {}: {error}",
+                    agent.id
+                );
+                continue;
+            }
+        };
+        let auth_tag = match buzz_sdk::nip_oa::compute_auth_tag(
+            owner_keys,
+            &agent_keys.public_key(),
+            "kind=9021",
+        ) {
+            Ok(tag) => tag,
+            Err(error) => {
+                eprintln!("auto-join authorization failed for {}: {error}", agent.id);
+                continue;
+            }
+        };
+        match buzz_server::auto_join::publish_join(
+            &community.relay_url,
+            &agent_keys,
+            &auth_tag,
+            channel_id,
+        )
+        .await
+        {
+            Ok(()) => eprintln!("auto-joined agent {} to channel {channel_id}", agent.id),
+            Err(error) if auto_join_already_member(&error) => {}
+            Err(error) => eprintln!(
+                "auto-join failed for agent {} channel {channel_id}: {error}",
+                agent.id
+            ),
+        }
+    }
+}
+
+fn auto_join_owner_keys(
+    context: &AutoJoinContext,
+    community: &buzz_server::CommunityConfig,
+) -> Result<Keys, DaemonError> {
+    let Some(pubkey) = community.identity_pubkey.as_deref() else {
+        return context.legacy_owner_keys.clone().ok_or_else(|| {
+            DaemonError::InvalidConfig(
+                "legacy community has no associated identity; rejoin the community".into(),
+            )
+        });
+    };
+    let secret = fs::read_to_string(
+        context
+            .community_identity_root
+            .join(format!("{pubkey}.secret")),
+    )?;
+    let keys = Keys::parse(secret.trim()).map_err(|_| DaemonError::InvalidOwnerSecret)?;
+    if !keys.public_key().to_hex().eq_ignore_ascii_case(pubkey) {
+        return Err(DaemonError::InvalidOwnerSecret);
+    }
+    Ok(keys)
+}
+
+fn auto_join_already_member(message: &str) -> bool {
+    let value = message.to_ascii_lowercase();
+    value.contains("already") && value.contains("member")
+}
+
+async fn auto_join_wait_or_shutdown(
+    duration: Duration,
+    shutdown: &mut watch::Receiver<bool>,
+) -> bool {
+    tokio::select! {
+        () = tokio::time::sleep(duration) => false,
+        changed = shutdown.changed() => changed.is_err() || *shutdown.borrow(),
+    }
 }
 
 struct ReconcileContext {

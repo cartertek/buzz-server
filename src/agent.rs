@@ -166,6 +166,10 @@ pub struct AgentConfigFile {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, String>,
+    /// Keep this materialized agent identity joined to every open channel in its community.
+    /// Membership is reconciled by Buzz Server; ACP subscription remains a separate setting.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_join_open_channels: bool,
     /// Per-instance ACP runtime arguments. Empty means use the selected runtime
     /// catalog defaults, matching Desktop's normalized-agent-args behavior.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -214,6 +218,10 @@ pub struct ResolvedAgentConfig {
     pub respond_to_allowlist: Vec<String>,
     pub idle_timeout_seconds: Option<u64>,
     pub max_turn_duration_seconds: Option<u64>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn validate_identifier(field: &'static str, value: &str) -> Result<(), ValidationError> {

@@ -81,8 +81,10 @@ the variable names and lower-level deployment contract.
 
 ## Getting started
 
-Buzz Server keeps community and hosted-agent state in its durable state database.
-A clean installation starts with no communities or agents. Join an existing community using the Nostr identity that this server should use for that community:
+Buzz Server keeps community and agent lifecycle state in its durable database and keeps
+human-editable agent configuration in files. A clean installation starts with no
+communities or agents. Join an existing community using the Nostr identity that this
+server should use for that community:
 
 ```sh
 sudo buzz-server communities join \
@@ -132,7 +134,9 @@ sudo buzz-server channels add-member \
 
 Once the agent is a channel member, its ACP runtime discovers the membership and
 subscribes automatically. Running agents also pick up newly added channel
-memberships automatically.
+memberships automatically. To have Buzz Server keep an agent joined to every open
+channel in the community, set `"auto_join_open_channels": true` in that agent's
+configuration file.
 
 Use `buzz-server agents list`, `buzz-server agents get --agent agent_...`, and
 `buzz-server agents logs --agent agent_...` to inspect the hosted agent. See
@@ -151,9 +155,36 @@ Personas can be created and inspected with `buzz-server personas create`, `get`,
 `list`, `update`, and `delete`, or edited directly as JSON. Pass a persona ID to
 `buzz-server agents create --persona ID`. Agent files may override the persona's
 runtime and environment; prompt, model, and provider follow the linked persona, as
-in Buzz Desktop. The owner key is stored through KMS when configured, otherwise
-through the OS keyring or restricted-file fallback. The host configuration schema
-is [`config/buzz-server.schema.json`](config/buzz-server.schema.json).
+in Buzz Desktop.
+
+Set per-agent environment variables in the agent file's `environment` object. Persona
+environment variables are inherited by persona-backed agents, with agent values taking
+precedence. For example, a Codex agent can use a dedicated Codex home and subscribe to
+all messages in every channel it belongs to with:
+
+```json
+"environment": {
+  "CODEX_HOME": "/var/lib/buzz-server/agents/agent_.../runtime/codex-home",
+  "BUZZ_ACP_SUBSCRIBE": "all"
+}
+```
+
+`CODEX_HOME` is consumed by Codex; `BUZZ_ACP_SUBSCRIBE` is consumed by `buzz-acp`.
+Subscription does not grant channel membership. To make Buzz Server automatically
+self-join an agent to current and future open channels, add this top-level agent
+setting:
+
+```json
+"auto_join_open_channels": true
+```
+
+Auto-join is event-driven: Buzz Server watches channel-creation events and joins the
+agent identity when an open channel appears; existing open channels are reconciled from
+relay history when the service starts or reconnects. Private channels remain invite-only.
+
+The owner key is stored through KMS when configured, otherwise through the OS keyring
+or restricted-file fallback. The host configuration schema is
+[`config/buzz-server.schema.json`](config/buzz-server.schema.json).
 
 
 ## Service management
