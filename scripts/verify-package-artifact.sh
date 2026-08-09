@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 
+for command in tar gzip sha256sum awk sed grep find stat cmp mktemp; do
+  command -v "$command" >/dev/null 2>&1 || { echo "required command not found: $command" >&2; exit 69; }
+done
+
 if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
   echo "usage: verify-package-artifact.sh ARCHIVE CHECKSUM IDENTITY TARGET [PAYLOAD_DIR]" >&2
   exit 64
