@@ -47,12 +47,24 @@ jobs:
             exit 1
           }
 
-          run_id=$(gh api --paginate "repos/${GH_REPO}/actions/workflows/ci.yml/runs?branch=master&event=push&status=success&per_page=100" \
-            --jq ".workflow_runs[] | select(.head_sha == \"${master_sha}\") | .id" | head -1)
+          run_id=
+          attempts=0
+          while [ -z "$run_id" ] && [ "$attempts" -lt 60 ]; do
+            run_id=$(gh api "repos/${GH_REPO}/actions/workflows/ci.yml/runs?branch=master&event=push&per_page=100" \
+              --jq ".workflow_runs[] | select(.head_sha == \"${master_sha}\") | .id" | head -1)
+            [ -n "$run_id" ] || {
+              attempts=$((attempts + 1))
+              echo "Waiting for master CI run for ${master_sha} to appear (${attempts}/60)..."
+              sleep 10
+            }
+          done
           test -n "$run_id" || {
-            echo "current master ${master_sha} does not have a successful push CI run" >&2
+            echo "current master ${master_sha} did not start a push CI run within 10 minutes" >&2
             exit 1
           }
+
+          echo "Waiting for master CI run ${run_id} for ${master_sha} to complete..."
+          gh run watch "$run_id" --exit-status
 
           latest=$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq \
             '[.[].tagName | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) | sub("^v"; "") | split(".") | map(tonumber)] | sort | last | @tsv')
