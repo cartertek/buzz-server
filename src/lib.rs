@@ -19,6 +19,7 @@ pub mod provider_discovery;
 pub mod provider_reconcile;
 pub mod reconcile;
 pub mod relay_adapter;
+pub mod relay_projection;
 pub mod runtime;
 pub mod signer;
 pub mod signer_ipc;

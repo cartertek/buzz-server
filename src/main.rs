@@ -1247,8 +1247,18 @@ fn reconcile_dynamic_lifecycle_operation(
     }
     let identity = context.custody.provision(agent_id)?;
     let agent_keys = context.custody.load(agent_id)?;
+    let owner_keys = community_owner_keys(context, &community)?;
+    if let Err(error) = buzz_server::relay_projection::sync_agent(
+        &community.relay_url,
+        &owner_keys,
+        &agent_keys,
+        &file,
+        &resolved,
+    ) {
+        eprintln!("relay projection sync failed for {agent_id}: {error}");
+    }
     let signer = DisposableSigner::from_owner_keys(
-        community_owner_keys(context, &community)?,
+        owner_keys.clone(),
         buzz_server::signer::SignerPolicy {
             community_config_id: community.id,
             relay_url: community.relay_url.clone(),
@@ -1267,9 +1277,7 @@ fn reconcile_dynamic_lifecycle_operation(
         .auth_tag;
     let authorization_generation = secret_generation(&format!(
         "owner={}|community={}|relay={}|agent={}|conditions={}",
-        community_owner_keys(context, &community)?
-            .public_key()
-            .to_hex(),
+        owner_keys.public_key().to_hex(),
         community.id,
         community.relay_url,
         agent_keys.public_key().to_hex(),
