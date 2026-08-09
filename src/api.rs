@@ -78,6 +78,12 @@ impl CreateAgentInput {
         if let Some(prompt) = self.system_prompt.as_deref() {
             validate_token("system_prompt", prompt, 65_536)?;
         }
+        if self.persona_id.is_some() && self.system_prompt.is_some() {
+            return Err(ValidationError::new(
+                "system_prompt",
+                "is defined by the selected persona; omit --system-prompt",
+            ));
+        }
         if self.persona_id.is_none() && self.runtime_id.is_none() {
             return Err(ValidationError::new(
                 "runtime_id",
@@ -879,6 +885,14 @@ mod tests {
             system_prompt: Some("Build safely.".into()),
             runtime_id: Some("codex-acp".parse().unwrap()),
         }
+    }
+
+    #[test]
+    fn persona_backed_create_rejects_agent_system_prompt() {
+        let mut input = input();
+        input.persona_id = Some("reviewer".into());
+        let error = input.validate().unwrap_err();
+        assert_eq!(error.field, "system_prompt");
     }
 
     fn make_handler(owner: PrincipalOwnership) -> LifecycleHandler<FakeApplication> {

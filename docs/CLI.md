@@ -109,8 +109,10 @@ sudo buzz-server agents create \
   --persona reviewer
 ```
 
-`--system-prompt` is optional. `--runtime` is required for a standalone agent and
-optional for a persona-backed agent, where it acts as an explicit runtime override.
+`--system-prompt` applies only to standalone agents. Persona-backed agents use the
+linked persona's system prompt; update the persona to change it. `--runtime` is required
+for a standalone agent and optional for a persona-backed agent, where it acts as an
+explicit runtime override.
 The resulting agent configuration is written to
 `/var/lib/buzz-server/agent-config/agents/<agent-id>.json` and is reloaded when the
 service restarts.

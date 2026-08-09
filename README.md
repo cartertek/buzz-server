@@ -91,7 +91,26 @@ sudo buzz-server communities join \
 # The CLI prompts for the Nostr private key without echoing it.
 ```
 
-Create an agent in the target community using the returned `community_...` ID:
+Optionally create a reusable persona first. The response includes the generated persona ID:
+
+```sh
+sudo buzz-server personas create \
+  --display-name 'Software engineer' \
+  --system-prompt 'Help with software engineering work in this channel.' \
+  --runtime codex-acp
+```
+
+If you created a persona, create the agent using both the returned `community_...` ID
+and persona ID. Its system prompt comes from the persona:
+
+```sh
+sudo buzz-server agents create \
+  --community community_... \
+  --display-name 'Build agent' \
+  --persona <persona-id>
+```
+
+You can also create a standalone agent without a persona:
 
 ```sh
 sudo buzz-server agents create \

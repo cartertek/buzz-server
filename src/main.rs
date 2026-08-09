@@ -367,6 +367,14 @@ impl LifecycleEffects for LifecycleWake {
             file.display_name.clone_from(value);
         }
         if let Some(value) = &changes.system_prompt {
+            if file.persona_id.is_some() {
+                return Err(buzz_server::api::ApplicationError::Invalid(
+                    buzz_server::ValidationError::new(
+                        "system_prompt",
+                        "is defined by the selected persona; update the persona instead",
+                    ),
+                ));
+            }
             file.system_prompt = Some(value.clone());
         }
         if let Some(value) = &changes.runtime_id {

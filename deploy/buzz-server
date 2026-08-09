@@ -148,7 +148,7 @@ EOF_HELP
 
 agents_command_help() {
   case "$1" in
-    create)       printf '%s\n' 'Usage: buzz-server agents create --community ID --display-name NAME [--persona ID] [--system-prompt PROMPT] [--runtime ID] [--idempotency KEY] [--correlation ID]' ;;
+    create)       printf '%s\n' 'Usage: buzz-server agents create --community ID --display-name NAME [--persona ID | --system-prompt PROMPT] [--runtime ID] [--idempotency KEY] [--correlation ID]' 'A persona-backed agent gets its system prompt from the persona.' ;;
     get)          printf '%s\n' 'Usage: buzz-server agents get --agent ID' ;;
     list)         printf '%s\n' 'Usage: buzz-server agents list [--community ID] [--include-deleted]' ;;
     update)       printf '%s\n' 'Usage: buzz-server agents update --agent ID [--display-name NAME] [--system-prompt PROMPT] [--runtime ID] [--idempotency KEY] [--correlation ID]' ;;
