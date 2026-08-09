@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     auth::{authorize, AuthenticatedPrincipal, AuthorizationError, Capability, PrincipalOwnership},
     AgentId, CommunityConfig, CommunityConfigId, DesiredAgentState, ErrorCode, OperationId,
-    OperationKind, OperationStatus, RuntimeId, StorageError, ValidationError,
+    OperationKind, OperationStatus, PersonaDefinition, RuntimeId, StorageError, ValidationError,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -36,6 +36,28 @@ impl CommandMetadata {
         validate_token("idempotency_key", &self.idempotency_key, 200)?;
         validate_token("correlation_id", &self.correlation_id, 200)
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CreatePersonaRequest {
+    pub display_name: String,
+    #[serde(default)]
+    pub system_prompt: String,
+    #[serde(default)]
+    pub runtime: Option<RuntimeId>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UpdatePersonaInput {
+    pub display_name: Option<String>,
+    pub system_prompt: Option<String>,
+    pub runtime: Option<RuntimeId>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UpdatePersonaRequest {
+    pub persona_id: String,
+    pub changes: UpdatePersonaInput,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -151,6 +173,11 @@ pub enum LifecycleRouteRequest {
     GetCommunity { community_id: CommunityConfigId },
     ListCommunities,
     RemoveCommunity { community_id: CommunityConfigId },
+    CreatePersona(CreatePersonaRequest),
+    UpdatePersona(UpdatePersonaRequest),
+    GetPersona { persona_id: String },
+    ListPersonas,
+    DeletePersona { persona_id: String },
     CreateAgent(CreateAgentRequest),
     UpdateAgent(UpdateAgentRequest),
     ChangeAgentState(ChangeAgentStateRequest),
@@ -171,6 +198,8 @@ pub enum LifecycleRouteRequest {
 pub enum LifecycleRouteResource {
     Community(CommunityConfig),
     Communities(Vec<CommunityConfig>),
+    Persona(PersonaDefinition),
+    Personas(Vec<PersonaDefinition>),
     Agent(AgentResource),
     Agents(Vec<AgentResource>),
     Logs(AgentLogsResource),
@@ -249,6 +278,17 @@ pub trait LifecycleApplication {
     fn get_community(&self, id: CommunityConfigId) -> Result<CommunityConfig, ApplicationError>;
     fn list_communities(&self) -> Result<Vec<CommunityConfig>, ApplicationError>;
     fn remove_community(&self, id: CommunityConfigId) -> Result<CommunityConfig, ApplicationError>;
+    fn create_persona(
+        &self,
+        request: &CreatePersonaRequest,
+    ) -> Result<PersonaDefinition, ApplicationError>;
+    fn update_persona(
+        &self,
+        request: &UpdatePersonaRequest,
+    ) -> Result<PersonaDefinition, ApplicationError>;
+    fn get_persona(&self, id: &str) -> Result<PersonaDefinition, ApplicationError>;
+    fn list_personas(&self) -> Result<Vec<PersonaDefinition>, ApplicationError>;
+    fn delete_persona(&self, id: &str) -> Result<PersonaDefinition, ApplicationError>;
     fn create_agent(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -369,6 +409,62 @@ impl<S: LifecycleApplication> LifecycleHandler<S> {
         self.application
             .remove_community(id)
             .map_err(api_application)
+    }
+
+    pub fn create_persona(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        request: &CreatePersonaRequest,
+    ) -> Result<PersonaDefinition, crate::ApiError> {
+        authorize(actor, Capability::CreateAgent, None).map_err(api_authorization)?;
+        validate_token("display_name", &request.display_name, 120).map_err(api_validation)?;
+        self.application
+            .create_persona(request)
+            .map_err(api_application)
+    }
+
+    pub fn update_persona(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        request: &UpdatePersonaRequest,
+    ) -> Result<PersonaDefinition, crate::ApiError> {
+        authorize(actor, Capability::UpdateAgent, None).map_err(api_authorization)?;
+        validate_token("persona_id", &request.persona_id, 120).map_err(api_validation)?;
+        if request.changes == UpdatePersonaInput::default() {
+            return Err(api_validation(ValidationError::new(
+                "changes",
+                "must include at least one field",
+            )));
+        }
+        self.application
+            .update_persona(request)
+            .map_err(api_application)
+    }
+
+    pub fn get_persona(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        id: &str,
+    ) -> Result<PersonaDefinition, crate::ApiError> {
+        authorize(actor, Capability::ReadAgent, None).map_err(api_authorization)?;
+        self.application.get_persona(id).map_err(api_application)
+    }
+
+    pub fn list_personas(
+        &self,
+        actor: &AuthenticatedPrincipal,
+    ) -> Result<Vec<PersonaDefinition>, crate::ApiError> {
+        authorize(actor, Capability::ReadAgent, None).map_err(api_authorization)?;
+        self.application.list_personas().map_err(api_application)
+    }
+
+    pub fn delete_persona(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        id: &str,
+    ) -> Result<PersonaDefinition, crate::ApiError> {
+        authorize(actor, Capability::DeleteAgent, None).map_err(api_authorization)?;
+        self.application.delete_persona(id).map_err(api_application)
     }
 
     pub fn create_agent(

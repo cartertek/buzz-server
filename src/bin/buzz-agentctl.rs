@@ -2,8 +2,9 @@ use std::{collections::BTreeMap, env, path::PathBuf, str::FromStr, time::Duratio
 
 use buzz_server::api::{
     AgentCommandRequest, AgentLogsRequest, ChangeAgentStateRequest, CommandMetadata,
-    CreateAgentInput, CreateAgentRequest, JoinCommunityRequest, LifecycleRouteRequest,
-    ListAgentsRequest, UpdateAgentInput, UpdateAgentRequest, UpdateCommunityRequest,
+    CreateAgentInput, CreateAgentRequest, CreatePersonaRequest, JoinCommunityRequest,
+    LifecycleRouteRequest, ListAgentsRequest, UpdateAgentInput, UpdateAgentRequest,
+    UpdateCommunityRequest, UpdatePersonaInput, UpdatePersonaRequest,
 };
 use buzz_server::{AgentId, CommunityConfigId, DesiredAgentState};
 use tokio::{
@@ -255,6 +256,26 @@ fn route(
                 "community ID",
             )?,
         }),
+        "persona-create" => Ok(LifecycleRouteRequest::CreatePersona(CreatePersonaRequest {
+            display_name: required(options, "--display-name")?.into(),
+            system_prompt: options.get("--system-prompt").cloned().unwrap_or_default(),
+            runtime: optional_parse(options, "--runtime", "runtime ID")?,
+        })),
+        "persona-get" => Ok(LifecycleRouteRequest::GetPersona {
+            persona_id: required(options, "--persona")?.into(),
+        }),
+        "persona-list" => Ok(LifecycleRouteRequest::ListPersonas),
+        "persona-update" => Ok(LifecycleRouteRequest::UpdatePersona(UpdatePersonaRequest {
+            persona_id: required(options, "--persona")?.into(),
+            changes: UpdatePersonaInput {
+                display_name: options.get("--display-name").cloned(),
+                system_prompt: options.get("--system-prompt").cloned(),
+                runtime: optional_parse(options, "--runtime", "runtime ID")?,
+            },
+        })),
+        "persona-delete" => Ok(LifecycleRouteRequest::DeletePersona {
+            persona_id: required(options, "--persona")?.into(),
+        }),
         "create" => Ok(LifecycleRouteRequest::CreateAgent(CreateAgentRequest {
             metadata: metadata()?,
             agent: create_input(options)?,
@@ -346,7 +367,7 @@ fn parse<T: FromStr>(value: &str, description: &str) -> Result<T, String> {
 }
 
 fn usage() -> String {
-    "usage: buzz-agentctl [--socket PATH] <community-join|community-update|community-get|community-list|community-delete|community-relay|community-identity-pubkey|create|get|list|update|enable|disable|logs|delete|purge|operation> [--name value ...]".into()
+    "usage: buzz-agentctl [--socket PATH] <community-*|persona-create|persona-get|persona-list|persona-update|persona-delete|create|get|list|update|enable|disable|logs|delete|purge|operation> [--name value ...]".into()
 }
 
 #[cfg(test)]

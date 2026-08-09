@@ -128,7 +128,12 @@ impl PersonaDefinition {
     pub fn validate(&self) -> Result<(), ValidationError> {
         validate_identifier("persona.id", &self.id)?;
         validate_nonempty("persona.display_name", &self.display_name, 120)?;
-        validate_nonempty("persona.system_prompt", &self.system_prompt, 65_536)?;
+        if self.system_prompt.chars().count() > 65_536 || self.system_prompt.contains('\0') {
+            return Err(ValidationError::new(
+                "persona.system_prompt",
+                "must be at most 65536 NUL-free characters",
+            ));
+        }
         validate_environment(&self.environment)?;
         validate_behavior(
             self.parallelism,

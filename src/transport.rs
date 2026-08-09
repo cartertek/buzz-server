@@ -98,6 +98,26 @@ impl<S: LifecycleApplication + Send + Sync + 'static> AuthenticatedRequestHandle
                     .0
                     .remove_community(actor, community_id)
                     .map(LifecycleRouteResource::Community),
+                LifecycleRouteRequest::CreatePersona(request) => self
+                    .0
+                    .create_persona(actor, &request)
+                    .map(LifecycleRouteResource::Persona),
+                LifecycleRouteRequest::UpdatePersona(request) => self
+                    .0
+                    .update_persona(actor, &request)
+                    .map(LifecycleRouteResource::Persona),
+                LifecycleRouteRequest::GetPersona { persona_id } => self
+                    .0
+                    .get_persona(actor, &persona_id)
+                    .map(LifecycleRouteResource::Persona),
+                LifecycleRouteRequest::ListPersonas => self
+                    .0
+                    .list_personas(actor)
+                    .map(LifecycleRouteResource::Personas),
+                LifecycleRouteRequest::DeletePersona { persona_id } => self
+                    .0
+                    .delete_persona(actor, &persona_id)
+                    .map(LifecycleRouteResource::Persona),
                 LifecycleRouteRequest::CreateAgent(request) => self
                     .0
                     .create_agent(actor, &request)

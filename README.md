@@ -137,7 +137,8 @@ secrets remain in `secrets.env`. Human-editable agent configuration lives in
 when the service starts. Lifecycle/process state, community records, operations, and
 other machine-managed state remain in SQLite.
 
-To create an agent from a persona, add a persona JSON file and pass its `id` to
+Personas can be created and inspected with `buzz-server personas create`, `get`,
+`list`, `update`, and `delete`, or edited directly as JSON. Pass a persona ID to
 `buzz-server agents create --persona ID`. Agent files may override the persona's
 runtime and environment; prompt, model, and provider follow the linked persona, as
 in Buzz Desktop. The owner key is stored through KMS when configured, otherwise

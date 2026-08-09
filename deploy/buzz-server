@@ -57,6 +57,7 @@ command_help() {
     restore)      printf '%s\n' 'Usage: buzz-server restore BACKUP' 'Restore Buzz Server state from BACKUP.' ;;
     version)      printf '%s\n' 'Usage: buzz-server version' 'Show the installed Buzz Server version.' ;;
     communities)  communities_help ;;
+    personas)     personas_help ;;
     agents)       agents_help ;;
     channels)     channels_help ;;
     secrets)      secrets_help ;;
@@ -86,6 +87,33 @@ communities_command_help() {
     list)   printf '%s\n' 'Usage: buzz-server communities list' ;;
     update) printf '%s\n' 'Usage: buzz-server communities update --community ID --display-name NAME' ;;
     delete) printf '%s\n' 'Usage: buzz-server communities delete --community ID' ;;
+    *) return 1 ;;
+  esac
+}
+
+
+personas_help() {
+  cat <<'EOF_HELP'
+Usage: buzz-server personas <command> [options]
+
+Commands:
+  create         Create a persona
+  get            Get a persona
+  list           List personas
+  update         Update a persona
+  delete         Delete a persona
+
+Persona files remain the full editing surface; these commands cover the common fields.
+EOF_HELP
+}
+
+personas_command_help() {
+  case "$1" in
+    create) printf '%s\n' 'Usage: buzz-server personas create --display-name NAME [--system-prompt PROMPT] [--runtime ID]' ;;
+    get)    printf '%s\n' 'Usage: buzz-server personas get --persona ID' ;;
+    list)   printf '%s\n' 'Usage: buzz-server personas list' ;;
+    update) printf '%s\n' 'Usage: buzz-server personas update --persona ID [--display-name NAME] [--system-prompt PROMPT] [--runtime ID]' ;;
+    delete) printf '%s\n' 'Usage: buzz-server personas delete --persona ID' ;;
     *) return 1 ;;
   esac
 }
@@ -304,6 +332,21 @@ case "$command" in
         join) join_community "$@" ;;
         get|list|update|delete) exec "$release/buzz-agentctl" "community-$subcommand" "$@" ;;
         *) communities_help >&2; exit 64 ;;
+      esac
+    fi
+    ;;
+  personas)
+    shift
+    if is_help "${1:-}" || [ "$#" -eq 0 ]; then
+      personas_help
+    elif [ "$#" -ge 2 ] && is_help "${2:-}"; then
+      personas_command_help "$1" || { personas_help >&2; exit 64; }
+    else
+      subcommand=$1
+      shift
+      case "$subcommand" in
+        create|get|list|update|delete) exec "$release/buzz-agentctl" "persona-$subcommand" "$@" ;;
+        *) personas_help >&2; exit 64 ;;
       esac
     fi
     ;;

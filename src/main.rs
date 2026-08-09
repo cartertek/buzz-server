@@ -227,6 +227,82 @@ impl LifecycleEffects for LifecycleWake {
             })
     }
 
+    fn create_persona(
+        &self,
+        request: &buzz_server::api::CreatePersonaRequest,
+    ) -> Result<buzz_server::PersonaDefinition, buzz_server::api::ApplicationError> {
+        let persona = buzz_server::PersonaDefinition {
+            id: uuid::Uuid::now_v7().to_string(),
+            display_name: request.display_name.trim().to_owned(),
+            avatar_url: None,
+            system_prompt: request.system_prompt.trim().to_owned(),
+            runtime: request.runtime.clone(),
+            model: None,
+            provider: None,
+            name_pool: vec![],
+            environment: Default::default(),
+            respond_to: None,
+            respond_to_allowlist: vec![],
+            parallelism: None,
+            is_builtin: false,
+            is_active: true,
+            shared: false,
+        };
+        self.agent_files
+            .write_persona(&persona)
+            .map_err(agent_file_application_error)?;
+        Ok(persona)
+    }
+
+    fn update_persona(
+        &self,
+        request: &buzz_server::api::UpdatePersonaRequest,
+    ) -> Result<buzz_server::PersonaDefinition, buzz_server::api::ApplicationError> {
+        let mut persona = self
+            .agent_files
+            .load_persona(&request.persona_id)
+            .map_err(agent_file_application_error)?;
+        if let Some(value) = &request.changes.display_name {
+            persona.display_name = value.trim().to_owned();
+        }
+        if let Some(value) = &request.changes.system_prompt {
+            persona.system_prompt = value.trim().to_owned();
+        }
+        if let Some(value) = &request.changes.runtime {
+            persona.runtime = Some(value.clone());
+        }
+        self.agent_files
+            .write_persona(&persona)
+            .map_err(agent_file_application_error)?;
+        Ok(persona)
+    }
+
+    fn get_persona(
+        &self,
+        id: &str,
+    ) -> Result<buzz_server::PersonaDefinition, buzz_server::api::ApplicationError> {
+        self.agent_files
+            .load_persona(id)
+            .map_err(agent_file_application_error)
+    }
+
+    fn list_personas(
+        &self,
+    ) -> Result<Vec<buzz_server::PersonaDefinition>, buzz_server::api::ApplicationError> {
+        self.agent_files
+            .list_personas()
+            .map_err(agent_file_application_error)
+    }
+
+    fn delete_persona(
+        &self,
+        id: &str,
+    ) -> Result<buzz_server::PersonaDefinition, buzz_server::api::ApplicationError> {
+        self.agent_files
+            .remove_persona(id)
+            .map_err(agent_file_application_error)
+    }
+
     fn prepare_agent_create(
         &self,
         id: buzz_server::AgentId,
@@ -1169,10 +1245,12 @@ fn agent_file_application_error(
         buzz_server::AgentFileError::Validation(error) => {
             buzz_server::api::ApplicationError::Invalid(error)
         }
-        buzz_server::AgentFileError::PersonaNotFound(id) => {
-            buzz_server::api::ApplicationError::Invalid(buzz_server::ValidationError::new(
-                "persona_id",
-                format!("persona {id} not found"),
+        buzz_server::AgentFileError::PersonaNotFound(_) => {
+            buzz_server::api::ApplicationError::NotFound
+        }
+        buzz_server::AgentFileError::PersonaReferenced { persona_id, agents } => {
+            buzz_server::api::ApplicationError::Conflict(format!(
+                "persona {persona_id} is still used by agents {agents}; purge those agents first"
             ))
         }
         buzz_server::AgentFileError::RuntimeRequired(id) => {

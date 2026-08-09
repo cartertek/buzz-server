@@ -9,9 +9,10 @@ use std::{
 use crate::{
     api::{
         AgentCommandRequest, AgentLogsRequest, AgentLogsResource, AgentResource, ApplicationError,
-        ChangeAgentStateRequest, CommandMetadata, CreateAgentInput, DraftResource,
-        JoinCommunityRequest, LifecycleApplication, ListAgentsRequest, OperationResource,
-        SubmitDraftRequest, UpdateAgentInput, UpdateAgentRequest,
+        ChangeAgentStateRequest, CommandMetadata, CreateAgentInput, CreatePersonaRequest,
+        DraftResource, JoinCommunityRequest, LifecycleApplication, ListAgentsRequest,
+        OperationResource, SubmitDraftRequest, UpdateAgentInput, UpdateAgentRequest,
+        UpdatePersonaRequest,
     },
     auth::{AuthenticatedPrincipal, Principal},
     storage::{AgentCommandMutation, DurableOperation, IdempotencyRecord, NewAuditRecord},
@@ -29,6 +30,28 @@ pub trait LifecycleEffects: Send + Sync {
 
     /// Called after the last community reference to an internally custodied identity is removed.
     fn community_identity_unreferenced(&self, _pubkey: &str) {}
+
+    fn create_persona(
+        &self,
+        _request: &CreatePersonaRequest,
+    ) -> Result<crate::PersonaDefinition, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
+    fn update_persona(
+        &self,
+        _request: &UpdatePersonaRequest,
+    ) -> Result<crate::PersonaDefinition, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
+    fn get_persona(&self, _id: &str) -> Result<crate::PersonaDefinition, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
+    fn list_personas(&self) -> Result<Vec<crate::PersonaDefinition>, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
+    fn delete_persona(&self, _id: &str) -> Result<crate::PersonaDefinition, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
 
     /// Resolve create input into the daemon's effective lifecycle cache. Production
     /// resolves file/persona semantics; the default keeps application tests transport-neutral.
@@ -435,6 +458,28 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
             }
         }
         Ok(community)
+    }
+
+    fn create_persona(
+        &self,
+        request: &CreatePersonaRequest,
+    ) -> Result<crate::PersonaDefinition, ApplicationError> {
+        self.effects.create_persona(request)
+    }
+    fn update_persona(
+        &self,
+        request: &UpdatePersonaRequest,
+    ) -> Result<crate::PersonaDefinition, ApplicationError> {
+        self.effects.update_persona(request)
+    }
+    fn get_persona(&self, id: &str) -> Result<crate::PersonaDefinition, ApplicationError> {
+        self.effects.get_persona(id)
+    }
+    fn list_personas(&self) -> Result<Vec<crate::PersonaDefinition>, ApplicationError> {
+        self.effects.list_personas()
+    }
+    fn delete_persona(&self, id: &str) -> Result<crate::PersonaDefinition, ApplicationError> {
+        self.effects.delete_persona(id)
     }
 
     fn create_agent(

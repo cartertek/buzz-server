@@ -28,6 +28,8 @@ pub enum AgentFileError {
     Validation(#[from] ValidationError),
     #[error("persona {0} not found")]
     PersonaNotFound(String),
+    #[error("persona {persona_id} is still referenced by agents: {agents}")]
+    PersonaReferenced { persona_id: String, agents: String },
     #[error("linked persona {0} has no runtime and the agent has no runtime override")]
     RuntimeRequired(String),
     #[error("standalone agent requires a runtime")]
@@ -100,6 +102,47 @@ impl AgentFileStore {
             );
         }
         Ok(value)
+    }
+
+    pub fn list_personas(&self) -> Result<Vec<PersonaDefinition>, AgentFileError> {
+        let mut values = Vec::new();
+        for entry in fs::read_dir(self.personas_dir())? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|v| v.to_str()) != Some("json") {
+                continue;
+            }
+            let value: PersonaDefinition = serde_json::from_slice(&fs::read(&path)?)?;
+            value.validate()?;
+            values.push(value);
+        }
+        values.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(values)
+    }
+
+    pub fn remove_persona(&self, id: &str) -> Result<PersonaDefinition, AgentFileError> {
+        let persona = self.load_persona(id)?;
+        let mut linked = Vec::new();
+        for entry in fs::read_dir(self.agents_dir())? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|v| v.to_str()) != Some("json") {
+                continue;
+            }
+            let value: AgentConfigFile = serde_json::from_slice(&fs::read(path)?)?;
+            if value.persona_id.as_deref() == Some(id) {
+                linked.push(value.id.to_string());
+            }
+        }
+        if !linked.is_empty() {
+            linked.sort();
+            return Err(AgentFileError::PersonaReferenced {
+                persona_id: id.to_owned(),
+                agents: linked.join(", "),
+            });
+        }
+        fs::remove_file(self.persona_path(id)?)?;
+        Ok(persona)
     }
 
     pub fn write_agent(&self, value: &AgentConfigFile) -> Result<(), AgentFileError> {

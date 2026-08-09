@@ -57,6 +57,22 @@ sudo buzz-server communities delete --community community_...
 
 Deletion fails with a conflict while any enabled or disabled agent still references the community. If every remaining agent is already successfully deleted, deleting the community also permanently purges those retained deleted-agent records and their local artifacts.
 
+## Personas
+
+Persona configuration is file-backed and can also be managed through a small CLI surface:
+
+```sh
+sudo buzz-server personas create --display-name 'Reviewer' --system-prompt 'Review changes carefully.' --runtime codex-acp
+sudo buzz-server personas list
+sudo buzz-server personas get --persona <persona-id>
+sudo buzz-server personas update --persona <persona-id> --display-name 'Senior reviewer'
+sudo buzz-server personas delete --persona <persona-id>
+```
+
+`create` generates and returns the persona ID. The CLI covers the common fields; edit
+`/var/lib/buzz-server/agent-config/personas/<id>.json` directly for the complete definition.
+A persona cannot be deleted while retained agent files still reference it; purge those agents first.
+
 ## Hosted agent lifecycle
 
 Mutating hosted-agent commands generate idempotency and correlation identifiers
