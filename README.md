@@ -133,10 +133,8 @@ sudo buzz-server channels add-member \
 ```
 
 Once the agent is a channel member, its ACP runtime discovers the membership and
-subscribes automatically. Running agents also pick up newly added channel
-memberships automatically. To have Buzz Server keep an agent joined to every open
-channel in the community, set `"auto_join_open_channels": true` in that agent's
-configuration file.
+automatically subscribes to structurally mentioned messages by default. See
+[Configuration](#configuration) to subscribe to all channel messages instead.
 
 Use `buzz-server agents list`, `buzz-server agents get --agent agent_...`, and
 `buzz-server agents logs --agent agent_...` to inspect the hosted agent. See
@@ -170,9 +168,16 @@ all messages in every channel it belongs to with:
 ```
 
 `CODEX_HOME` is consumed by Codex; `BUZZ_ACP_SUBSCRIBE` is consumed by `buzz-acp`.
-Subscription does not grant channel membership. To make Buzz Server automatically
-self-join an agent to current and future open channels, add this top-level agent
-setting:
+The default `BUZZ_ACP_SUBSCRIBE=mentions` subscribes to events that structurally
+mention the agent. Set it to `all` to subscribe to every message in every channel the
+agent belongs to. This setting controls message selection only; the agent's
+`respond_to` policy still controls which authors it accepts work from. Changes to an
+existing agent's environment take effect after restarting Buzz Server.
+
+Subscription does not grant channel membership. Running agents automatically discover
+new channel memberships and subscribe using their configured `BUZZ_ACP_SUBSCRIBE`
+mode. To have Buzz Server keep an agent joined to every open channel in the community,
+set this top-level agent setting:
 
 ```json
 "auto_join_open_channels": true
