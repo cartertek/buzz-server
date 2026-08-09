@@ -19,7 +19,7 @@ jobs:
       - name: Validate deployment scripts and units
         run: |
           set -eu
-          for script in deploy/*.sh deploy/buzz-server deploy/buzz-serverctl scripts/package-artifact.sh scripts/prepare-ci-payload.sh; do sh -n "$script"; done
+          for script in deploy/*.sh deploy/buzz-server deploy/buzz-serverctl scripts/package-artifact.sh scripts/prepare-ci-payload.sh scripts/verify-package-artifact.sh; do sh -n "$script"; done
           sudo install -d /opt/buzz-server/current/share/deploy
           sudo install -m 0755 /bin/true /opt/buzz-server/current/buzz-server
           sudo install -m 0755 /bin/true /opt/buzz-server/current/share/deploy/prepare-owner-credential.sh
@@ -85,6 +85,16 @@ jobs:
         run: |
           set -eu
           scripts/package-artifact.sh "payload/$TARGET" "${BUILD_SHA}" "$TARGET" dist
+      - name: Verify finished CI artifact
+        env:
+          TARGET: ${{ matrix.target }}
+          BUILD_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          scripts/verify-package-artifact.sh \
+            "dist/buzz-server-${TARGET}.tar.gz" \
+            "dist/buzz-server-${TARGET}.tar.gz.sha256" \
+            "$BUILD_SHA" "$TARGET" "payload/$TARGET"
       - name: Record build identity
         env:
           TARGET: ${{ matrix.target }}
