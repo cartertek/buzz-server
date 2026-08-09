@@ -150,7 +150,7 @@ jobs:
 
   release-dry-run:
     if: github.event_name == 'pull_request'
-    needs: [test, build]
+    needs: build
     uses: ./.github/workflows/release-core.yml
     permissions:
       contents: read
