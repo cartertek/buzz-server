@@ -118,13 +118,14 @@ jobs:
           else
             mock_bin=$(mktemp -d)
             ln -s "$PWD/scripts/mock-gh-release.sh" "$mock_bin/gh"
+            real_gh=$(command -v gh)
 
             # Fresh release: absent tag, create draft, upload every asset, verify, publish.
             fresh=$(mktemp -d)
             PATH="$mock_bin:$PATH" \
             RELEASE_TEST_STATE="$fresh" \
             RELEASE_TEST_SOURCE_SHA="$SHA" \
-            RELEASE_REAL_GH="$(command -v gh)" \
+            RELEASE_REAL_GH="$real_gh" \
               scripts/publish-release.sh "$TAG" "$SHA" dist
             test "$(cat "$fresh/tag-sha")" = "$SHA"
             test "$(cat "$fresh/release-state")" = published
@@ -140,7 +141,7 @@ jobs:
             PATH="$mock_bin:$PATH" \
             RELEASE_TEST_STATE="$retry" \
             RELEASE_TEST_SOURCE_SHA="$SHA" \
-            RELEASE_REAL_GH="$(command -v gh)" \
+            RELEASE_REAL_GH="$real_gh" \
               scripts/publish-release.sh "$TAG" "$SHA" dist
             test "$(cat "$retry/release-state")" = published
             test "$(find "$retry/assets" -maxdepth 1 -type f | wc -l)" -eq 4
