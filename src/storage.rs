@@ -398,6 +398,27 @@ impl SqliteStore {
             )?;
         }
 
+        {
+            let mut statement = transaction.prepare(
+                "SELECT subject_id, relay_url, owner_pubkey, d_tag FROM relay_projection_state WHERE community_config_id=?1 AND projection_kind='persona'",
+            )?;
+            let rows = statement.query_map([id.to_string()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
+            for row in rows {
+                let (persona_id, relay_url, owner_pubkey, d_tag) = row?;
+                transaction.execute(
+                    "INSERT INTO relay_publication_outbox(id, action, community_config_id, relay_url, owner_pubkey, subject_id, d_tag, created_at, updated_at) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) ON CONFLICT(action, relay_url, owner_pubkey, subject_id, d_tag) DO NOTHING",
+                    params![uuid::Uuid::now_v7().to_string(), RelayPublicationAction::TombstonePersona.as_str(), id.to_string(), relay_url, owner_pubkey, persona_id, d_tag, now],
+                )?;
+            }
+        }
+
         transaction.execute(
             "DELETE FROM community_configs WHERE id=?1",
             [id.to_string()],
