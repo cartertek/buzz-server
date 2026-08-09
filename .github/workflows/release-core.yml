@@ -55,13 +55,14 @@ jobs:
           esac
           tag="v${major}.${minor}.${patch}"
 
+          # Always exercise tag resolution, including in PR dry-runs.
+          tag_sha=$(scripts/github-tag-sha.sh "$GH_REPO" "$tag")
           if [ "$PUBLISH" = true ]; then
             remote_master=$(gh api "repos/${GH_REPO}/git/ref/heads/master" --jq .object.sha)
             test "$SOURCE_SHA" = "$remote_master" || {
               echo "release source ${SOURCE_SHA} is no longer current master ${remote_master}" >&2
               exit 1
             }
-            tag_sha=$(gh api "repos/${GH_REPO}/git/ref/tags/${tag}" --jq .object.sha 2>/dev/null || true)
             if [ -n "$tag_sha" ] && [ "$tag_sha" != "$SOURCE_SHA" ]; then
               echo "tag ${tag} already exists at ${tag_sha}; refusing to move an immutable release identity" >&2
               exit 1
@@ -125,7 +126,7 @@ jobs:
           TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -eu
-          existing=$(gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --jq .object.sha 2>/dev/null || true)
+          existing=$(scripts/github-tag-sha.sh "$GH_REPO" "$TAG")
           if [ -z "$existing" ]; then
             gh api --method POST "repos/${GH_REPO}/git/refs" -f ref="refs/tags/${TAG}" -f sha="$SHA" >/dev/null
           else
