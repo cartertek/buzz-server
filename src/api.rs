@@ -280,15 +280,25 @@ pub trait LifecycleApplication {
     fn remove_community(&self, id: CommunityConfigId) -> Result<CommunityConfig, ApplicationError>;
     fn create_persona(
         &self,
-        request: &CreatePersonaRequest,
-    ) -> Result<PersonaDefinition, ApplicationError>;
+        _request: &CreatePersonaRequest,
+    ) -> Result<PersonaDefinition, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
     fn update_persona(
         &self,
-        request: &UpdatePersonaRequest,
-    ) -> Result<PersonaDefinition, ApplicationError>;
-    fn get_persona(&self, id: &str) -> Result<PersonaDefinition, ApplicationError>;
-    fn list_personas(&self) -> Result<Vec<PersonaDefinition>, ApplicationError>;
-    fn delete_persona(&self, id: &str) -> Result<PersonaDefinition, ApplicationError>;
+        _request: &UpdatePersonaRequest,
+    ) -> Result<PersonaDefinition, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
+    fn get_persona(&self, _id: &str) -> Result<PersonaDefinition, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
+    fn list_personas(&self) -> Result<Vec<PersonaDefinition>, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
+    fn delete_persona(&self, _id: &str) -> Result<PersonaDefinition, ApplicationError> {
+        Err(ApplicationError::Unsupported)
+    }
     fn create_agent(
         &self,
         actor: &AuthenticatedPrincipal,
