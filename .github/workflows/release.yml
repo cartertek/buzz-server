@@ -96,7 +96,7 @@ jobs:
           for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
             payload="payloads/release-payload-${target}"
             test -d "$payload"
-            grep -Fx "build_sha=${SHA}" "$payload/build-metadata.txt"
+            grep -Fx "tested_sha=${SHA}" "$payload/build-metadata.txt"
             grep -Fx 'event=push' "$payload/build-metadata.txt"
             grep -Fx "target=${target}" "$payload/build-metadata.txt"
             scripts/package-artifact.sh "$payload" "$TAG" "$target" dist
