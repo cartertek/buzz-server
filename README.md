@@ -41,10 +41,8 @@ The packaged host deployment currently targets a systemd-based Linux host with:
 - model/runtime credentials such as an OpenAI API key
 - HTTPS URLs and SHA-256 values for the pinned Sprig and Codex ACP runtime packages
 
-The release installer creates control-plane `buzz-server` and compatibility
-`buzz-agent` system accounts and installs immutable releases below
-`/opt/buzz-server`. Each managed agent gets its own Unix account when first
-reconciled.
+The release installer creates the control-plane `buzz-server` account and common
+`buzz-agent` group, and installs immutable releases below `/opt/buzz-server`.
 
 ## Installation
 
@@ -175,23 +173,9 @@ agent belongs to. This setting controls message selection only; the agent's
 `respond_to` policy still controls which authors it accepts work from. Changes to an
 existing agent's environment take effect after restarting Buzz Server.
 
-By default, Buzz Server creates a deterministic `buzz-a-*` system account for
-each agent, adds it to the common `buzz-server` group, owns that agent's
-workspace and runtime directories with that account, and launches both runtime
-preflights and the agent process as it. To use an existing Unix account instead,
-set `filesystem.user` in the agent file or pass `--filesystem-user USER` to
-`agents create` or `agents update`:
-
-```json
-"filesystem": {
-  "user": "ec2-user"
-}
-```
-
-The named account must already exist. Buzz Server adds it to the `buzz-server`
-group; ordinary Unix ownership, group membership, mode bits, and ACLs determine
-its host filesystem access. Purging an agent removes an automatically created
-account, but never removes an explicitly configured account.
+Agent processes use dedicated Unix accounts by default; see
+[host deployment details](deploy/README.md#agent-unix-accounts) for account and
+`filesystem.user` configuration.
 
 Subscription does not grant channel membership. Running agents automatically discover
 new channel memberships and subscribe using their configured `BUZZ_ACP_SUBSCRIBE`

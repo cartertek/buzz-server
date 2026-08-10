@@ -39,6 +39,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+const AGENT_GROUP: &str = "buzz-agent";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,8 +49,6 @@ struct DaemonConfig {
     working_directory: PathBuf,
     #[serde(default)]
     owner_secret_file: Option<PathBuf>,
-    #[serde(rename = "runtime_user")]
-    _runtime_user: String,
     signer_conditions: String,
     runtime_catalog: RuntimeCatalog,
     harness: ExecutableIdentity,
@@ -1631,6 +1630,22 @@ fn resolve_group(name: &str) -> Result<u32, DaemonError> {
     )))
 }
 
+fn user_in_group(user: &str, user_gid: u32, group: &str) -> Result<bool, DaemonError> {
+    let groups = fs::read_to_string("/etc/group")?;
+    for line in groups.lines() {
+        let fields: Vec<_> = line.split(':').collect();
+        if fields.first() == Some(&group) && fields.len() >= 4 {
+            let group_gid: u32 = fields[2]
+                .parse()
+                .map_err(|_| DaemonError::InvalidConfig("group has invalid gid".into()))?;
+            return Ok(user_gid == group_gid || fields[3].split(',').any(|member| member == user));
+        }
+    }
+    Err(DaemonError::InvalidConfig(format!(
+        "required group {group} does not exist"
+    )))
+}
+
 fn default_agent_user(agent_id: buzz_server::AgentId) -> String {
     let suffix: String = agent_id
         .as_uuid()
@@ -1678,7 +1693,7 @@ fn ensure_agent_user(
             &[
                 "--system",
                 "--gid",
-                "buzz-server",
+                AGENT_GROUP,
                 "--home-dir",
                 &home,
                 "--no-create-home",
@@ -1689,21 +1704,19 @@ fn ensure_agent_user(
         )?;
     } else if configured_user.is_none() {
         let identity = resolve_user(&user)?;
-        if identity.1 != resolve_group("buzz-server")? || resolve_user_home(&user)? != workspace {
+        if identity.1 != resolve_group(AGENT_GROUP)? || resolve_user_home(&user)? != workspace {
             return Err(DaemonError::InvalidConfig(format!(
                 "reserved agent account {user} exists with unexpected ownership or home"
             )));
         }
     }
-    run_account_command(
-        "/usr/sbin/usermod",
-        &["--append", "--groups", "buzz-server", &user],
-    )?;
-    Ok((
-        user.clone(),
-        resolve_user(&user)?,
-        resolve_user_home(&user)?,
-    ))
+    let identity = resolve_user(&user)?;
+    if configured_user.is_some() && !user_in_group(&user, identity.1, AGENT_GROUP)? {
+        return Err(DaemonError::InvalidConfig(format!(
+            "configured filesystem user {user} must already belong to {AGENT_GROUP}"
+        )));
+    }
+    Ok((user.clone(), identity, resolve_user_home(&user)?))
 }
 
 fn chown_agent_tree(path: &Path, uid: u32, gid: u32) -> Result<(), std::io::Error> {
@@ -2459,6 +2472,7 @@ mod tests {
         assert!(name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'));
+        assert_eq!(AGENT_GROUP, "buzz-agent");
     }
 
     #[test]

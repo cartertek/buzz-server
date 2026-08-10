@@ -9,7 +9,6 @@
     "log_directory",
     "working_directory",
     "owner_secret_file",
-    "runtime_user",
     "signer_conditions",
     "runtime_catalog",
     "harness",
@@ -31,10 +30,6 @@
     },
     "owner_secret_file": {
       "const": "/run/buzz-server/credentials/owner-secret"
-    },
-    "runtime_user": {
-      "type": "string",
-      "description": "Deprecated compatibility field; local agents use their per-agent filesystem.user or a dedicated account."
     },
     "signer_conditions": {
       "type": "string"

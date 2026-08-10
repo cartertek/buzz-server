@@ -132,16 +132,13 @@ fi
 if ! getent group buzz-agent >/dev/null 2>&1; then
   groupadd --system buzz-agent
 fi
-if ! id buzz-agent >/dev/null 2>&1; then
-  useradd --system --gid buzz-agent --home-dir /var/lib/buzz-server/runtime --shell /usr/sbin/nologin buzz-agent
-fi
-usermod --append --groups buzz-server buzz-agent
-install -d -o buzz-agent -g buzz-agent -m 0700 \
+usermod --append --groups buzz-agent buzz-server
+install -d -o buzz-server -g buzz-agent -m 0700 \
   /var/lib/buzz-server/workspaces \
   /var/lib/buzz-server/runtime/agent \
   /var/lib/buzz-server/runtime/agent/tmp
-install -d -o buzz-agent -g buzz-server -m 0710 /var/lib/buzz-server/runtime
-install -d -o root -g buzz-server -m 0710 /var/lib/buzz-server/agents
+install -d -o buzz-server -g buzz-agent -m 0710 /var/lib/buzz-server/runtime
+install -d -o root -g buzz-agent -m 0710 /var/lib/buzz-server/agents
 install -d -o root -g root -m 0755 /opt/buzz-server /opt/buzz-server/releases
 install -d -o root -g buzz-server -m 0750 /etc/buzz-server
 install -d -o root -g buzz-server -m 0755 /var/lib/buzz-server
@@ -346,8 +343,8 @@ runtime_assets_valid() {
     [ -x "$runtime_dir/bin/codex-acp" ] && [ -f "$runtime_dir/.package.sha256" ] &&
     (cd "$harness_dir" && sha256sum -c .package.sha256 >/dev/null) &&
     (cd "$runtime_dir" && sha256sum -c .package.sha256 >/dev/null) &&
-    [ "$(stat -c '%U:%G' "$harness_dir")" = root:buzz-server ] &&
-    [ "$(stat -c '%U:%G' "$runtime_dir")" = root:buzz-server ] &&
+    [ "$(stat -c '%U:%G' "$harness_dir")" = root:buzz-agent ] &&
+    [ "$(stat -c '%U:%G' "$runtime_dir")" = root:buzz-agent ] &&
     ! find "$harness_dir" \( ! -user root -o -perm /022 \) -print -quit | grep -q . &&
     ! find "$runtime_dir" \( ! -user root -o -perm /022 \) -print -quit | grep -q .
 }
@@ -361,7 +358,7 @@ if ! runtime_assets_valid; then
 fi
 runtime_assets_valid || { echo "pinned runtime asset validation failed" >&2; exit 66; }
 log "Running isolated runtime preflight"
-timeout --kill-after=5s 15s runuser --user buzz-agent -- /usr/bin/env -i \
+timeout --kill-after=5s 15s runuser --user buzz-server -- /usr/bin/env -i \
   HOME=/var/lib/buzz-server/runtime \
   TMPDIR=/var/lib/buzz-server/runtime/agent/tmp \
   PATH=/usr/local/bin:/usr/bin:/bin \
@@ -383,26 +380,21 @@ health_timer_existed=false
 if timeout 5 systemctl cat buzz-server.service >/dev/null 2>&1; then
   drain_service "Stopping existing Buzz Server process tree"
 fi
-buzz_agent_home=$(getent passwd buzz-agent | cut -d: -f6)
-if [ "$buzz_agent_home" != /var/lib/buzz-server/runtime ]; then
-  usermod --home /var/lib/buzz-server/runtime buzz-agent
-fi
-
 # Older Buzz Server releases used either an explicit CODEX_HOME under
 # runtime/agent/codex-home or HOME=runtime/agent. Preserve portable Codex
 # login/config files while moving to the account-home behavior used by Desktop.
 new_codex_home=/var/lib/buzz-server/runtime/.codex
-install -d -o buzz-agent -g buzz-agent -m 0700 "$new_codex_home"
+install -d -o buzz-server -g buzz-agent -m 0700 "$new_codex_home"
 for legacy_codex_home in   /var/lib/buzz-server/runtime/agent/codex-home   /var/lib/buzz-server/runtime/agent/.codex
 do
   [ -d "$legacy_codex_home" ] || continue
   for portable in auth.json config.toml; do
     if [ -f "$legacy_codex_home/$portable" ] && [ ! -e "$new_codex_home/$portable" ]; then
-      install -o buzz-agent -g buzz-agent -m 0600         "$legacy_codex_home/$portable" "$new_codex_home/$portable"
+      install -o buzz-server -g buzz-agent -m 0600         "$legacy_codex_home/$portable" "$new_codex_home/$portable"
     fi
   done
 done
-chown -R buzz-agent:buzz-agent "$new_codex_home"
+chown -R buzz-server:buzz-agent "$new_codex_home"
 chmod 0700 "$new_codex_home"
 
 log "Activating release $identity-$target"

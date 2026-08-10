@@ -802,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_user_home_is_default_and_codex_home_is_only_explicit() {
+    fn configured_child_home_is_default_and_codex_home_is_only_explicit() {
         let directory = tempfile::tempdir().unwrap();
         let desired = launch(directory.path(), "true");
         let home = directory.path().join("runtime-user-home");
