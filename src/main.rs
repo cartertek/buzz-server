@@ -1651,6 +1651,24 @@ fn user_in_group(user: &str, user_gid: u32, group: &str) -> Result<bool, DaemonE
     )))
 }
 
+fn resolve_user_groups(user: &str, primary_gid: u32) -> Result<Vec<u32>, DaemonError> {
+    let groups = fs::read_to_string("/etc/group")?;
+    let mut gids = vec![primary_gid];
+    for line in groups.lines() {
+        let fields: Vec<_> = line.split(':').collect();
+        if fields.len() >= 4 && fields[3].split(',').any(|member| member == user) {
+            let gid = fields[2]
+                .parse()
+                .map_err(|_| DaemonError::InvalidConfig("group has invalid gid".into()))?;
+            if !gids.contains(&gid) {
+                gids.push(gid);
+            }
+        }
+    }
+    gids.sort_unstable();
+    Ok(gids)
+}
+
 fn selected_agent_user(configured_user: Option<&str>) -> &str {
     configured_user.unwrap_or(DEFAULT_AGENT_USER)
 }
@@ -1831,6 +1849,7 @@ fn reconcile_dynamic_lifecycle_operation(
         buzz_server::supervisor::LocalProcessIdentity {
             uid: agent_identity.0,
             gid: agent_identity.1,
+            supplementary_gids: resolve_user_groups(&agent_user, agent_identity.1)?,
             home: agent_home,
         },
     )?;
