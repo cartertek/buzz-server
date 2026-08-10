@@ -945,6 +945,7 @@ async fn run_community_auto_join(
     community: buzz_server::CommunityConfig,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), DaemonError> {
+    prepare_auto_join_state(&context, &community)?;
     let owner_keys = auto_join_owner_keys(&context, &community)?;
     let subscription_id = format!("server-auto-join-{}", community.id);
     let request = buzz_server::auto_join::channel_creation_subscription(&subscription_id);
@@ -990,8 +991,8 @@ async fn run_community_auto_join(
         backoff = Duration::from_secs(1);
         loop {
             match buzz_server::auto_join::next_open_channel(&mut connection, &mut shutdown).await {
-                Ok(Some(channel_id)) => {
-                    reconcile_auto_join_channel(&context, &community, &owner_keys, channel_id).await
+                Ok(Some(channel)) => {
+                    reconcile_auto_join_channel(&context, &community, &owner_keys, channel).await
                 }
                 Ok(None) => {
                     let _ = connection.disconnect().await;
@@ -1015,11 +1016,31 @@ async fn run_community_auto_join(
     Ok(())
 }
 
+fn prepare_auto_join_state(
+    context: &AutoJoinContext,
+    community: &buzz_server::CommunityConfig,
+) -> Result<(), DaemonError> {
+    let now = unix_seconds_i64();
+    for agent in context.store.list_agents(Some(community.id))? {
+        let file = context.agent_files.load_agent(agent.id)?;
+        match file.auto_join_open_channels {
+            buzz_server::AutoJoinOpenChannels::New => {
+                context.store.ensure_auto_join_enabled_at(agent.id, now)?;
+            }
+            buzz_server::AutoJoinOpenChannels::Disabled
+            | buzz_server::AutoJoinOpenChannels::All => {
+                context.store.clear_auto_join_enabled_at(agent.id)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn reconcile_auto_join_channel(
     context: &AutoJoinContext,
     community: &buzz_server::CommunityConfig,
     owner_keys: &Keys,
-    channel_id: uuid::Uuid,
+    channel: buzz_server::auto_join::OpenChannel,
 ) {
     let agents = match context.store.list_agents(Some(community.id)) {
         Ok(agents) => agents,
@@ -1042,8 +1063,27 @@ async fn reconcile_auto_join_channel(
                 continue;
             }
         };
-        if !file.auto_join_open_channels {
-            continue;
+        match file.auto_join_open_channels {
+            buzz_server::AutoJoinOpenChannels::Disabled => continue,
+            buzz_server::AutoJoinOpenChannels::All => {}
+            buzz_server::AutoJoinOpenChannels::New => {
+                let enabled_at = match context
+                    .store
+                    .ensure_auto_join_enabled_at(agent.id, unix_seconds_i64())
+                {
+                    Ok(enabled_at) => enabled_at,
+                    Err(error) => {
+                        eprintln!(
+                            "auto-join could not read boundary for {}: {error}",
+                            agent.id
+                        );
+                        continue;
+                    }
+                };
+                if !auto_join_channel_is_new(channel.created_at, enabled_at) {
+                    continue;
+                }
+            }
         }
         let agent_keys = match context.custody.provision(agent.id) {
             Ok(identity) => match context.custody.load(agent.id) {
@@ -1083,18 +1123,22 @@ async fn reconcile_auto_join_channel(
             &community.relay_url,
             &agent_keys,
             &auth_tag,
-            channel_id,
+            channel.id,
         )
         .await
         {
-            Ok(()) => eprintln!("auto-joined agent {} to channel {channel_id}", agent.id),
+            Ok(()) => eprintln!("auto-joined agent {} to channel {}", agent.id, channel.id),
             Err(error) if auto_join_already_member(&error) => {}
             Err(error) => eprintln!(
-                "auto-join failed for agent {} channel {channel_id}: {error}",
-                agent.id
+                "auto-join failed for agent {} channel {}: {error}",
+                agent.id, channel.id
             ),
         }
     }
+}
+
+fn auto_join_channel_is_new(channel_created_at: u64, enabled_at: i64) -> bool {
+    u64::try_from(enabled_at).is_ok_and(|enabled_at| channel_created_at > enabled_at)
 }
 
 fn auto_join_owner_keys(
@@ -1123,6 +1167,23 @@ fn auto_join_owner_keys(
 fn auto_join_already_member(message: &str) -> bool {
     let value = message.to_ascii_lowercase();
     value.contains("already") && value.contains("member")
+}
+
+#[cfg(test)]
+mod auto_join_tests {
+    use super::auto_join_channel_is_new;
+
+    #[test]
+    fn new_mode_requires_creation_strictly_after_enablement() {
+        assert!(!auto_join_channel_is_new(99, 100));
+        assert!(!auto_join_channel_is_new(100, 100));
+        assert!(auto_join_channel_is_new(101, 100));
+    }
+
+    #[test]
+    fn new_mode_rejects_an_invalid_negative_boundary() {
+        assert!(!auto_join_channel_is_new(1, -1));
+    }
 }
 
 async fn auto_join_wait_or_shutdown(
