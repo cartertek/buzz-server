@@ -166,10 +166,10 @@ pub struct AgentConfigFile {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, String>,
-    /// Keep this materialized agent identity joined to every open channel in its community.
+    /// Keep this materialized agent identity joined to open channels in its community.
     /// Membership is reconciled by Buzz Server; ACP subscription remains a separate setting.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub auto_join_open_channels: bool,
+    #[serde(default, skip_serializing_if = "AutoJoinOpenChannels::is_disabled")]
+    pub auto_join_open_channels: AutoJoinOpenChannels,
     /// Per-instance ACP runtime arguments. Empty means use the selected runtime
     /// catalog defaults, matching Desktop's normalized-agent-args behavior.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -184,6 +184,53 @@ pub struct AgentConfigFile {
     pub idle_timeout_seconds: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turn_duration_seconds: Option<u64>,
+}
+
+/// Policy for automatically joining open channels.
+///
+/// Boolean input remains accepted for compatibility with pre-mode agent files:
+/// `false` maps to `disabled` and `true` maps to `all`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoJoinOpenChannels {
+    #[default]
+    Disabled,
+    All,
+    New,
+}
+
+impl AutoJoinOpenChannels {
+    pub const fn is_disabled(&self) -> bool {
+        matches!(self, Self::Disabled)
+    }
+}
+
+impl<'de> Deserialize<'de> for AutoJoinOpenChannels {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Input {
+            Boolean(bool),
+            Mode(String),
+        }
+
+        match Input::deserialize(deserializer)? {
+            Input::Boolean(false) => Ok(Self::Disabled),
+            Input::Boolean(true) => Ok(Self::All),
+            Input::Mode(value) => match value.as_str() {
+                "disabled" => Ok(Self::Disabled),
+                "all" => Ok(Self::All),
+                "new" => Ok(Self::New),
+                _ => Err(serde::de::Error::unknown_variant(
+                    &value,
+                    &["disabled", "all", "new"],
+                )),
+            },
+        }
+    }
 }
 
 impl AgentConfigFile {
@@ -218,10 +265,6 @@ pub struct ResolvedAgentConfig {
     pub respond_to_allowlist: Vec<String>,
     pub idle_timeout_seconds: Option<u64>,
     pub max_turn_duration_seconds: Option<u64>,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 fn validate_identifier(field: &'static str, value: &str) -> Result<(), ValidationError> {
@@ -332,5 +375,25 @@ mod tests {
             .environment
             .insert("invalid-key".to_owned(), "secret".to_owned());
         assert_eq!(spec.validate().unwrap_err().field, "runtime.environment");
+    }
+
+    #[test]
+    fn auto_join_modes_accept_legacy_booleans_and_named_modes() {
+        assert_eq!(
+            serde_json::from_str::<AutoJoinOpenChannels>("true").unwrap(),
+            AutoJoinOpenChannels::All
+        );
+        assert_eq!(
+            serde_json::from_str::<AutoJoinOpenChannels>("false").unwrap(),
+            AutoJoinOpenChannels::Disabled
+        );
+        assert_eq!(
+            serde_json::from_str::<AutoJoinOpenChannels>(r#""new""#).unwrap(),
+            AutoJoinOpenChannels::New
+        );
+        assert_eq!(
+            serde_json::to_string(&AutoJoinOpenChannels::All).unwrap(),
+            r#""all""#
+        );
     }
 }

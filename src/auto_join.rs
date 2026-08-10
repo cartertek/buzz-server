@@ -11,7 +11,13 @@ use uuid::Uuid;
 
 const CREATE_GROUP_KIND: u16 = 9007;
 
-pub fn open_channel_id(event: &nostr::Event) -> Option<Uuid> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OpenChannel {
+    pub id: Uuid,
+    pub created_at: u64,
+}
+
+pub fn open_channel(event: &nostr::Event) -> Option<OpenChannel> {
     if event.kind != Kind::Custom(CREATE_GROUP_KIND) {
         return None;
     }
@@ -29,7 +35,10 @@ pub fn open_channel_id(event: &nostr::Event) -> Option<Uuid> {
             _ => {}
         }
     }
-    open.then_some(channel).flatten()
+    open.then_some(OpenChannel {
+        id: channel?,
+        created_at: event.created_at.as_secs(),
+    })
 }
 
 pub fn channel_creation_subscription(subscription_id: &str) -> Value {
@@ -63,7 +72,7 @@ pub async fn publish_join(
 pub async fn next_open_channel(
     connection: &mut NostrWsConnection,
     shutdown: &mut watch::Receiver<bool>,
-) -> Result<Option<Uuid>, String> {
+) -> Result<Option<OpenChannel>, String> {
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
@@ -73,8 +82,8 @@ pub async fn next_open_channel(
             }
             message = connection.next_event(Duration::from_secs(24 * 60 * 60)) => {
                 if let RelayMessage::Event { event, .. } = message.map_err(|e| e.to_string())? {
-                    if let Some(channel_id) = open_channel_id(&event) {
-                        return Ok(Some(channel_id));
+                    if let Some(channel) = open_channel(&event) {
+                        return Ok(Some(channel));
                     }
                 }
             }
@@ -101,12 +110,12 @@ mod tests {
 
     #[test]
     fn recognizes_only_open_channel_creation() {
-        assert!(open_channel_id(&create("open")).is_some());
-        assert!(open_channel_id(&create("private")).is_none());
+        assert!(open_channel(&create("open")).is_some());
+        assert!(open_channel(&create("private")).is_none());
         let other = EventBuilder::new(Kind::Custom(9), "")
             .sign_with_keys(&Keys::generate())
             .unwrap();
-        assert!(open_channel_id(&other).is_none());
+        assert!(open_channel(&other).is_none());
     }
 
     #[test]

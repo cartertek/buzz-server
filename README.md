@@ -133,7 +133,9 @@ sudo buzz-server channels add-member \
 ```
 
 Once the agent is a channel member, its ACP runtime discovers the membership and
-subscribes to mentions automatically.
+subscribes automatically. Running agents also pick up newly added channel
+memberships automatically. Auto-join policies are configured in the agent file as
+described below.
 
 Use `buzz-server agents list`, `buzz-server agents get --agent agent_...`, and
 `buzz-server agents logs --agent agent_...` to inspect the hosted agent. See
@@ -175,16 +177,26 @@ existing agent's environment take effect after restarting Buzz Server.
 
 Subscription does not grant channel membership. Running agents automatically discover
 new channel memberships and subscribe using their configured `BUZZ_ACP_SUBSCRIBE`
-mode. To have Buzz Server keep an agent joined to every open channel in the community,
-set this top-level agent setting:
+mode. Separately, `auto_join_open_channels` accepts
+three modes:
+
+- `"disabled"` (the default) never changes channel membership;
+- `"all"` joins current and future open channels;
+- `"new"` joins only open channels created after this mode is first enabled.
+
+For example, to join only future open channels, add this top-level agent setting:
 
 ```json
-"auto_join_open_channels": true
+"auto_join_open_channels": "new"
 ```
 
 Auto-join is event-driven: Buzz Server watches channel-creation events and joins the
-agent identity when an open channel appears; existing open channels are reconciled from
-relay history when the service starts or reconnects. Private channels remain invite-only.
+agent identity when an eligible open channel appears. The `"new"` enablement time is
+stored durably, so channels created while Buzz Server is offline are joined after it
+restarts, without joining older channels. Switching away from `"new"` clears that
+boundary; enabling it again starts a new boundary. Private channels remain invite-only.
+Legacy boolean values remain accepted: `true` is equivalent to `"all"` and `false` to
+`"disabled"`.
 
 The owner key is stored through KMS when configured, otherwise through the OS keyring
 or restricted-file fallback. The host configuration schema is

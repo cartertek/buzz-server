@@ -8,9 +8,9 @@ use std::{
 };
 
 use crate::{
-    AgentConfigFile, AgentId, AgentSpec, CommunityConfigId, DesiredAgentState, PersonaDefinition,
-    ResolvedAgentConfig, RespondToMode, RuntimeId, RuntimeSpec, ValidationError,
-    DEFAULT_AGENT_PARALLELISM,
+    AgentConfigFile, AgentId, AgentSpec, AutoJoinOpenChannels, CommunityConfigId,
+    DesiredAgentState, PersonaDefinition, ResolvedAgentConfig, RespondToMode, RuntimeId,
+    RuntimeSpec, ValidationError, DEFAULT_AGENT_PARALLELISM,
 };
 
 #[derive(Clone, Debug)]
@@ -182,7 +182,7 @@ impl AgentFileStore {
             model: None,
             provider: None,
             environment: spec.runtime.environment.clone(),
-            auto_join_open_channels: false,
+            auto_join_open_channels: AutoJoinOpenChannels::Disabled,
             agent_args: vec![],
             parallelism: DEFAULT_AGENT_PARALLELISM,
             respond_to: RespondToMode::OwnerOnly,
@@ -300,7 +300,7 @@ impl AgentFileStore {
             model: None,
             provider: None,
             environment: BTreeMap::new(),
-            auto_join_open_channels: false,
+            auto_join_open_channels: AutoJoinOpenChannels::Disabled,
             agent_args: vec![],
             parallelism,
             respond_to,
@@ -380,7 +380,7 @@ mod tests {
                 ("AGENT_ONLY".into(), "two".into()),
                 ("SHARED".into(), "agent".into()),
             ]),
-            auto_join_open_channels: true,
+            auto_join_open_channels: AutoJoinOpenChannels::All,
             agent_args: vec!["--stdio".into()],
             parallelism: 7,
             respond_to: RespondToMode::OwnerOnly,
