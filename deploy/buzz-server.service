@@ -36,11 +36,15 @@ ProtectClock=true
 ProtectControlGroups=true
 ProtectKernelLogs=true
 ProtectKernelModules=true
-ProtectKernelTunables=true
+# Managed harnesses may create their own nested sandbox (for example Codex's
+# bubblewrap workspace sandbox), which needs UID maps under /proc/sys.
+ProtectKernelTunables=false
 ProtectProc=invisible
-ProcSubset=pid
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-RestrictNamespaces=true
+ProcSubset=all
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Match Desktop's ability to let a harness create its own user/mount/network
+# namespaces while retaining the remaining service hardening below.
+RestrictNamespaces=false
 RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true

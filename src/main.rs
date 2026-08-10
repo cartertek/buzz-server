@@ -1959,7 +1959,10 @@ fn reconcile_dynamic_lifecycle_operation(
             launch_id: layout.launch_id.clone(),
             harness: context.config.harness.clone(),
             harness_arguments: context.config.harness_arguments.clone(),
-            working_directory: path_string(&context.config.working_directory)?,
+            // Match Desktop-managed agents: run the harness from the agent's
+            // writable workspace, not the Server's global state directory.
+            // Codex's workspace-write sandbox prepares paths beneath its CWD.
+            working_directory: path_string(&layout.workspace)?,
             workspace_path: path_string(&layout.workspace)?,
             runtime_path: path_string(&layout.runtime)?,
             process_group_id: layout.launch_id.clone(),
