@@ -49,6 +49,10 @@ struct DaemonConfig {
     working_directory: PathBuf,
     #[serde(default)]
     owner_secret_file: Option<PathBuf>,
+    /// Accepted only so installations can restart with pre-v0.1.7 config.
+    /// Per-agent filesystem identities supersede this field completely.
+    #[serde(default, rename = "runtime_user")]
+    _runtime_user: Option<String>,
     signer_conditions: String,
     runtime_catalog: RuntimeCatalog,
     harness: ExecutableIdentity,
@@ -2434,6 +2438,20 @@ mod tests {
         let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
         value["unknown"] = serde_json::json!(true);
         assert!(serde_json::from_value::<DaemonConfig>(value).is_err());
+    }
+
+    #[test]
+    fn legacy_runtime_user_is_accepted_but_not_validated_or_used() {
+        let source = include_str!("../config/buzz-server.dev.example.json");
+        let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
+        value["runtime_user"] = serde_json::json!("removed-account-does-not-exist");
+        let config: DaemonConfig = serde_json::from_value(value).unwrap();
+
+        assert_eq!(
+            config._runtime_user.as_deref(),
+            Some("removed-account-does-not-exist")
+        );
+        config.validate().unwrap();
     }
 
     #[test]
