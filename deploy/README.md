@@ -54,11 +54,28 @@ their required modules rather than treating a JavaScript shim as a standalone
 binary. The `bin/` entrypoints must be materialized regular executable files
 (not package-manager symlinks). Archives are checksum-verified, constrained to regular files and
 directories, extracted into same-filesystem staging directories, then renamed
-atomically into root-owned, `buzz-agent`-readable immutable locations. Every
+atomically into root-owned, `buzz-agent`-group-readable immutable locations. Every
 deployment rechecks the retained archive digest and entrypoint.
 Before changing the live release pointer, the installer runs the exact
-`buzz-runtime-probe codex-acp-version` availability/version preflight, copied from Buzz Desktop's bounded `codex-acp --version` probe, as the isolated `buzz-agent` account. This catches missing
+`buzz-runtime-probe codex-acp-version` availability/version preflight, copied from Buzz Desktop's bounded `codex-acp --version` probe, as the `buzz-server` control-plane account. This catches missing
 Node, modules, loaders, and execute/read permissions.
+
+## Agent Unix accounts
+
+Buzz Server creates a shared `buzz-agent` system account with `buzz-agent` as
+its primary group. By default, every managed agent process runs under this
+account, while each agent retains an isolated workspace and runtime directory.
+Reconciliation owns those directories as `buzz-agent:buzz-agent` with mode
+`0770`, including upgrades from earlier builds that used generated per-agent
+accounts. Legacy generated accounts are not removed automatically.
+
+An operator can instead set `filesystem.user` in the agent JSON or pass
+`--filesystem-user USER` to `agents create` or `agents update`. The account must
+already exist and already belong to the `buzz-agent` group so it can execute
+the packaged runtimes. Buzz Server does not alter or remove explicitly selected
+accounts; the operator remains responsible for their groups, modes, and ACLs.
+Buzz Server does chown that agent's own workspace and runtime directories to the
+selected account with `buzz-agent` as their group and mode `0770`.
 
 `secrets.env` supplies runtime API secrets referenced by configuration. Hosted-agent Nostr identities are generated and held in the server's root-only identity custody. Community identities supplied during `communities join` are separately custodied by pubkey under `/var/lib/buzz-server/community-identities`; no community private key belongs in `config.json`, the lifecycle API, the service unit, or a release directory.
 

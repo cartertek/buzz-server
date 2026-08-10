@@ -12,7 +12,7 @@ runtime_sha=$4
 case "$harness_url $runtime_url" in https://*' https://'*) ;; *) echo "runtime archive URLs must use HTTPS" >&2; exit 64;; esac
 case "$harness_sha$runtime_sha" in *[!0-9a-f]*) echo "runtime checksums must be lowercase hex" >&2; exit 64;; esac
 [ "${#harness_sha}" -eq 64 ] && [ "${#runtime_sha}" -eq 64 ] || { echo "runtime checksums must be SHA-256 hex" >&2; exit 64; }
-id buzz-agent >/dev/null 2>&1 || { echo "buzz-agent account must exist before provisioning" >&2; exit 66; }
+getent group buzz-agent >/dev/null 2>&1 || { echo "buzz-agent group must exist before provisioning" >&2; exit 66; }
 
 temporary=$(mktemp -d)
 staging_one=/opt/buzz-server/runtimes/.staging-sprig-0.1.0-$$

@@ -95,6 +95,14 @@ pub struct LocalProcessAdapter {
     stop_timeout: Duration,
     child_identity: Option<(u32, u32)>,
     child_home: Option<PathBuf>,
+    agent_identities: Mutex<BTreeMap<crate::AgentId, LocalProcessIdentity>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalProcessIdentity {
+    pub uid: u32,
+    pub gid: u32,
+    pub home: PathBuf,
 }
 
 struct ManagedChild {
@@ -134,7 +142,40 @@ impl LocalProcessAdapter {
             stop_timeout,
             child_identity,
             child_home,
+            agent_identities: Mutex::new(BTreeMap::new()),
         })
+    }
+
+    pub fn set_agent_identity(
+        &self,
+        agent_id: crate::AgentId,
+        identity: LocalProcessIdentity,
+    ) -> Result<(), SupervisorError> {
+        self.agent_identities
+            .lock()
+            .map_err(|_| SupervisorError::LockPoisoned)?
+            .insert(agent_id, identity);
+        Ok(())
+    }
+
+    fn identity_for(
+        &self,
+        agent_id: crate::AgentId,
+    ) -> Result<Option<LocalProcessIdentity>, SupervisorError> {
+        if let Some(identity) = self
+            .agent_identities
+            .lock()
+            .map_err(|_| SupervisorError::LockPoisoned)?
+            .get(&agent_id)
+            .cloned()
+        {
+            return Ok(Some(identity));
+        }
+        Ok(self.child_identity.map(|(uid, gid)| LocalProcessIdentity {
+            uid,
+            gid,
+            home: self.child_home.clone().unwrap_or_default(),
+        }))
     }
 
     /// Reads a bounded log tail and masks common credential-bearing forms.
@@ -189,6 +230,7 @@ impl LocalProcessAdapter {
         &self,
         desired: &LaunchSpec,
         secrets: &dyn SecretResolver,
+        identity: Option<&LocalProcessIdentity>,
     ) -> Result<BTreeMap<String, String>, SupervisorError> {
         let mut environment = desired.environment.clone();
         let runtime_bin = Path::new(&desired.runtime.executable.path)
@@ -199,8 +241,9 @@ impl LocalProcessAdapter {
             .entry("PATH".into())
             .or_insert_with(|| format!("{runtime_bin}:/usr/local/bin:/usr/bin:/bin"));
         environment.entry("HOME".into()).or_insert_with(|| {
-            self.child_home
-                .as_ref()
+            identity
+                .map(|identity| &identity.home)
+                .or(self.child_home.as_ref())
                 .and_then(|path| path.to_str())
                 .map(str::to_owned)
                 .unwrap_or_else(|| desired.runtime_path.clone())
@@ -226,6 +269,7 @@ impl LocalProcessAdapter {
         &self,
         desired: &LaunchSpec,
         environment: &BTreeMap<String, String>,
+        identity: Option<&LocalProcessIdentity>,
     ) -> Result<(), SupervisorError> {
         let Some(probe) = &desired.runtime.preflight else {
             return Ok(());
@@ -245,8 +289,8 @@ impl LocalProcessAdapter {
         #[cfg(unix)]
         {
             command.process_group(0);
-            if let Some((uid, gid)) = self.child_identity {
-                command.uid(uid).gid(gid);
+            if let Some(identity) = identity {
+                command.uid(identity.uid).gid(identity.gid);
             }
         }
         let mut child = command.spawn()?;
@@ -422,8 +466,9 @@ impl ProcessSupervisor for LocalProcessAdapter {
         secrets: &dyn SecretResolver,
     ) -> Result<ProcessReceipt, SupervisorError> {
         desired.validate()?;
-        let environment = self.resolve_environment(desired, secrets)?;
-        self.run_preflight(desired, &environment)?;
+        let identity = self.identity_for(desired.agent_id)?;
+        let environment = self.resolve_environment(desired, secrets, identity.as_ref())?;
+        self.run_preflight(desired, &environment, identity.as_ref())?;
 
         let stdout_path = self.prepare_log(&desired.launch_id, false)?;
         let stderr_path = self.prepare_log(&desired.launch_id, true)?;
@@ -443,8 +488,8 @@ impl ProcessSupervisor for LocalProcessAdapter {
                 desired.harness.path, desired.launch_id
             ));
             command.process_group(0);
-            if let Some((uid, gid)) = self.child_identity {
-                command.uid(uid).gid(gid);
+            if let Some(identity) = identity {
+                command.uid(identity.uid).gid(identity.gid);
             }
         }
         let mut child = command.spawn()?;
@@ -757,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_user_home_is_default_and_codex_home_is_only_explicit() {
+    fn configured_child_home_is_default_and_codex_home_is_only_explicit() {
         let directory = tempfile::tempdir().unwrap();
         let desired = launch(directory.path(), "true");
         let home = directory.path().join("runtime-user-home");
@@ -773,7 +818,9 @@ mod tests {
         )
         .unwrap();
 
-        let environment = adapter.resolve_environment(&desired, &TestSecrets).unwrap();
+        let environment = adapter
+            .resolve_environment(&desired, &TestSecrets, None)
+            .unwrap();
         assert_eq!(environment.get("HOME").map(String::as_str), home.to_str());
         assert!(!environment.contains_key("CODEX_HOME"));
 
@@ -782,7 +829,7 @@ mod tests {
             .environment
             .insert("CODEX_HOME".into(), "/explicit/codex".into());
         let environment = adapter
-            .resolve_environment(&explicit, &TestSecrets)
+            .resolve_environment(&explicit, &TestSecrets, None)
             .unwrap();
         assert_eq!(
             environment.get("CODEX_HOME").map(String::as_str),
@@ -815,7 +862,7 @@ mod tests {
         );
 
         let environment = adapter(directory.path(), 1024)
-            .resolve_environment(&desired, &TestSecrets)
+            .resolve_environment(&desired, &TestSecrets, None)
             .unwrap();
         assert_eq!(
             environment[crate::launch::HARNESS_PRIVATE_KEY_ENV],

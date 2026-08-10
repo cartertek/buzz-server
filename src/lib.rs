@@ -28,8 +28,8 @@ pub mod supervisor;
 pub mod transport;
 
 pub use agent::{
-    AgentConfigFile, AgentSpec, AutoJoinOpenChannels, DesiredAgentState, PersonaDefinition,
-    ResolvedAgentConfig, RespondToMode, RuntimeSpec, DEFAULT_AGENT_PARALLELISM,
+    AgentConfigFile, AgentSpec, AutoJoinOpenChannels, DesiredAgentState, FilesystemConfig,
+    PersonaDefinition, ResolvedAgentConfig, RespondToMode, RuntimeSpec, DEFAULT_AGENT_PARALLELISM,
 };
 pub use agent_files::{AgentFileError, AgentFileStore};
 pub use community::CommunityConfig;

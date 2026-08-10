@@ -294,6 +294,7 @@ fn route(
                 display_name: options.get("--display-name").cloned(),
                 system_prompt: options.get("--system-prompt").cloned(),
                 runtime_id: optional_parse(options, "--runtime", "runtime ID")?,
+                filesystem_user: options.get("--filesystem-user").cloned(),
             },
         })),
         "enable" | "disable" => Ok(LifecycleRouteRequest::ChangeAgentState(
@@ -339,6 +340,7 @@ fn create_input(options: &BTreeMap<String, String>) -> Result<CreateAgentInput, 
         persona_id: options.get("--persona").cloned(),
         system_prompt: options.get("--system-prompt").cloned(),
         runtime_id: optional_parse(options, "--runtime", "runtime ID")?,
+        filesystem_user: options.get("--filesystem-user").cloned(),
     })
 }
 

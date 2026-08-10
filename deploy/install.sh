@@ -87,7 +87,6 @@ if [ ! -f /etc/buzz-server/config.json ]; then
   "state_database": "/var/lib/buzz-server/state.sqlite3",
   "log_directory": "/var/log/buzz-server/agents",
   "working_directory": "/var/lib/buzz-server",
-  "runtime_user": "buzz-agent",
   "signer_conditions": "kind=9",
   "runtime_catalog": {
     "runtimes": [{

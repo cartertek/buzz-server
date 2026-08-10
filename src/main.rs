@@ -39,6 +39,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+const AGENT_GROUP: &str = "buzz-agent";
+const DEFAULT_AGENT_USER: &str = "buzz-agent";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,7 +50,10 @@ struct DaemonConfig {
     working_directory: PathBuf,
     #[serde(default)]
     owner_secret_file: Option<PathBuf>,
-    runtime_user: String,
+    /// Accepted only so installations can restart with pre-v0.1.7 config.
+    /// Per-agent filesystem identities supersede this field completely.
+    #[serde(default, rename = "runtime_user")]
+    _runtime_user: Option<String>,
     signer_conditions: String,
     runtime_catalog: RuntimeCatalog,
     harness: ExecutableIdentity,
@@ -147,11 +152,6 @@ impl DaemonConfig {
                     "owner_secret_file must be the ephemeral materialized credential path".into(),
                 ));
             }
-        }
-        if self.runtime_user != "buzz-agent" {
-            return Err(DaemonError::InvalidConfig(
-                "runtime_user must be the isolated buzz-agent account".into(),
-            ));
         }
         for (field, path, root) in [
             (
@@ -489,6 +489,7 @@ impl LifecycleEffects for LifecycleWake {
                 input.persona_id.clone(),
                 input.system_prompt.clone(),
                 input.runtime_id.clone(),
+                input.filesystem_user.clone(),
             )
             .map_err(agent_file_application_error)?;
         self.agent_files
@@ -517,6 +518,7 @@ impl LifecycleEffects for LifecycleWake {
                 input.persona_id.clone(),
                 input.system_prompt.clone(),
                 input.runtime_id.clone(),
+                input.filesystem_user.clone(),
             )
             .map_err(agent_file_application_error)?;
         self.agent_files
@@ -552,6 +554,9 @@ impl LifecycleEffects for LifecycleWake {
         }
         if let Some(value) = &changes.runtime_id {
             file.runtime = Some(value.clone());
+        }
+        if let Some(value) = &changes.filesystem_user {
+            file.filesystem.user = Some(value.clone());
         }
         self.agent_files
             .write_agent(&file)
@@ -684,8 +689,6 @@ async fn main() -> Result<(), DaemonError> {
             })?,
         )?;
     }
-    let child_identity = resolve_user(&config.runtime_user)?;
-    let child_home = resolve_user_home(&config.runtime_user)?;
     if let Some(lifecycle_directory) = config.lifecycle_api.unix_socket.parent() {
         #[cfg(unix)]
         {
@@ -711,8 +714,8 @@ async fn main() -> Result<(), DaemonError> {
             max_read_bytes: 64 * 1024,
         },
         Duration::from_secs(10),
-        Some(child_identity),
-        Some(child_home),
+        None,
+        None,
     )?;
     let custody_root = config
         .state_database
@@ -768,7 +771,6 @@ async fn main() -> Result<(), DaemonError> {
             custody: custody.clone(),
             agent_files: agent_files.clone(),
             supervisor,
-            child_identity,
             relay_publication_sender: relay_publication_tx.clone(),
         },
     );
@@ -1467,7 +1469,6 @@ struct ReconcileContext {
     custody: FilesystemAgentIdentityCustody,
     agent_files: AgentFileStore,
     supervisor: LocalProcessAdapter,
-    child_identity: (u32, u32),
     relay_publication_sender: Sender<RelayPublicationWork>,
 }
 
@@ -1619,6 +1620,76 @@ fn resolve_user_home(name: &str) -> Result<PathBuf, DaemonError> {
     )))
 }
 
+fn resolve_group(name: &str) -> Result<u32, DaemonError> {
+    let groups = fs::read_to_string("/etc/group")?;
+    for line in groups.lines() {
+        let fields: Vec<_> = line.split(':').collect();
+        if fields.first() == Some(&name) && fields.len() >= 3 {
+            return fields[2]
+                .parse()
+                .map_err(|_| DaemonError::InvalidConfig("group has invalid gid".into()));
+        }
+    }
+    Err(DaemonError::InvalidConfig(format!(
+        "required group {name} does not exist"
+    )))
+}
+
+fn user_in_group(user: &str, user_gid: u32, group: &str) -> Result<bool, DaemonError> {
+    let groups = fs::read_to_string("/etc/group")?;
+    for line in groups.lines() {
+        let fields: Vec<_> = line.split(':').collect();
+        if fields.first() == Some(&group) && fields.len() >= 4 {
+            let group_gid: u32 = fields[2]
+                .parse()
+                .map_err(|_| DaemonError::InvalidConfig("group has invalid gid".into()))?;
+            return Ok(user_gid == group_gid || fields[3].split(',').any(|member| member == user));
+        }
+    }
+    Err(DaemonError::InvalidConfig(format!(
+        "required group {group} does not exist"
+    )))
+}
+
+fn selected_agent_user(configured_user: Option<&str>) -> &str {
+    configured_user.unwrap_or(DEFAULT_AGENT_USER)
+}
+
+fn ensure_agent_user(
+    configured_user: Option<&str>,
+) -> Result<(String, (u32, u32), PathBuf), DaemonError> {
+    let user = selected_agent_user(configured_user).to_owned();
+    let identity = resolve_user(&user).map_err(|_| {
+        DaemonError::InvalidConfig(format!("filesystem user {user} does not exist"))
+    })?;
+    let agent_gid = resolve_group(AGENT_GROUP)?;
+    if !user_in_group(&user, identity.1, AGENT_GROUP)? {
+        return Err(DaemonError::InvalidConfig(format!(
+            "filesystem user {user} must already belong to {AGENT_GROUP}"
+        )));
+    }
+    Ok((
+        user.clone(),
+        (identity.0, agent_gid),
+        resolve_user_home(&user)?,
+    ))
+}
+
+fn chown_agent_tree(path: &Path, uid: u32, gid: u32) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::chown;
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    chown(path, Some(uid), Some(gid))?;
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            chown_agent_tree(&entry?.path(), uid, gid)?;
+        }
+    }
+    Ok(())
+}
+
 fn valid_env_name(name: &str) -> bool {
     let mut characters = name.chars();
     matches!(characters.next(), Some('A'..='Z' | '_'))
@@ -1737,10 +1808,12 @@ fn reconcile_dynamic_lifecycle_operation(
         .parent()
         .ok_or_else(|| DaemonError::InvalidConfig("agent receipt path has no parent".into()))?;
     fs::create_dir_all(state_root)?;
+    let (agent_user, agent_identity, agent_home) =
+        ensure_agent_user(resolved.filesystem.user.as_deref())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::{chown, PermissionsExt};
-        chown(state_root, Some(0), Some(context.child_identity.1))?;
+        chown(state_root, Some(0), Some(agent_identity.1))?;
         fs::set_permissions(state_root, fs::Permissions::from_mode(0o710))?;
     }
     let runtime_tmp = layout.runtime.join("tmp");
@@ -1748,15 +1821,19 @@ fn reconcile_dynamic_lifecycle_operation(
         fs::create_dir_all(directory)?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{chown, PermissionsExt};
-            chown(
-                directory,
-                Some(context.child_identity.0),
-                Some(context.child_identity.1),
-            )?;
+            use std::os::unix::fs::PermissionsExt;
+            chown_agent_tree(directory, agent_identity.0, agent_identity.1)?;
             fs::set_permissions(directory, fs::Permissions::from_mode(0o770))?;
         }
     }
+    context.supervisor.set_agent_identity(
+        agent_id,
+        buzz_server::supervisor::LocalProcessIdentity {
+            uid: agent_identity.0,
+            gid: agent_identity.1,
+            home: agent_home,
+        },
+    )?;
     let identity = context.custody.provision(agent_id)?;
     let agent_keys = context.custody.load(agent_id)?;
     let owner_keys = community_owner_keys(context, &community)?;
@@ -1909,6 +1986,11 @@ fn reconcile_dynamic_lifecycle_operation(
         },
     );
     apply_resolved_agent_environment(&mut dynamic_launch, &resolved);
+    // Ensure a configured Unix-user change replaces rather than adopts a
+    // process that is still running under the previous account.
+    dynamic_launch
+        .environment
+        .insert("BUZZ_SERVER_FILESYSTEM_USER".into(), agent_user.clone());
     dynamic_launch
         .validate()
         .map_err(buzz_server::LaunchResolutionError::Validation)?;
@@ -2284,6 +2366,20 @@ mod tests {
     }
 
     #[test]
+    fn legacy_runtime_user_is_accepted_but_not_validated_or_used() {
+        let source = include_str!("../config/buzz-server.dev.example.json");
+        let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
+        value["runtime_user"] = serde_json::json!("removed-account-does-not-exist");
+        let config: DaemonConfig = serde_json::from_value(value).unwrap();
+
+        assert_eq!(
+            config._runtime_user.as_deref(),
+            Some("removed-account-does-not-exist")
+        );
+        config.validate().unwrap();
+    }
+
+    #[test]
     fn dynamic_agent_layout_is_stable_isolated_and_keeps_legacy_paths_untouched() {
         let source = include_str!("../config/buzz-server.dev.example.json");
         let config: DaemonConfig = serde_json::from_str(source).unwrap();
@@ -2305,6 +2401,14 @@ mod tests {
                 .join("agents")
                 .join(first_id.to_string())
         ));
+    }
+
+    #[test]
+    fn default_agent_account_matches_the_common_group() {
+        assert_eq!(DEFAULT_AGENT_USER, "buzz-agent");
+        assert_eq!(AGENT_GROUP, "buzz-agent");
+        assert_eq!(selected_agent_user(None), "buzz-agent");
+        assert_eq!(selected_agent_user(Some("ec2-user")), "ec2-user");
     }
 
     #[test]
