@@ -417,6 +417,7 @@ install -o root -g root -m 0444 "$release/share/deploy/buzz-server-healthcheck.s
 install -o root -g root -m 0444 "$release/share/deploy/buzz-server-healthcheck.timer" /etc/systemd/system/buzz-server-healthcheck.timer
 ln -sfn /opt/buzz-server/current/share/deploy/install-release.sh /usr/libexec/buzz-server/install-release.sh
 ln -sfn /opt/buzz-server/current/buzz-server /usr/local/bin/buzz-server
+ln -sfn /opt/buzz-server/current/buzz-cli /usr/local/bin/buzz
 rm -f /usr/local/sbin/buzz-serverctl /usr/local/bin/buzz-agentctl /usr/local/sbin/buzz-secretsctl
 run_bounded 20 "Reloading systemd configuration" systemctl daemon-reload
 run_bounded 20 "Enabling Buzz Server services" systemctl enable buzz-server.service buzz-server-healthcheck.timer
