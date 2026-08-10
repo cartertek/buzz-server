@@ -180,7 +180,7 @@ three modes:
 
 - `"disabled"` (default) never automatically joins channels;
 - `"all"` joins current and future open channels;
-- `"new"` joins only open channels created after this mode is first enabled.
+- `"new"` joins only open channels when they are first created.
 
 For example, to join only future open channels, add this top-level agent setting:
 
