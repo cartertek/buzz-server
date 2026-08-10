@@ -62,11 +62,12 @@ Node, modules, loaders, and execute/read permissions.
 
 ## Agent Unix accounts
 
-Buzz Server creates a deterministic `buzz-a-*` system account for each managed
-agent, with `buzz-agent` as its primary group. It owns that agent's workspace
-and runtime directories with the account and runs runtime preflights and the
-agent process under its UID/GID. Purging the agent removes this Buzz-owned
-account.
+Buzz Server creates a shared `buzz-agent` system account with `buzz-agent` as
+its primary group. By default, every managed agent process runs under this
+account, while each agent retains an isolated workspace and runtime directory.
+Reconciliation owns those directories as `buzz-agent:buzz-agent` with mode
+`0770`, including upgrades from earlier builds that used generated per-agent
+accounts. Legacy generated accounts are not removed automatically.
 
 An operator can instead set `filesystem.user` in the agent JSON or pass
 `--filesystem-user USER` to `agents create` or `agents update`. The account must
@@ -74,7 +75,7 @@ already exist and already belong to the `buzz-agent` group so it can execute
 the packaged runtimes. Buzz Server does not alter or remove explicitly selected
 accounts; the operator remains responsible for their groups, modes, and ACLs.
 Buzz Server does chown that agent's own workspace and runtime directories to the
-selected account.
+selected account with `buzz-agent` as their group and mode `0770`.
 
 `secrets.env` supplies runtime API secrets referenced by configuration. Hosted-agent Nostr identities are generated and held in the server's root-only identity custody. Community identities supplied during `communities join` are separately custodied by pubkey under `/var/lib/buzz-server/community-identities`; no community private key belongs in `config.json`, the lifecycle API, the service unit, or a release directory.
 

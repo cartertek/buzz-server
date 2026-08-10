@@ -99,7 +99,7 @@ case "$(uname -m)" in
   *) echo "unsupported host architecture" >&2; exit 64 ;;
 esac
 [ "$target" = "$host_target" ] || { echo "package target $target does not match host $host_target" >&2; exit 65; }
-for command in timeout systemctl journalctl tar sha256sum awk sed find install getent groupadd useradd runuser stat python3; do
+for command in timeout systemctl journalctl tar sha256sum awk sed find install getent groupadd useradd usermod id runuser stat python3; do
   command -v "$command" >/dev/null 2>&1 || { echo "required command not found: $command" >&2; exit 69; }
 done
 
@@ -131,6 +131,14 @@ if ! id buzz-server >/dev/null 2>&1; then
 fi
 if ! getent group buzz-agent >/dev/null 2>&1; then
   groupadd --system buzz-agent
+fi
+agent_gid=$(getent group buzz-agent | awk -F: '{print $3}')
+if ! getent passwd buzz-agent >/dev/null 2>&1; then
+  useradd --system --gid buzz-agent --home-dir /var/lib/buzz-server/agents --no-create-home --shell /usr/sbin/nologin buzz-agent
+else
+  agent_account=$(getent passwd buzz-agent)
+  [ "$(printf '%s\n' "$agent_account" | awk -F: '{print $4}')" = "$agent_gid" ] || fail "existing buzz-agent user must have buzz-agent as its primary group"
+  [ "$(printf '%s\n' "$agent_account" | awk -F: '{print $7}')" = /usr/sbin/nologin ] || fail "existing buzz-agent user has an unexpected login shell"
 fi
 usermod --append --groups buzz-agent buzz-server
 install -d -o buzz-server -g buzz-agent -m 0700 \

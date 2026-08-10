@@ -40,6 +40,7 @@ use tokio::sync::watch;
 
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const AGENT_GROUP: &str = "buzz-agent";
+const DEFAULT_AGENT_USER: &str = "buzz-agent";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1650,77 +1651,28 @@ fn user_in_group(user: &str, user_gid: u32, group: &str) -> Result<bool, DaemonE
     )))
 }
 
-fn default_agent_user(agent_id: buzz_server::AgentId) -> String {
-    let suffix: String = agent_id
-        .as_uuid()
-        .simple()
-        .to_string()
-        .bytes()
-        .take(24)
-        .map(char::from)
-        .collect();
-    format!("buzz-a-{suffix}")
-}
-
-fn run_account_command(program: &str, arguments: &[&str]) -> Result<(), DaemonError> {
-    let status = std::process::Command::new(program)
-        .args(arguments)
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(DaemonError::Task(format!(
-            "account command {program} failed with {status}"
-        )))
-    }
+fn selected_agent_user(configured_user: Option<&str>) -> &str {
+    configured_user.unwrap_or(DEFAULT_AGENT_USER)
 }
 
 fn ensure_agent_user(
-    agent_id: buzz_server::AgentId,
     configured_user: Option<&str>,
-    workspace: &Path,
 ) -> Result<(String, (u32, u32), PathBuf), DaemonError> {
-    let user = configured_user
-        .map(str::to_owned)
-        .unwrap_or_else(|| default_agent_user(agent_id));
-    if resolve_user(&user).is_err() {
-        if configured_user.is_some() {
-            return Err(DaemonError::InvalidConfig(format!(
-                "configured filesystem user {user} does not exist"
-            )));
-        }
-        let home = path_string(workspace)?;
-        run_account_command(
-            "/usr/sbin/useradd",
-            &[
-                "--system",
-                "--gid",
-                AGENT_GROUP,
-                "--home-dir",
-                &home,
-                "--no-create-home",
-                "--shell",
-                "/usr/sbin/nologin",
-                &user,
-            ],
-        )?;
-    } else if configured_user.is_none() {
-        let identity = resolve_user(&user)?;
-        if identity.1 != resolve_group(AGENT_GROUP)? || resolve_user_home(&user)? != workspace {
-            return Err(DaemonError::InvalidConfig(format!(
-                "reserved agent account {user} exists with unexpected ownership or home"
-            )));
-        }
-    }
-    let identity = resolve_user(&user)?;
-    if configured_user.is_some() && !user_in_group(&user, identity.1, AGENT_GROUP)? {
+    let user = selected_agent_user(configured_user).to_owned();
+    let identity = resolve_user(&user).map_err(|_| {
+        DaemonError::InvalidConfig(format!("filesystem user {user} does not exist"))
+    })?;
+    let agent_gid = resolve_group(AGENT_GROUP)?;
+    if !user_in_group(&user, identity.1, AGENT_GROUP)? {
         return Err(DaemonError::InvalidConfig(format!(
-            "configured filesystem user {user} must already belong to {AGENT_GROUP}"
+            "filesystem user {user} must already belong to {AGENT_GROUP}"
         )));
     }
-    Ok((user.clone(), identity, resolve_user_home(&user)?))
+    Ok((
+        user.clone(),
+        (identity.0, agent_gid),
+        resolve_user_home(&user)?,
+    ))
 }
 
 fn chown_agent_tree(path: &Path, uid: u32, gid: u32) -> Result<(), std::io::Error> {
@@ -1856,11 +1808,8 @@ fn reconcile_dynamic_lifecycle_operation(
         .parent()
         .ok_or_else(|| DaemonError::InvalidConfig("agent receipt path has no parent".into()))?;
     fs::create_dir_all(state_root)?;
-    let (agent_user, agent_identity, agent_home) = ensure_agent_user(
-        agent_id,
-        resolved.filesystem.user.as_deref(),
-        &layout.workspace,
-    )?;
+    let (agent_user, agent_identity, agent_home) =
+        ensure_agent_user(resolved.filesystem.user.as_deref())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::{chown, PermissionsExt};
@@ -2076,16 +2025,6 @@ fn reconcile_dynamic_lifecycle_operation(
         }
     };
     if status == buzz_server::OperationStatus::Succeeded
-        && resolved.filesystem.user.is_some()
-        && agent_user != default_agent_user(agent_id)
-        && resolve_user(&default_agent_user(agent_id)).is_ok()
-    {
-        // The prior configuration used Buzz Server's owned default account.
-        // Reconciliation has stopped/replaced it; explicitly configured
-        // accounts are never removed here or during purge.
-        run_account_command("/usr/sbin/userdel", &[&default_agent_user(agent_id)])?;
-    }
-    if status == buzz_server::OperationStatus::Succeeded
         && operation.kind == buzz_server::OperationKind::PurgeAgent
     {
         let scope = buzz_server::storage::RelayProjectionScope {
@@ -2128,12 +2067,6 @@ fn reconcile_dynamic_lifecycle_operation(
             eprintln!("dynamic purge cleanup failed: {error}");
             status = buzz_server::OperationStatus::Failed;
             error_code = Some(buzz_server::ErrorCode::Internal);
-        } else if resolved.filesystem.user.is_none() {
-            if let Err(error) = run_account_command("/usr/sbin/userdel", &[&agent_user]) {
-                eprintln!("dynamic purge account cleanup failed: {error}");
-                status = buzz_server::OperationStatus::Failed;
-                error_code = Some(buzz_server::ErrorCode::Internal);
-            }
         }
     }
     if finish_operation {
@@ -2174,11 +2107,6 @@ fn purge_agent_paths(
 
 fn cleanup_purged_agent_artifacts(context: &ReconcileContext) -> Result<(), DaemonError> {
     for agent_id in context.store.list_purged_agent_ids()? {
-        let remove_default_user = context
-            .agent_files
-            .load_agent(agent_id)
-            .map(|file| file.filesystem.user.is_none())
-            .unwrap_or(true);
         let layout = dynamic_agent_layout(context.config.as_ref(), agent_id)?;
         purge_agent_paths(
             &layout.workspace,
@@ -2194,9 +2122,6 @@ fn cleanup_purged_agent_artifacts(context: &ReconcileContext) -> Result<(), Daem
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
-        }
-        if remove_default_user && resolve_user(&default_agent_user(agent_id)).is_ok() {
-            run_account_command("/usr/sbin/userdel", &[&default_agent_user(agent_id)])?;
         }
     }
     Ok(())
@@ -2479,18 +2404,11 @@ mod tests {
     }
 
     #[test]
-    fn default_agent_accounts_are_stable_safe_and_distinct() {
-        let first = buzz_server::AgentId::new();
-        let second = buzz_server::AgentId::new();
-        let name = default_agent_user(first);
-        assert_eq!(name, default_agent_user(first));
-        assert_ne!(name, default_agent_user(second));
-        assert!(name.starts_with("buzz-a-"));
-        assert!(name.len() <= 32);
-        assert!(name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'));
+    fn default_agent_account_matches_the_common_group() {
+        assert_eq!(DEFAULT_AGENT_USER, "buzz-agent");
         assert_eq!(AGENT_GROUP, "buzz-agent");
+        assert_eq!(selected_agent_user(None), "buzz-agent");
+        assert_eq!(selected_agent_user(Some("ec2-user")), "ec2-user");
     }
 
     #[test]
