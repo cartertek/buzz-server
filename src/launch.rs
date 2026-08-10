@@ -15,6 +15,8 @@ const MAX_ARGUMENTS: usize = 256;
 const MAX_ENVIRONMENT: usize = 256;
 pub const HARNESS_AGENT_COMMAND_ENV: &str = "BUZZ_ACP_AGENT_COMMAND";
 pub const HARNESS_AGENT_ARGS_ENV: &str = "BUZZ_ACP_AGENT_ARGS";
+pub const HARNESS_KINDS_ENV: &str = "BUZZ_ACP_KINDS";
+pub const DEFAULT_HARNESS_KINDS: &str = "9,46010,40007";
 pub const HARNESS_PRIVATE_KEY_ENV: &str = "BUZZ_PRIVATE_KEY";
 pub const HARNESS_RELAY_URL_ENV: &str = "BUZZ_RELAY_URL";
 pub const HARNESS_AUTH_TAG_ENV: &str = "BUZZ_AUTH_TAG";
@@ -214,6 +216,10 @@ impl LaunchSpec {
                 },
             );
         }
+        let mut environment = agent.runtime.environment.clone();
+        environment
+            .entry(HARNESS_KINDS_ENV.into())
+            .or_insert_with(|| DEFAULT_HARNESS_KINDS.into());
         let launch = Self {
             launch_id: context.launch_id,
             agent_id: agent.id,
@@ -231,7 +237,7 @@ impl LaunchSpec {
                 arguments: runtime.arguments.clone(),
                 preflight: resolved_preflight,
             },
-            environment: agent.runtime.environment.clone(),
+            environment,
             secret_environment,
             working_directory: context.working_directory,
             workspace_path: context.workspace_path,
@@ -897,6 +903,10 @@ mod tests {
             resolved.secret_environment["OPENAI_API_KEY"].key,
             "agents/codex/openai"
         );
+        assert_eq!(
+            resolved.environment[HARNESS_KINDS_ENV],
+            DEFAULT_HARNESS_KINDS
+        );
         assert!(!resolved.environment.contains_key("OPENAI_API_KEY"));
 
         let mut plaintext_agent = agent.clone();
@@ -947,6 +957,29 @@ mod tests {
             Err(LaunchResolutionError::Validation(error))
                 if error.field == "runtime.environment"
         ));
+
+        let mut custom_kinds_agent = agent.clone();
+        custom_kinds_agent
+            .runtime
+            .environment
+            .insert(HARNESS_KINDS_ENV.into(), "9".into());
+        let custom_kinds = LaunchSpec::resolve_local(
+            &custom_kinds_agent,
+            &catalog,
+            LocalLaunchContext {
+                launch_id: resolved.launch_id.clone(),
+                harness: resolved.harness.clone(),
+                harness_arguments: resolved.harness_arguments.clone(),
+                working_directory: resolved.working_directory.clone(),
+                workspace_path: resolved.workspace_path.clone(),
+                runtime_path: resolved.runtime_path.clone(),
+                process_group_id: resolved.process_group_id.clone(),
+                restart: resolved.restart.clone(),
+                health: resolved.health.clone(),
+            },
+        )
+        .unwrap();
+        assert_eq!(custom_kinds.environment[HARNESS_KINDS_ENV], "9");
 
         let mut local_catalog = catalog;
         local_catalog.runtimes[0].artifact = RuntimeArtifact::LocalExecutable {
