@@ -133,7 +133,9 @@ sudo buzz-server channels add-member \
 ```
 
 Once the agent is a channel member, its ACP runtime discovers the membership and
-subscribes automatically.
+subscribes to mentions automatically. Running agents also pick up newly added channel
+memberships automatically. Auto-join policies are configured in the agent file as
+described below.
 
 Use `buzz-server agents list`, `buzz-server agents get --agent agent_...`, and
 `buzz-server agents logs --agent agent_...` to inspect the hosted agent. See
@@ -193,8 +195,6 @@ agent identity when an eligible open channel appears. The `"new"` enablement tim
 stored durably, so channels created while Buzz Server is offline are joined after it
 restarts, without joining older channels. Switching away from `"new"` clears that
 boundary; enabling it again starts a new boundary. Private channels remain invite-only.
-Legacy boolean values remain accepted: `true` is equivalent to `"all"` and `false` to
-`"disabled"`.
 
 The owner key is stored through KMS when configured, otherwise through the OS keyring
 or restricted-file fallback. The host configuration schema is

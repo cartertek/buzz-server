@@ -188,9 +188,7 @@ pub struct AgentConfigFile {
 
 /// Policy for automatically joining open channels.
 ///
-/// Boolean input remains accepted for compatibility with pre-mode agent files:
-/// `false` maps to `disabled` and `true` maps to `all`.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AutoJoinOpenChannels {
     #[default]
@@ -202,34 +200,6 @@ pub enum AutoJoinOpenChannels {
 impl AutoJoinOpenChannels {
     pub const fn is_disabled(&self) -> bool {
         matches!(self, Self::Disabled)
-    }
-}
-
-impl<'de> Deserialize<'de> for AutoJoinOpenChannels {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Input {
-            Boolean(bool),
-            Mode(String),
-        }
-
-        match Input::deserialize(deserializer)? {
-            Input::Boolean(false) => Ok(Self::Disabled),
-            Input::Boolean(true) => Ok(Self::All),
-            Input::Mode(value) => match value.as_str() {
-                "disabled" => Ok(Self::Disabled),
-                "all" => Ok(Self::All),
-                "new" => Ok(Self::New),
-                _ => Err(serde::de::Error::unknown_variant(
-                    &value,
-                    &["disabled", "all", "new"],
-                )),
-            },
-        }
     }
 }
 
@@ -378,15 +348,9 @@ mod tests {
     }
 
     #[test]
-    fn auto_join_modes_accept_legacy_booleans_and_named_modes() {
-        assert_eq!(
-            serde_json::from_str::<AutoJoinOpenChannels>("true").unwrap(),
-            AutoJoinOpenChannels::All
-        );
-        assert_eq!(
-            serde_json::from_str::<AutoJoinOpenChannels>("false").unwrap(),
-            AutoJoinOpenChannels::Disabled
-        );
+    fn auto_join_modes_reject_booleans_and_accept_named_modes() {
+        assert!(serde_json::from_str::<AutoJoinOpenChannels>("true").is_err());
+        assert!(serde_json::from_str::<AutoJoinOpenChannels>("false").is_err());
         assert_eq!(
             serde_json::from_str::<AutoJoinOpenChannels>(r#""new""#).unwrap(),
             AutoJoinOpenChannels::New
