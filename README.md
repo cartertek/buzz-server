@@ -133,8 +133,7 @@ sudo buzz-server channels add-member \
 ```
 
 Once the agent is a channel member, its ACP runtime discovers the membership and
-automatically subscribes to structurally mentioned messages by default. See
-[Configuration](#configuration) to subscribe to all channel messages instead.
+subscribes to mentions automatically.
 
 Use `buzz-server agents list`, `buzz-server agents get --agent agent_...`, and
 `buzz-server agents logs --agent agent_...` to inspect the hosted agent. See
