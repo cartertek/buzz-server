@@ -178,7 +178,7 @@ new channel memberships and subscribe using their configured `BUZZ_ACP_SUBSCRIBE
 mode. Separately, `auto_join_open_channels` accepts
 three modes:
 
-- `"disabled"` (the default) never changes channel membership;
+- `"disabled"` (default) never automatically joins channels;
 - `"all"` joins current and future open channels;
 - `"new"` joins only open channels created after this mode is first enabled.
 
