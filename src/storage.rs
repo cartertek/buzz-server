@@ -19,6 +19,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (2, include_str!("../migrations/0002_lifecycle.sql")),
     (3, include_str!("../migrations/0003_retention.sql")),
     (4, include_str!("../migrations/0004_relay_publications.sql")),
+    (5, include_str!("../migrations/0005_auto_join.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -254,6 +255,35 @@ impl SqliteStore {
         self.connection
             .lock()
             .map_err(|_| StorageError::LockPoisoned)
+    }
+
+    /// Returns the durable boundary for a new-channels-only policy, creating it
+    /// atomically the first time that policy is observed.
+    pub fn ensure_auto_join_enabled_at(
+        &self,
+        agent_id: AgentId,
+        now: i64,
+    ) -> Result<i64, StorageError> {
+        let connection = self.connection()?;
+        connection.execute(
+            "INSERT OR IGNORE INTO auto_join_state(agent_id, enabled_at) VALUES(?1, ?2)",
+            params![agent_id.to_string(), now],
+        )?;
+        connection
+            .query_row(
+                "SELECT enabled_at FROM auto_join_state WHERE agent_id=?1",
+                [agent_id.to_string()],
+                |row| row.get(0),
+            )
+            .map_err(StorageError::from)
+    }
+
+    pub fn clear_auto_join_enabled_at(&self, agent_id: AgentId) -> Result<(), StorageError> {
+        self.connection()?.execute(
+            "DELETE FROM auto_join_state WHERE agent_id=?1",
+            [agent_id.to_string()],
+        )?;
+        Ok(())
     }
 
     pub fn put_community(&self, config: &CommunityConfig, now: i64) -> Result<(), StorageError> {
@@ -1464,10 +1494,12 @@ mod tests {
             store.put_community(&config, 10).unwrap();
             store.put_agent(&spec, 11).unwrap();
             assert!(store.claim_nip98_replay("event-1", 100, 10).unwrap());
+            assert_eq!(store.ensure_auto_join_enabled_at(spec.id, 12).unwrap(), 12);
+            assert_eq!(store.ensure_auto_join_enabled_at(spec.id, 99).unwrap(), 12);
         }
         let store = SqliteStore::open(&path).unwrap();
         assert_eq!(store.get_community(config.id).unwrap(), Some(config));
-        assert_eq!(store.get_agent(spec.id).unwrap(), Some(spec));
+        assert_eq!(store.get_agent(spec.id).unwrap(), Some(spec.clone()));
         let connection = store.connection().unwrap();
         let journal_mode: String = connection
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -1485,6 +1517,9 @@ mod tests {
         assert_eq!(count, MIGRATIONS.len() as i64);
         drop(connection);
         assert!(!store.claim_nip98_replay("event-1", 100, 11).unwrap());
+        assert_eq!(store.ensure_auto_join_enabled_at(spec.id, 99).unwrap(), 12);
+        store.clear_auto_join_enabled_at(spec.id).unwrap();
+        assert_eq!(store.ensure_auto_join_enabled_at(spec.id, 99).unwrap(), 99);
     }
 
     #[test]
