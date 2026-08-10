@@ -21,7 +21,7 @@ cleanup() { rm -rf "$temporary" "$staging_one" "$staging_two"; }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' HUP TERM
-install -d -o root -g buzz-agent -m 0750 /opt/buzz-server/runtimes
+install -d -o root -g buzz-server -m 0750 /opt/buzz-server/runtimes
 
 install_archive() {
   name=$1
@@ -56,11 +56,11 @@ install_archive() {
   mkdir -m 0750 "$extract"
   tar --no-same-owner --no-same-permissions -C "$extract" -xzf "$archive"
   test -x "$extract/$name/$entrypoint" || { echo "runtime archive lacks executable $entrypoint" >&2; exit 65; }
-  chown -R root:buzz-agent "$extract/$name"
+  chown -R root:buzz-server "$extract/$name"
   chmod -R g+rX,g-w,o-rwx "$extract/$name"
-  install -o root -g buzz-agent -m 0640 "$archive" "$extract/$name/.package.tar.gz"
+  install -o root -g buzz-server -m 0640 "$archive" "$extract/$name/.package.tar.gz"
   printf '%s  .package.tar.gz\n' "$digest" > "$extract/$name/.package.sha256"
-  chown root:buzz-agent "$extract/$name/.package.sha256"
+  chown root:buzz-server "$extract/$name/.package.sha256"
   chmod 0640 "$extract/$name/.package.sha256"
   mv "$extract/$name" "$target"
   rmdir "$extract"

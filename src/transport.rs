@@ -721,6 +721,7 @@ mod tests {
                 persona_id: None,
                 system_prompt: Some("Build safely.".into()),
                 runtime_id: Some("codex-acp".parse().unwrap()),
+                filesystem_user: None,
             },
         });
         let created = router.handle(&administrator(), &serde_json::to_vec(&create).unwrap());

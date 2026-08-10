@@ -166,6 +166,10 @@ pub struct AgentConfigFile {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, String>,
+    /// Host filesystem identity for the local runtime. When omitted, Buzz
+    /// Server provisions a dedicated Unix account for this agent.
+    #[serde(default, skip_serializing_if = "FilesystemConfig::is_default")]
+    pub filesystem: FilesystemConfig,
     /// Keep this materialized agent identity joined to open channels in its community.
     /// Membership is reconciled by Buzz Server; ACP subscription remains a separate setting.
     #[serde(default, skip_serializing_if = "AutoJoinOpenChannels::is_disabled")]
@@ -213,6 +217,7 @@ impl AgentConfigFile {
             validate_nonempty("system_prompt", prompt, 65_536)?;
         }
         validate_environment(&self.environment)?;
+        self.filesystem.validate()?;
         validate_agent_args(&self.agent_args)?;
         validate_behavior(
             Some(self.parallelism),
@@ -229,12 +234,44 @@ pub struct ResolvedAgentConfig {
     pub avatar_url: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
+    pub filesystem: FilesystemConfig,
     pub agent_args: Vec<String>,
     pub parallelism: u32,
     pub respond_to: RespondToMode,
     pub respond_to_allowlist: Vec<String>,
     pub idle_timeout_seconds: Option<u64>,
     pub max_turn_duration_seconds: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilesystemConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+}
+
+impl FilesystemConfig {
+    fn is_default(&self) -> bool {
+        self.user.is_none()
+    }
+
+    fn validate(&self) -> Result<(), ValidationError> {
+        if let Some(user) = self.user.as_deref() {
+            if user.is_empty()
+                || user.len() > 32
+                || user.starts_with('-')
+                || !user
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+            {
+                return Err(ValidationError::new(
+                    "filesystem.user",
+                    "must be a 1-32 character Unix account name",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn validate_identifier(field: &'static str, value: &str) -> Result<(), ValidationError> {

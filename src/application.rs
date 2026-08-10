@@ -955,6 +955,7 @@ mod tests {
                     persona_id: None,
                     system_prompt: Some("Build safely.".into()),
                     runtime_id: Some("codex-acp".parse().unwrap()),
+                    filesystem_user: None,
                 },
             )
             .unwrap();
@@ -992,6 +993,7 @@ mod tests {
                 persona_id: None,
                 system_prompt: Some("Build safely.".into()),
                 runtime_id: Some("codex-acp".parse().unwrap()),
+                filesystem_user: None,
             },
         };
         let first_id;
@@ -1041,6 +1043,7 @@ mod tests {
                     persona_id: None,
                     system_prompt: Some("Build safely.".into()),
                     runtime_id: Some("codex-acp".parse().unwrap()),
+                    filesystem_user: None,
                 },
             )
             .unwrap();
@@ -1097,6 +1100,7 @@ mod tests {
                         persona_id: None,
                         system_prompt: Some("Build safely.".into()),
                         runtime_id: Some("codex-acp".parse().unwrap()),
+                        filesystem_user: None,
                     },
                 },
             )
@@ -1154,6 +1158,7 @@ mod tests {
                     persona_id: None,
                     system_prompt: Some("Build safely.".into()),
                     runtime_id: Some("codex-acp".parse().unwrap()),
+                    filesystem_user: None,
                 },
             )
             .unwrap();

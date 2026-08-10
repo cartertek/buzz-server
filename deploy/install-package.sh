@@ -135,11 +135,13 @@ fi
 if ! id buzz-agent >/dev/null 2>&1; then
   useradd --system --gid buzz-agent --home-dir /var/lib/buzz-server/runtime --shell /usr/sbin/nologin buzz-agent
 fi
+usermod --append --groups buzz-server buzz-agent
 install -d -o buzz-agent -g buzz-agent -m 0700 \
   /var/lib/buzz-server/workspaces \
   /var/lib/buzz-server/runtime/agent \
   /var/lib/buzz-server/runtime/agent/tmp
 install -d -o buzz-agent -g buzz-server -m 0710 /var/lib/buzz-server/runtime
+install -d -o root -g buzz-server -m 0710 /var/lib/buzz-server/agents
 install -d -o root -g root -m 0755 /opt/buzz-server /opt/buzz-server/releases
 install -d -o root -g buzz-server -m 0750 /etc/buzz-server
 install -d -o root -g buzz-server -m 0755 /var/lib/buzz-server
@@ -344,8 +346,8 @@ runtime_assets_valid() {
     [ -x "$runtime_dir/bin/codex-acp" ] && [ -f "$runtime_dir/.package.sha256" ] &&
     (cd "$harness_dir" && sha256sum -c .package.sha256 >/dev/null) &&
     (cd "$runtime_dir" && sha256sum -c .package.sha256 >/dev/null) &&
-    [ "$(stat -c '%U:%G' "$harness_dir")" = root:buzz-agent ] &&
-    [ "$(stat -c '%U:%G' "$runtime_dir")" = root:buzz-agent ] &&
+    [ "$(stat -c '%U:%G' "$harness_dir")" = root:buzz-server ] &&
+    [ "$(stat -c '%U:%G' "$runtime_dir")" = root:buzz-server ] &&
     ! find "$harness_dir" \( ! -user root -o -perm /022 \) -print -quit | grep -q . &&
     ! find "$runtime_dir" \( ! -user root -o -perm /022 \) -print -quit | grep -q .
 }

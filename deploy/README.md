@@ -54,7 +54,7 @@ their required modules rather than treating a JavaScript shim as a standalone
 binary. The `bin/` entrypoints must be materialized regular executable files
 (not package-manager symlinks). Archives are checksum-verified, constrained to regular files and
 directories, extracted into same-filesystem staging directories, then renamed
-atomically into root-owned, `buzz-agent`-readable immutable locations. Every
+atomically into root-owned, `buzz-server`-group-readable immutable locations. Every
 deployment rechecks the retained archive digest and entrypoint.
 Before changing the live release pointer, the installer runs the exact
 `buzz-runtime-probe codex-acp-version` availability/version preflight, copied from Buzz Desktop's bounded `codex-acp --version` probe, as the isolated `buzz-agent` account. This catches missing

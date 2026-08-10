@@ -70,6 +70,8 @@ pub struct CreateAgentInput {
     pub system_prompt: Option<String>,
     #[serde(default)]
     pub runtime_id: Option<RuntimeId>,
+    #[serde(default)]
+    pub filesystem_user: Option<String>,
 }
 
 impl CreateAgentInput {
@@ -105,6 +107,7 @@ pub struct UpdateAgentInput {
     pub display_name: Option<String>,
     pub system_prompt: Option<String>,
     pub runtime_id: Option<RuntimeId>,
+    pub filesystem_user: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -884,6 +887,7 @@ mod tests {
             persona_id: None,
             system_prompt: Some("Build safely.".into()),
             runtime_id: Some("codex-acp".parse().unwrap()),
+            filesystem_user: None,
         }
     }
 

@@ -33,7 +33,8 @@
       "const": "/run/buzz-server/credentials/owner-secret"
     },
     "runtime_user": {
-      "const": "buzz-agent"
+      "type": "string",
+      "description": "Deprecated compatibility field; local agents use their per-agent filesystem.user or a dedicated account."
     },
     "signer_conditions": {
       "type": "string"

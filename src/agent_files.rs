@@ -9,8 +9,8 @@ use std::{
 
 use crate::{
     AgentConfigFile, AgentId, AgentSpec, AutoJoinOpenChannels, CommunityConfigId,
-    DesiredAgentState, PersonaDefinition, ResolvedAgentConfig, RespondToMode, RuntimeId,
-    RuntimeSpec, ValidationError, DEFAULT_AGENT_PARALLELISM,
+    DesiredAgentState, FilesystemConfig, PersonaDefinition, ResolvedAgentConfig, RespondToMode,
+    RuntimeId, RuntimeSpec, ValidationError, DEFAULT_AGENT_PARALLELISM,
 };
 
 #[derive(Clone, Debug)]
@@ -182,6 +182,7 @@ impl AgentFileStore {
             model: None,
             provider: None,
             environment: spec.runtime.environment.clone(),
+            filesystem: Default::default(),
             auto_join_open_channels: AutoJoinOpenChannels::Disabled,
             agent_args: vec![],
             parallelism: DEFAULT_AGENT_PARALLELISM,
@@ -249,6 +250,7 @@ impl AgentFileStore {
             avatar_url: file.avatar_url.clone(),
             model,
             provider,
+            filesystem: file.filesystem.clone(),
             agent_args: file.agent_args.clone(),
             parallelism: file.parallelism,
             respond_to: file.respond_to,
@@ -269,6 +271,7 @@ impl AgentFileStore {
         persona_id: Option<String>,
         system_prompt: Option<String>,
         runtime: Option<RuntimeId>,
+        filesystem_user: Option<String>,
     ) -> Result<AgentConfigFile, AgentFileError> {
         let (avatar_url, parallelism, respond_to, respond_to_allowlist, prompt_snapshot) =
             match persona_id.as_deref() {
@@ -300,6 +303,9 @@ impl AgentFileStore {
             model: None,
             provider: None,
             environment: BTreeMap::new(),
+            filesystem: FilesystemConfig {
+                user: filesystem_user,
+            },
             auto_join_open_channels: AutoJoinOpenChannels::Disabled,
             agent_args: vec![],
             parallelism,
@@ -380,6 +386,7 @@ mod tests {
                 ("AGENT_ONLY".into(), "two".into()),
                 ("SHARED".into(), "agent".into()),
             ]),
+            filesystem: FilesystemConfig::default(),
             auto_join_open_channels: AutoJoinOpenChannels::All,
             agent_args: vec!["--stdio".into()],
             parallelism: 7,
@@ -418,6 +425,7 @@ mod tests {
                 Some("reviewer".into()),
                 None,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(file.system_prompt.as_deref(), Some("Review carefully."));
@@ -445,6 +453,7 @@ mod tests {
                 None,
                 Some("Build safely.".into()),
                 Some("codex-acp".parse().unwrap()),
+                None,
             )
             .unwrap();
         store.write_agent(&file).unwrap();
@@ -454,5 +463,31 @@ mod tests {
             json.contains("\n  \"display_name\""),
             "files are pretty-printed"
         );
+    }
+
+    #[test]
+    fn filesystem_user_round_trips_and_resolves() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = AgentFileStore::new(directory.path()).unwrap();
+        let id = AgentId::new();
+        let file = store
+            .build_create_file(
+                id,
+                "Builder".into(),
+                None,
+                Some("Build safely.".into()),
+                Some("codex-acp".parse().unwrap()),
+                Some("ec2-user".into()),
+            )
+            .unwrap();
+        store.write_agent(&file).unwrap();
+        let resolved = store
+            .resolve(
+                &store.load_agent(id).unwrap(),
+                CommunityConfigId::new(),
+                DesiredAgentState::Enabled,
+            )
+            .unwrap();
+        assert_eq!(resolved.filesystem.user.as_deref(), Some("ec2-user"));
     }
 }
