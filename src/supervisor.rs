@@ -102,6 +102,7 @@ pub struct LocalProcessAdapter {
 pub struct LocalProcessIdentity {
     pub uid: u32,
     pub gid: u32,
+    pub supplementary_gids: Vec<u32>,
     pub home: PathBuf,
 }
 
@@ -122,6 +123,31 @@ impl ManagedChild {
 }
 
 impl LocalProcessAdapter {
+    #[cfg(unix)]
+    fn command_for_identity(executable: &str, identity: Option<&LocalProcessIdentity>) -> Command {
+        let Some(identity) = identity else {
+            return Command::new(executable);
+        };
+        let groups = identity
+            .supplementary_gids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut command = Command::new("/usr/bin/setpriv");
+        command.args([
+            "--reuid",
+            &identity.uid.to_string(),
+            "--regid",
+            &identity.gid.to_string(),
+            "--groups",
+            &groups,
+            "--",
+            executable,
+        ]);
+        command
+    }
+
     pub fn new(
         logs: LocalLogPolicy,
         stop_timeout: Duration,
@@ -174,6 +200,7 @@ impl LocalProcessAdapter {
         Ok(self.child_identity.map(|(uid, gid)| LocalProcessIdentity {
             uid,
             gid,
+            supplementary_gids: vec![gid],
             home: self.child_home.clone().unwrap_or_default(),
         }))
     }
@@ -274,6 +301,9 @@ impl LocalProcessAdapter {
         let Some(probe) = &desired.runtime.preflight else {
             return Ok(());
         };
+        #[cfg(unix)]
+        let mut command = Self::command_for_identity(&probe.command, identity);
+        #[cfg(not(unix))]
         let mut command = Command::new(&probe.command);
         command
             .args(&probe.arguments)
@@ -289,9 +319,6 @@ impl LocalProcessAdapter {
         #[cfg(unix)]
         {
             command.process_group(0);
-            if let Some(identity) = identity {
-                command.uid(identity.uid).gid(identity.gid);
-            }
         }
         let mut child = command.spawn()?;
         let deadline = Instant::now() + Duration::from_secs(u64::from(probe.timeout_seconds));
@@ -320,18 +347,18 @@ impl LocalProcessAdapter {
     fn receipt_owned(receipt: &ProcessReceipt) -> bool {
         #[cfg(target_os = "linux")]
         {
-            // `/proc/<pid>/environ` is intentionally unreadable after the
-            // harness drops to another uid under the hardened systemd unit.
-            // Put the immutable launch marker in argv[0], which remains
-            // readable cross-uid, and bind it to the configured harness path.
             let expected_command = format!(
                 "{}#{LAUNCH_MARKER}={}",
                 receipt.desired.harness.path, receipt.launch_id
             );
-            receipt.command_path.as_deref() == Some(expected_command.as_str())
+            let command_matches = receipt.command_path.as_deref().is_some_and(|command| {
+                command == expected_command || command == receipt.desired.harness.path
+            });
+            command_matches
                 && receipt.process_start_ticks.is_some()
                 && Self::process_start_ticks(receipt.pid) == receipt.process_start_ticks
                 && Self::process_command(receipt.pid).as_deref() == receipt.command_path.as_deref()
+                && Self::process_has_launch_marker(receipt.pid, &receipt.launch_id)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -457,6 +484,17 @@ impl LocalProcessAdapter {
         let first = command.split(|byte| *byte == 0).next()?;
         (!first.is_empty()).then(|| String::from_utf8_lossy(first).into_owned())
     }
+
+    #[cfg(target_os = "linux")]
+    fn process_has_launch_marker(pid: u32, launch_id: &str) -> bool {
+        let environment = fs::read(format!("/proc/{pid}/environ")).ok();
+        environment.is_some_and(|environment| {
+            let expected = format!("{LAUNCH_MARKER}={launch_id}");
+            environment
+                .split(|byte| *byte == 0)
+                .any(|entry| entry == expected.as_bytes())
+        })
+    }
 }
 
 impl ProcessSupervisor for LocalProcessAdapter {
@@ -472,6 +510,9 @@ impl ProcessSupervisor for LocalProcessAdapter {
 
         let stdout_path = self.prepare_log(&desired.launch_id, false)?;
         let stderr_path = self.prepare_log(&desired.launch_id, true)?;
+        #[cfg(unix)]
+        let mut command = Self::command_for_identity(&desired.harness.path, identity.as_ref());
+        #[cfg(not(unix))]
         let mut command = Command::new(&desired.harness.path);
         command
             .args(&desired.harness_arguments)
@@ -483,14 +524,13 @@ impl ProcessSupervisor for LocalProcessAdapter {
             .stderr(Stdio::piped());
         #[cfg(unix)]
         {
-            command.arg0(format!(
-                "{}#{LAUNCH_MARKER}={}",
-                desired.harness.path, desired.launch_id
-            ));
-            command.process_group(0);
-            if let Some(identity) = identity {
-                command.uid(identity.uid).gid(identity.gid);
+            if identity.is_none() {
+                command.arg0(format!(
+                    "{}#{LAUNCH_MARKER}={}",
+                    desired.harness.path, desired.launch_id
+                ));
             }
+            command.process_group(0);
         }
         let mut child = command.spawn()?;
         let pid = child.id();
@@ -512,7 +552,14 @@ impl ProcessSupervisor for LocalProcessAdapter {
             #[cfg(not(target_os = "linux"))]
             process_start_ticks: None,
             #[cfg(target_os = "linux")]
-            command_path: Self::process_command(pid),
+            command_path: Some(if identity.is_some() {
+                desired.harness.path.clone()
+            } else {
+                format!(
+                    "{}#{LAUNCH_MARKER}={}",
+                    desired.harness.path, desired.launch_id
+                )
+            }),
             #[cfg(not(target_os = "linux"))]
             command_path: None,
             observed_state: ObservedProcessState::Starting,

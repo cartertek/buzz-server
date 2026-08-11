@@ -27,22 +27,23 @@ RuntimeDirectoryMode=0700
 LogsDirectory=buzz-server
 LogsDirectoryMode=0700
 UMask=0077
-NoNewPrivileges=true
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID CAP_KILL
-AmbientCapabilities=
 PrivateTmp=true
-PrivateDevices=true
+PrivateDevices=false
 ProtectClock=true
-ProtectControlGroups=true
+ProtectControlGroups=false
 ProtectKernelLogs=true
 ProtectKernelModules=true
-ProtectKernelTunables=true
-ProtectProc=invisible
-ProcSubset=pid
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-RestrictNamespaces=true
+# Managed harnesses may create their own nested sandbox (for example Codex's
+# bubblewrap workspace sandbox), which needs UID maps under /proc/sys.
+ProtectKernelTunables=false
+ProtectProc=default
+ProcSubset=all
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Match Desktop's ability to let a harness create its own user/mount/network
+# namespaces while retaining the remaining service hardening below.
+RestrictNamespaces=false
 RestrictRealtime=true
-RestrictSUIDSGID=true
+RestrictSUIDSGID=false
 LockPersonality=true
 SystemCallArchitectures=native
 TasksMax=512
