@@ -20,14 +20,15 @@ or a new secret-injection mechanism that protocol v1 does not specify.
 
 ## Decision
 
-Do not implement a Buzz Server-specific Docker Compose provider. The existing Buzz
-provider protocol and Kubernetes fixtures define the compatibility target; adding a
-Compose provider here would create a separate provider contract and a new secret
-delivery mechanism that Buzz itself does not define.
+Do not include a Docker Compose provider in the initial provider-compatibility
+implementation. Keep Compose as a possible external deployment provider, but defer
+it until its lifecycle and secret-delivery behavior can be defined without creating
+an incompatible provider contract or persisting agent credentials in generated
+Compose configuration.
 
-If Buzz gains a Compose provider or the provider protocol later defines the lifecycle
-and secret-delivery behavior Compose needs, Buzz Server can support it through the
-same external-provider compatibility boundary.
+The existing Buzz provider protocol and Kubernetes fixtures remain the compatibility
+target in the meantime. Compose can be added later through the same external-provider
+boundary once the missing lifecycle and secret-delivery pieces are defined.
 
 ## Consequences
 
