@@ -42,15 +42,26 @@ expected=$(sed -n 's/^config_sha256=//p' "$staging/MANIFEST")
 actual=$(sha256sum "$staging/etc/buzz-server/config.json" | awk '{print $1}')
 [ -n "$expected" ] && [ "$expected" = "$actual" ] || { echo "backup config digest mismatch" >&2; exit 65; }
 
-# Convert a portable Desktop-compatible owner backup into normal local custody
-# before replacing live configuration. Never leave ncryptsec in /etc.
-if [ -f "$staging/etc/buzz-server/owner-secret.ncryptsec" ]; then
-  [ -n "$passphrase_file" ] && [ -f "$passphrase_file" ] || { echo "owner recovery requires BUZZ_BACKUP_PASSPHRASE_FILE" >&2; exit 64; }
-  recovered="$temporary/recovered-owner"
-  "$secretsctl" import-nip49 --input "$staging/etc/buzz-server/owner-secret.ncryptsec" --output "$recovered" --passphrase-file "$passphrase_file"
-  rm -f "$staging/etc/buzz-server/owner-secret.ncryptsec" "$staging/etc/buzz-server/owner-secret.envelope.json" "$staging/etc/buzz-server/owner-secret" "$staging/etc/buzz-server/owner-secret.keyring"
-  "$secretsctl" persist --input "$recovered" --key-file "$staging/etc/buzz-server/owner-secret" --marker "$staging/etc/buzz-server/owner-secret.keyring"
+identity_stage="$staging/var/lib/buzz-server/community-identities"
+if [ -d "$identity_stage" ]; then
+  for encrypted in "$identity_stage"/*.ncryptsec; do
+    [ -f "$encrypted" ] || continue
+    pubkey=$(basename "$encrypted" .ncryptsec)
+    [ -n "$passphrase_file" ] && [ -f "$passphrase_file" ] || { echo "community identity recovery requires BUZZ_BACKUP_PASSPHRASE_FILE" >&2; exit 64; }
+    recovered="$temporary/$pubkey.recovered"
+    "$secretsctl" import-nip49 --input "$encrypted" --output "$recovered" --passphrase-file "$passphrase_file"
+    actual_pubkey=$("$secretsctl" public-key --input "$recovered")
+    [ "$actual_pubkey" = "$pubkey" ] || { echo "community identity backup pubkey mismatch" >&2; exit 65; }
+    rm -f "$encrypted" "$identity_stage/$pubkey.secret" "$identity_stage/$pubkey.keyring"
+    "$secretsctl" persist \
+      --input "$recovered" \
+      --key-file "$identity_stage/$pubkey.secret" \
+      --marker "$identity_stage/$pubkey.keyring" \
+      --service buzz-server \
+      --name "community-identity:$pubkey"
+  done
 fi
+
 systemctl stop buzz-server.service
 snapshot="/var/lib/buzz-server.restore-$(date -u +%Y%m%dT%H%M%SZ)"
 etc_snapshot="$temporary/etc-buzz-server.previous"

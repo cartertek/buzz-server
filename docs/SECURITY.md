@@ -19,7 +19,7 @@ verification call Buzz's shared `buzz-sdk` NIP-OA implementation so Desktop and
 Server remain byte-for-byte compatible. The signer exposes only a structured,
 policy-limited “authorize agent” operation—never arbitrary Nostr signing.
 
-Community identities enter through `buzz-server communities join`. The CLI never places a private key in argv and never sends it through the lifecycle JSON API: interactive input is hidden, `--secret-file` is available for automation, and the root CLI stores a canonical secret under `/var/lib/buzz-server/community-identities/<pubkey>.secret` with owner-only permissions before sending only the public key to the daemon. Identical pubkeys are deduplicated across communities; the secret is removed when the last referencing community is deleted. Legacy installations may retain the old installation owner credential only as a compatibility fallback for pre-association community records.
+Community identities enter through `buzz-server communities join`. The CLI never places a private key in argv and never sends it through the lifecycle JSON API: interactive input is hidden and `--secret-file` is available for automation. Persistence uses KMS when configured; otherwise it mirrors Buzz Desktop by preferring the OS keyring and falling back to an owner-only local file. The daemon receives only a root-only ephemeral materialization under `/run/buzz-server/community-identities`, while the lifecycle API receives only the public key. Identical pubkeys are deduplicated across communities and the custody artifacts are removed when the last reference is deleted. Upgrades from the former single-owner configuration migrate that identity into this same per-community custody model before the new daemon starts.
 
 ## Required controls
 

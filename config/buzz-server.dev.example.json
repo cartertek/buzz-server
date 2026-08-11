@@ -2,7 +2,7 @@
   "state_database": "/var/lib/buzz-server/state.sqlite3",
   "log_directory": "/var/log/buzz-server/agents",
   "working_directory": "/var/lib/buzz-server",
-  "owner_secret_file": "/run/buzz-server/credentials/owner-secret",
+  "identity_custody": {},
   "default_agent": {
     "filesystem": {
       "user": "buzz-agent"

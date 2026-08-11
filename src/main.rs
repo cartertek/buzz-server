@@ -55,7 +55,7 @@ struct DaemonConfig {
     log_directory: PathBuf,
     working_directory: PathBuf,
     #[serde(default)]
-    owner_secret_file: Option<PathBuf>,
+    identity_custody: IdentityCustodyConfig,
     #[serde(default)]
     default_agent: DefaultAgentConfig,
     signer_conditions: String,
@@ -67,6 +67,12 @@ struct DaemonConfig {
     health: HealthPolicy,
     #[serde(default)]
     lifecycle_api: LifecycleApiConfig,
+}
+
+#[derive(Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct IdentityCustodyConfig {
+    kms_key_id: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -116,6 +122,16 @@ impl DaemonConfig {
 
     fn validate(&self) -> Result<(), DaemonError> {
         self.runtime_catalog.validate()?;
+        if self
+            .identity_custody
+            .kms_key_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(DaemonError::InvalidConfig(
+                "identity_custody.kms_key_id must not be empty".into(),
+            ));
+        }
         self.default_agent
             .filesystem
             .validate()
@@ -151,13 +167,6 @@ impl DaemonConfig {
             {
                 return Err(DaemonError::InvalidConfig(
                     "lifecycle_api TLS configuration is incomplete".into(),
-                ));
-            }
-        }
-        if let Some(owner_secret_file) = &self.owner_secret_file {
-            if owner_secret_file != Path::new("/run/buzz-server/credentials/owner-secret") {
-                return Err(DaemonError::InvalidConfig(
-                    "owner_secret_file must be the ephemeral materialized credential path".into(),
                 ));
             }
         }
@@ -209,9 +218,9 @@ struct LifecycleWake {
     store: Arc<SqliteStore>,
     community_join: buzz_server::community_join::DesktopCommunityJoinVerifier,
     community_identity_root: PathBuf,
+    community_identity_store: PathBuf,
     agent_files: AgentFileStore,
     custody: FilesystemAgentIdentityCustody,
-    legacy_owner_keys: Option<Keys>,
     auto_join_sender: tokio::sync::mpsc::UnboundedSender<buzz_server::CommunityConfigId>,
 }
 
@@ -220,22 +229,21 @@ impl LifecycleWake {
         &self,
         community: &buzz_server::CommunityConfig,
     ) -> Result<Keys, buzz_server::api::ApplicationError> {
-        if let Some(pubkey) = community.identity_pubkey.as_deref() {
-            let path = self
-                .community_identity_root
-                .join(format!("{pubkey}.secret"));
-            let secret = fs::read_to_string(path)
-                .map_err(|_| buzz_server::api::ApplicationError::Internal)?;
-            let keys = Keys::parse(secret.trim())
-                .map_err(|_| buzz_server::api::ApplicationError::Internal)?;
-            if !keys.public_key().to_hex().eq_ignore_ascii_case(pubkey) {
-                return Err(buzz_server::api::ApplicationError::Internal);
-            }
-            return Ok(keys);
+        let pubkey = community
+            .identity_pubkey
+            .as_deref()
+            .ok_or(buzz_server::api::ApplicationError::Internal)?;
+        let path = self
+            .community_identity_root
+            .join(format!("{pubkey}.secret"));
+        let secret =
+            fs::read_to_string(path).map_err(|_| buzz_server::api::ApplicationError::Internal)?;
+        let keys =
+            Keys::parse(secret.trim()).map_err(|_| buzz_server::api::ApplicationError::Internal)?;
+        if !keys.public_key().to_hex().eq_ignore_ascii_case(pubkey) {
+            return Err(buzz_server::api::ApplicationError::Internal);
         }
-        self.legacy_owner_keys
-            .clone()
-            .ok_or(buzz_server::api::ApplicationError::Internal)
+        Ok(keys)
     }
 
     fn sync_persona_references(&self, persona: &buzz_server::PersonaDefinition) {
@@ -321,6 +329,51 @@ impl LifecycleWake {
     }
 }
 
+fn remove_community_identity_custody(
+    runtime_root: &Path,
+    store_root: &Path,
+    pubkey: &str,
+) -> Result<(), String> {
+    let runtime_path = runtime_root.join(format!("{pubkey}.secret"));
+    if let Err(error) = fs::remove_file(&runtime_path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(format!(
+                "remove runtime community identity {}: {error}",
+                runtime_path.display()
+            ));
+        }
+    }
+
+    let key_file = store_root.join(format!("{pubkey}.secret"));
+    let marker = store_root.join(format!("{pubkey}.keyring"));
+    let envelope = store_root.join(format!("{pubkey}.envelope.json"));
+    if marker.exists() {
+        let name = format!("community-identity:{pubkey}");
+        match keyring::Entry::new("buzz-server", &name).and_then(|entry| entry.delete_credential())
+        {
+            Ok(()) | Err(keyring::Error::NoEntry) => {
+                let _ = fs::remove_file(&marker);
+            }
+            Err(error) => {
+                return Err(format!(
+                    "delete community identity from OS keyring: {error}"
+                ));
+            }
+        }
+    }
+    for path in [key_file, envelope] {
+        if let Err(error) = fs::remove_file(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(format!(
+                    "remove community identity custody {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl LifecycleEffects for LifecycleWake {
     fn community_changed(&self, community_id: buzz_server::CommunityConfigId) {
         let _ = self.auto_join_sender.send(community_id);
@@ -353,13 +406,12 @@ impl LifecycleEffects for LifecycleWake {
                 return;
             }
         }
-        let path = self
-            .community_identity_root
-            .join(format!("{pubkey}.secret"));
-        if let Err(error) = fs::remove_file(&path) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("community identity cleanup failed for {pubkey}: {error}");
-            }
+        if let Err(error) = remove_community_identity_custody(
+            &self.community_identity_root,
+            &self.community_identity_store,
+            pubkey,
+        ) {
+            eprintln!("community identity cleanup deferred for {pubkey}: {error}");
         }
     }
 
@@ -705,15 +757,6 @@ async fn main() -> Result<(), DaemonError> {
         }
     }
 
-    let legacy_owner_keys = if let Some(owner_secret_file) = &config.owner_secret_file {
-        let owner_secret = read_secret_file(owner_secret_file)?;
-        let keys = Keys::parse(&owner_secret).map_err(|_| DaemonError::InvalidOwnerSecret)?;
-        drop(owner_secret);
-        Some(keys)
-    } else {
-        None
-    };
-
     let store = Arc::new(SqliteStore::open(&config.state_database)?);
     let supervisor = LocalProcessAdapter::new(
         LocalLogPolicy {
@@ -741,11 +784,12 @@ async fn main() -> Result<(), DaemonError> {
     let config = Arc::new(config);
     let (operation_tx, operation_rx) = mpsc::channel();
     let (relay_publication_tx, relay_publication_rx) = mpsc::channel();
-    let community_identity_root = config
+    let community_identity_store = config
         .state_database
         .parent()
         .ok_or_else(|| DaemonError::InvalidConfig("state database has no parent".into()))?
         .join("community-identities");
+    let community_identity_root = PathBuf::from("/run/buzz-server/community-identities");
     let community_join = buzz_server::community_join::DesktopCommunityJoinVerifier::new(
         community_identity_root.clone(),
     )
@@ -760,9 +804,9 @@ async fn main() -> Result<(), DaemonError> {
             store: Arc::clone(&store),
             community_join,
             community_identity_root: community_identity_root.clone(),
+            community_identity_store: community_identity_store.clone(),
             agent_files: agent_files.clone(),
             custody: custody.clone(),
-            legacy_owner_keys: legacy_owner_keys.clone(),
             auto_join_sender: auto_join_tx.clone(),
         }),
         unix_seconds_i64,
@@ -775,7 +819,6 @@ async fn main() -> Result<(), DaemonError> {
             application: lifecycle_application.clone(),
             store: Arc::clone(&store),
             config: Arc::clone(&config),
-            legacy_owner_keys: legacy_owner_keys.clone(),
             custody: custody.clone(),
             agent_files: agent_files.clone(),
             supervisor,
@@ -787,7 +830,7 @@ async fn main() -> Result<(), DaemonError> {
         RelayPublicationContext {
             store: Arc::clone(&store),
             community_identity_root: community_identity_root.clone(),
-            legacy_owner_keys: legacy_owner_keys.clone(),
+            community_identity_store: community_identity_store.clone(),
             agent_files: agent_files.clone(),
             custody: custody.clone(),
         },
@@ -815,7 +858,6 @@ async fn main() -> Result<(), DaemonError> {
         agent_files: agent_files.clone(),
         custody: custody.clone(),
         community_identity_root: community_identity_root.clone(),
-        legacy_owner_keys: legacy_owner_keys.clone(),
     };
     let mut auto_join_task = tokio::spawn(run_auto_join_manager(
         auto_join_rx,
@@ -909,7 +951,6 @@ struct AutoJoinContext {
     agent_files: AgentFileStore,
     custody: FilesystemAgentIdentityCustody,
     community_identity_root: PathBuf,
-    legacy_owner_keys: Option<Keys>,
 }
 
 async fn run_auto_join_manager(
@@ -1155,13 +1196,10 @@ fn auto_join_owner_keys(
     context: &AutoJoinContext,
     community: &buzz_server::CommunityConfig,
 ) -> Result<Keys, DaemonError> {
-    let Some(pubkey) = community.identity_pubkey.as_deref() else {
-        return context.legacy_owner_keys.clone().ok_or_else(|| {
-            DaemonError::InvalidConfig(
-                "legacy community has no associated identity; rejoin the community".into(),
-            )
-        });
-    };
+    let pubkey = community
+        .identity_pubkey
+        .as_deref()
+        .ok_or_else(|| DaemonError::InvalidConfig("community has no associated identity".into()))?;
     let secret = fs::read_to_string(
         context
             .community_identity_root
@@ -1210,7 +1248,7 @@ async fn auto_join_wait_or_shutdown(
 struct RelayPublicationContext {
     store: Arc<SqliteStore>,
     community_identity_root: PathBuf,
-    legacy_owner_keys: Option<Keys>,
+    community_identity_store: PathBuf,
     agent_files: AgentFileStore,
     custody: FilesystemAgentIdentityCustody,
 }
@@ -1433,15 +1471,9 @@ fn relay_publication_owner_keys(
         }
         return Err(DaemonError::InvalidOwnerSecret);
     }
-    context
-        .legacy_owner_keys
-        .clone()
-        .filter(|keys| {
-            keys.public_key()
-                .to_hex()
-                .eq_ignore_ascii_case(owner_pubkey)
-        })
-        .ok_or_else(|| DaemonError::Task(format!("owner key {owner_pubkey} is unavailable")))
+    Err(DaemonError::Task(format!(
+        "owner key {owner_pubkey} is unavailable"
+    )))
 }
 
 fn cleanup_unreferenced_projection_owner(
@@ -1459,21 +1491,18 @@ fn cleanup_unreferenced_projection_owner(
     {
         return Ok(());
     }
-    let path = context
-        .community_identity_root
-        .join(format!("{owner_pubkey}.secret"));
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
+    remove_community_identity_custody(
+        &context.community_identity_root,
+        &context.community_identity_store,
+        owner_pubkey,
+    )
+    .map_err(DaemonError::Task)
 }
 
 struct ReconcileContext {
     application: SqliteLifecycleApplication<LifecycleWake>,
     store: Arc<SqliteStore>,
     config: Arc<DaemonConfig>,
-    legacy_owner_keys: Option<Keys>,
     custody: FilesystemAgentIdentityCustody,
     agent_files: AgentFileStore,
     supervisor: LocalProcessAdapter,
@@ -1574,16 +1603,6 @@ fn parse_args() -> Result<PathBuf, DaemonError> {
         return Err(DaemonError::Usage);
     }
     Ok(path.into())
-}
-
-fn read_secret_file(path: &Path) -> Result<String, DaemonError> {
-    let value = fs::read_to_string(path)
-        .map_err(|_| DaemonError::MissingSecret(path.display().to_string()))?;
-    let value = value.trim_end_matches(['\r', '\n']).to_owned();
-    if value.is_empty() {
-        return Err(DaemonError::MissingSecret(path.display().to_string()));
-    }
-    Ok(value)
 }
 
 fn secret_generation(value: &str) -> String {
@@ -1789,13 +1808,10 @@ fn community_owner_keys(
     context: &ReconcileContext,
     community: &buzz_server::CommunityConfig,
 ) -> Result<Keys, DaemonError> {
-    let Some(pubkey) = community.identity_pubkey.as_deref() else {
-        return context.legacy_owner_keys.clone().ok_or_else(|| {
-            DaemonError::InvalidConfig(
-                "legacy community has no associated identity; rejoin the community".into(),
-            )
-        });
-    };
+    let pubkey = community
+        .identity_pubkey
+        .as_deref()
+        .ok_or_else(|| DaemonError::InvalidConfig("community has no associated identity".into()))?;
     let root = context
         .config
         .state_database
@@ -2355,8 +2371,6 @@ enum DaemonError {
     Usage,
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
-    #[error("required secret is unavailable: {0}")]
-    MissingSecret(String),
     #[error("configured owner secret is invalid")]
     InvalidOwnerSecret,
     #[error("daemon task failed: {0}")]

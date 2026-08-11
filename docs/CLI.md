@@ -5,7 +5,7 @@ hosted-agent, and secret management. It also bundles the pinned upstream Buzz CL
 and exposes selected Buzz operations through the same namespace.
 
 ```text
-buzz-server health|status|start|stop|restart|backup|restore|rollback|rotate-owner
+buzz-server health|status|start|stop|restart|backup|restore|rollback
 buzz-server communities COMMAND [OPTIONS]
 buzz-server agents COMMAND [OPTIONS]
 buzz-server channels COMMAND --community ID [OPTIONS]

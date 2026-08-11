@@ -171,12 +171,11 @@ chmod 0555 \
   "$release_staging/share/deploy/install-package.sh" \
   "$release_staging/share/deploy/install-release.sh" \
   "$release_staging/share/deploy/provision-runtimes.sh" \
-  "$release_staging/share/deploy/prepare-owner-credential.sh" \
+  "$release_staging/share/deploy/prepare-community-identities.sh" \
+  "$release_staging/share/deploy/migrate-legacy-owner.py" \
   "$release_staging/share/deploy/backup.sh" \
   "$release_staging/share/deploy/restore.sh" \
-  "$release_staging/share/deploy/rotate-owner.sh" \
-  "$release_staging/share/deploy/healthcheck.sh" \
-  "$release_staging/share/deploy/disaster-recovery-exercise.sh"
+  "$release_staging/share/deploy/healthcheck.sh"
 chmod 0555 "$release_staging"
 release_source="$release_staging"
 if [ -e "$release" ] || [ -L "$release" ]; then
@@ -198,6 +197,62 @@ fi
 config_migrated=false
 config_backup="$temporary/config.json.previous"
 cp -p /etc/buzz-server/config.json "$config_backup"
+legacy_owner_pubkey=
+legacy_owner_migrated=false
+if python3 - /etc/buzz-server/config.json <<'PYLEGACYOWNER' >/dev/null
+import json, sys
+config = json.load(open(sys.argv[1]))
+raise SystemExit(0 if "owner_secret_file" in config else 1)
+PYLEGACYOWNER
+then
+  legacy_owner_secret="$temporary/legacy-owner.secret"
+  legacy_kms_key_id=
+  if [ -f /etc/buzz-server/owner-secret.envelope.json ]; then
+    legacy_kms_key_id=$(python3 - /etc/buzz-server/owner-secret.envelope.json <<'PYKMS'
+import json, sys
+print(json.load(open(sys.argv[1])).get("kms_key_id", ""))
+PYKMS
+)
+    [ -n "$legacy_kms_key_id" ] || fail "legacy KMS owner envelope has no key ID"
+    run_bounded 60 "Decrypting legacy owner identity for migration" \
+      "$release_source/buzz-secretsctl" decrypt \
+      --input /etc/buzz-server/owner-secret.envelope.json \
+      --output "$legacy_owner_secret"
+  else
+    run_bounded 30 "Materializing legacy owner identity for migration" \
+      "$release_source/buzz-secretsctl" materialize \
+      --output "$legacy_owner_secret" \
+      --key-file /etc/buzz-server/owner-secret \
+      --marker /etc/buzz-server/owner-secret.keyring
+  fi
+  legacy_owner_pubkey=$("$release_source/buzz-secretsctl" public-key --input "$legacy_owner_secret")
+  [ -n "$legacy_owner_pubkey" ] || fail "legacy owner migration did not produce a public key"
+  identity_store=/var/lib/buzz-server/community-identities
+  install -d -o root -g root -m 0700 "$identity_store"
+  if [ -n "$legacy_kms_key_id" ]; then
+    run_bounded 60 "Migrating legacy owner identity into KMS-backed community custody" \
+      "$release_source/buzz-secretsctl" encrypt \
+      --kms-key-id "$legacy_kms_key_id" \
+      --input "$legacy_owner_secret" \
+      --output "$identity_store/$legacy_owner_pubkey.envelope.json"
+  else
+    run_bounded 30 "Migrating legacy owner identity into Desktop-compatible local custody" \
+      "$release_source/buzz-secretsctl" persist \
+      --input "$legacy_owner_secret" \
+      --key-file "$identity_store/$legacy_owner_pubkey.secret" \
+      --marker "$identity_store/$legacy_owner_pubkey.keyring" \
+      --service buzz-server \
+      --name "community-identity:$legacy_owner_pubkey"
+  fi
+  set -- /etc/buzz-server/config.json "$legacy_owner_pubkey"
+  if [ -n "$legacy_kms_key_id" ]; then set -- "$@" --kms-key-id "$legacy_kms_key_id"; fi
+  run_bounded 30 "Migrating legacy owner configuration" \
+    python3 "$release_source/share/deploy/migrate-legacy-owner.py" "$@"
+  chown root:buzz-server /etc/buzz-server/config.json
+  chmod 0640 /etc/buzz-server/config.json
+  config_migrated=true
+  legacy_owner_migrated=true
+fi
 legacy_agent_id=$(python3 - /etc/buzz-server/config.json <<'PYLEGACYID'
 import json
 import sys
@@ -250,9 +305,6 @@ path = Path(sys.argv[1])
 config = json.loads(path.read_text())
 changed = False
 
-if config.get("owner_secret_file") == "/run/credentials/buzz-server.service/owner-secret":
-    config["owner_secret_file"] = "/run/buzz-server/credentials/owner-secret"
-    changed = True
 if "runtime_user" in config:
     runtime_user = config.pop("runtime_user")
     default_agent = config.setdefault("default_agent", {})
@@ -328,31 +380,14 @@ else
     install -o root -g buzz-server -m 0640 "$config_backup" /etc/buzz-server/config.json
     fail "failed to migrate Buzz Server configuration"
   }
-  rm -f "$config_backup"
+  if [ "$config_migrated" != true ]; then
+    rm -f "$config_backup"
+  fi
 fi
 if [ ! -e /etc/buzz-server/secrets.env ]; then
   secrets_source=${BUZZ_SECRETS_FILE:-/dev/null}
   test -f "$secrets_source"
   install -o root -g buzz-server -m 0640 "$secrets_source" /etc/buzz-server/secrets.env
-fi
-owner_envelope=/etc/buzz-server/owner-secret.envelope.json
-owner_key_file=/etc/buzz-server/owner-secret
-owner_marker=/etc/buzz-server/owner-secret.keyring
-if [ ! -e "$owner_envelope" ] && [ ! -e "$owner_key_file" ] && [ ! -e "$owner_marker" ]; then
-  owner_source=${BUZZ_OWNER_SECRET_FILE:-}
-  if [ -n "${BUZZ_OWNER_ENVELOPE_FILE:-}" ] && [ -f "$BUZZ_OWNER_ENVELOPE_FILE" ]; then
-    install -o root -g root -m 0400 "$BUZZ_OWNER_ENVELOPE_FILE" "$owner_envelope"
-  elif [ -n "$owner_source" ] && [ -f "$owner_source" ]; then
-    if [ -n "${BUZZ_KMS_KEY_ID:-}" ]; then
-      run_bounded 60 "Encrypting legacy owner secret with AWS KMS" "$release_source/buzz-secretsctl" encrypt --kms-key-id "$BUZZ_KMS_KEY_ID" --input "$owner_source" --output "$owner_envelope"
-      chown root:root "$owner_envelope"
-      chmod 0400 "$owner_envelope"
-    else
-      run_bounded 30 "Persisting legacy owner secret" "$release_source/buzz-secretsctl" persist --input "$owner_source" --key-file "$owner_key_file" --marker "$owner_marker"
-      [ ! -e "$owner_key_file" ] || { chown root:root "$owner_key_file"; chmod 0400 "$owner_key_file"; }
-      [ ! -e "$owner_marker" ] || { chown root:root "$owner_marker"; chmod 0600 "$owner_marker"; }
-    fi
-  fi
 fi
 runtime_assets_valid() {
   harness_dir=/opt/buzz-server/runtimes/sprig-0.1.0
@@ -472,4 +507,9 @@ if [ "$deployment_ok" != true ]; then
   fail "deployment failed; no previous release was available"
 fi
 
+if [ "$legacy_owner_migrated" = true ]; then
+  "$release/buzz-secretsctl" clear-local     --key-file /etc/buzz-server/owner-secret     --marker /etc/buzz-server/owner-secret.keyring || true
+  rm -f /etc/buzz-server/owner-secret.envelope.json /run/buzz-server/credentials/owner-secret
+  log "Removed migrated legacy owner credential"
+fi
 log "Buzz Server $identity installed successfully"

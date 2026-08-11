@@ -110,6 +110,18 @@ if [ ! -f /etc/buzz-server/config.json ]; then
   "lifecycle_api": {"unix_socket": "/run/buzz-server/lifecycle.sock", "administrator_uids": [0], "draft_submitter_uids": [], "retention_seconds": 2592000, "tls": null}
 }
 EOF_CONFIG
+    if [ -n "${BUZZ_KMS_KEY_ID:-}" ]; then
+      python3 - "$BUZZ_CONFIG_FILE" "$BUZZ_KMS_KEY_ID" <<'PYKMSCONFIG'
+import json, os, sys
+path, key_id = sys.argv[1], sys.argv[2]
+with open(path) as f: config = json.load(f)
+config["identity_custody"] = {"kms_key_id": key_id}
+tmp = path + ".tmp"
+with open(tmp, "w") as f: json.dump(config, f, indent=2); f.write("\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PYKMSCONFIG
+    fi
     printf 'BUZZ_SECRET_OPENAI_API_KEY=%s\n' "$BUZZ_OPENAI_API_KEY" >"$BUZZ_SECRETS_FILE"
     chmod 0600 "$BUZZ_CONFIG_FILE" "$BUZZ_SECRETS_FILE"
   fi

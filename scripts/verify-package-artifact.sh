@@ -48,14 +48,13 @@ $package/deploy/buzz-server-healthcheck.service
 $package/deploy/buzz-server-healthcheck.timer
 $package/deploy/backup.sh
 $package/deploy/healthcheck.sh
-$package/deploy/disaster-recovery-exercise.sh
-$package/deploy/prepare-owner-credential.sh
+$package/deploy/prepare-community-identities.sh
 $package/deploy/restore.sh
-$package/deploy/rotate-owner.sh
 $package/deploy/buzz-serverctl
 $package/deploy/install.sh
 $package/deploy/install-package.sh
 $package/deploy/install-release.sh
+$package/deploy/migrate-legacy-owner.py
 $package/deploy/provision-runtimes.sh
 EOF_MANIFEST
 )
@@ -84,8 +83,8 @@ root="$work/$package"
 
 for file in buzz-server buzz-server-daemon buzz-agentctl buzz-secretsctl buzz-runtime-probe buzz-cli \
   deploy/install.sh deploy/install-package.sh deploy/install-release.sh deploy/buzz-serverctl \
-  deploy/provision-runtimes.sh deploy/prepare-owner-credential.sh deploy/backup.sh deploy/restore.sh \
-  deploy/rotate-owner.sh deploy/healthcheck.sh deploy/disaster-recovery-exercise.sh; do
+  deploy/provision-runtimes.sh deploy/prepare-community-identities.sh deploy/migrate-legacy-owner.py deploy/backup.sh deploy/restore.sh \
+  deploy/healthcheck.sh; do
   [ -f "$root/$file" ] && [ -x "$root/$file" ] || { echo "expected executable missing or not executable: $file" >&2; exit 65; }
   [ "$(stat -c %a "$root/$file")" = 755 ] || { echo "unexpected executable mode for $file" >&2; exit 65; }
 done

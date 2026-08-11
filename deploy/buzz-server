@@ -191,8 +191,8 @@ Commands:
   decrypt-passphrase  Decrypt a passphrase envelope
   export-nip49        Export a NIP-49 encrypted secret
   import-nip49        Import a NIP-49 encrypted secret
-  persist             Persist a secret using the local secure backend
-  materialize         Materialize a persisted secret into a file
+  persist             Persist a secret using the OS-keyring-first local backend
+  materialize         Materialize a persisted secret into a restricted file
   clear-local         Remove a locally persisted secret
 
 Run `buzz-server secrets <command> --help` for command-specific help.
@@ -226,15 +226,13 @@ community_relay() {
 community_identity_secret() {
   community=$1
   if pubkey=$("$release/buzz-agentctl" community-identity-pubkey --community "$community" 2>/dev/null); then
-    secret="/var/lib/buzz-server/community-identities/${pubkey}.secret"
+    secret="/run/buzz-server/community-identities/${pubkey}.secret"
     [ -r "$secret" ] || { echo "Community identity credential is unavailable for $community" >&2; return 77; }
     printf '%s\n' "$secret"
     return 0
   fi
-  # Legacy pre-join records used the installation owner identity.
-  secret=/run/buzz-server/credentials/owner-secret
-  [ -r "$secret" ] || { echo "Legacy Buzz Server owner credential is unavailable" >&2; return 77; }
-  printf '%s\n' "$secret"
+  echo "Community has no associated identity" >&2
+  return 77
 }
 
 join_community() {
@@ -267,15 +265,36 @@ join_community() {
   fi
 
   [ -r "$secret_file" ] || { [ -z "$temporary" ] || rm -f "$temporary"; echo "Cannot read secret file: $secret_file" >&2; return 66; }
+  pubkey=$("$release/buzz-secretsctl" public-key --input "$secret_file") || { [ -z "$temporary" ] || rm -f "$temporary"; return 1; }
   custody_root=/var/lib/buzz-server/community-identities
-  custody_result=$("$release/buzz-secretsctl" custody-community --input "$secret_file" --directory "$custody_root") || {
-    [ -z "$temporary" ] || rm -f "$temporary"
-    return 1
-  }
+  runtime_root=/run/buzz-server/community-identities
+  install -d -o root -g root -m 0700 "$custody_root" "$runtime_root"
+  key_file="$custody_root/$pubkey.secret"
+  marker="$custody_root/$pubkey.keyring"
+  envelope="$custody_root/$pubkey.envelope.json"
+  runtime_secret="$runtime_root/$pubkey.secret"
+  disposition=existing
+  if [ ! -e "$key_file" ] && [ ! -e "$marker" ] && [ ! -e "$envelope" ]; then
+    disposition=created
+    kms_key_id=$(python3 - /etc/buzz-server/config.json <<'PYKMS'
+import json, sys
+print(json.load(open(sys.argv[1])).get("identity_custody", {}).get("kms_key_id", ""))
+PYKMS
+)
+    if [ -n "$kms_key_id" ]; then
+      "$release/buzz-secretsctl" encrypt --kms-key-id "$kms_key_id" --input "$secret_file" --output "$envelope" || { [ -z "$temporary" ] || rm -f "$temporary"; return 1; }
+    else
+      "$release/buzz-secretsctl" persist --input "$secret_file" --key-file "$key_file" --marker "$marker" --service buzz-server --name "community-identity:$pubkey" || { [ -z "$temporary" ] || rm -f "$temporary"; return 1; }
+    fi
+  fi
+  if [ -f "$envelope" ]; then
+    "$release/buzz-secretsctl" decrypt --input "$envelope" --output "$runtime_secret" || { [ -z "$temporary" ] || rm -f "$temporary"; return 1; }
+  else
+    "$release/buzz-secretsctl" materialize --output "$runtime_secret" --key-file "$key_file" --marker "$marker" --service buzz-server --name "community-identity:$pubkey" || { [ -z "$temporary" ] || rm -f "$temporary"; return 1; }
+  fi
+  actual=$("$release/buzz-secretsctl" public-key --input "$runtime_secret") || { [ -z "$temporary" ] || rm -f "$temporary"; return 1; }
+  [ "$actual" = "$pubkey" ] || { rm -f "$runtime_secret"; [ -z "$temporary" ] || rm -f "$temporary"; echo "Community identity custody mismatch" >&2; return 65; }
   [ -z "$temporary" ] || rm -f "$temporary"
-  set -- $custody_result
-  pubkey=$1
-  disposition=$2
 
   if "$release/buzz-agentctl" community-join --display-name "$display_name" --relay-url "$relay_url" --identity-pubkey "$pubkey"; then
     return 0
@@ -283,7 +302,8 @@ join_community() {
     status=$?
   fi
   if [ "$disposition" = created ]; then
-    rm -f "$custody_root/${pubkey}.secret"
+    "$release/buzz-secretsctl" clear-local --key-file "$key_file" --marker "$marker" --service buzz-server --name "community-identity:$pubkey" || true
+    rm -f "$envelope" "$runtime_secret"
   fi
   return "$status"
 }

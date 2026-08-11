@@ -21,4 +21,4 @@ install -m 0644 config/buzz-server.dev.example.json config/buzz-server.schema.js
 install -m 0755 deploy/buzz-server "$output_dir/buzz-server.in"
 install -m 0644 deploy/buzz-server.service deploy/buzz-server-healthcheck.service deploy/buzz-server-healthcheck.timer deploy/README.md "$output_dir/deploy/"
 install -m 0755 deploy/install.sh "$output_dir/deploy/install.sh.in"
-install -m 0755 deploy/install-package.sh deploy/install-release.sh deploy/buzz-serverctl deploy/provision-runtimes.sh deploy/prepare-owner-credential.sh deploy/backup.sh deploy/restore.sh deploy/rotate-owner.sh deploy/healthcheck.sh deploy/disaster-recovery-exercise.sh "$output_dir/deploy/"
+install -m 0755 deploy/install-package.sh deploy/install-release.sh deploy/buzz-serverctl deploy/provision-runtimes.sh deploy/prepare-community-identities.sh deploy/migrate-legacy-owner.py deploy/backup.sh deploy/restore.sh deploy/healthcheck.sh "$output_dir/deploy/"
