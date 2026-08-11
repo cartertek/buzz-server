@@ -251,11 +251,11 @@ pub struct FilesystemConfig {
 }
 
 impl FilesystemConfig {
-    fn is_default(&self) -> bool {
+    pub fn is_default(&self) -> bool {
         self.user.is_none()
     }
 
-    fn validate(&self) -> Result<(), ValidationError> {
+    pub fn validate(&self) -> Result<(), ValidationError> {
         if let Some(user) = self.user.as_deref() {
             if user.is_empty()
                 || user.len() > 32

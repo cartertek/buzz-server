@@ -63,14 +63,17 @@ Node, modules, loaders, and execute/read permissions.
 ## Agent Unix accounts
 
 Buzz Server creates a shared `buzz-agent` system account with `buzz-agent` as
-its primary group. By default, every managed agent process runs under this
-account, while each agent retains an isolated workspace and runtime directory.
-Reconciliation owns those directories as `buzz-agent:buzz-agent` with mode
-`0770`, including upgrades from earlier builds that used generated per-agent
-accounts. Legacy generated accounts are not removed automatically.
+its primary group. By default, every managed agent process runs under the account
+selected by `default_agent.filesystem.user` in `/etc/buzz-server/config.json`,
+which defaults to `buzz-agent`, while each agent retains an isolated workspace and
+runtime directory.
+Reconciliation owns those directories as the selected account and the
+`buzz-agent` group with mode `0770`, including upgrades from earlier builds that
+used generated per-agent accounts. Legacy generated accounts are not removed
+automatically.
 
-An operator can instead set `filesystem.user` in the agent JSON or pass
-`--filesystem-user USER` to `agents create` or `agents update`. The account must
+An operator can override that default by setting `filesystem.user` in the agent
+JSON or passing `--filesystem-user USER` to `agents create` or `agents update`. The account must
 already exist and already belong to the `buzz-agent` group so it can execute
 the packaged runtimes. Buzz Server does not alter or remove explicitly selected
 accounts; the operator remains responsible for their groups, modes, and ACLs.

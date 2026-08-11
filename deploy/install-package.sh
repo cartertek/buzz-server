@@ -253,6 +253,16 @@ changed = False
 if config.get("owner_secret_file") == "/run/credentials/buzz-server.service/owner-secret":
     config["owner_secret_file"] = "/run/buzz-server/credentials/owner-secret"
     changed = True
+if "runtime_user" in config:
+    runtime_user = config.pop("runtime_user")
+    default_agent = config.setdefault("default_agent", {})
+    if not isinstance(default_agent, dict):
+        raise RuntimeError("default_agent must be an object")
+    filesystem = default_agent.setdefault("filesystem", {})
+    if not isinstance(filesystem, dict):
+        raise RuntimeError("default_agent.filesystem must be an object")
+    filesystem.setdefault("user", runtime_user)
+    changed = True
 legacy_community = config.get("community")
 legacy_agent = config.get("agent")
 if legacy_community or legacy_agent:

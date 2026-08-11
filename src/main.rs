@@ -42,6 +42,12 @@ const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const AGENT_GROUP: &str = "buzz-agent";
 const DEFAULT_AGENT_USER: &str = "buzz-agent";
 
+#[derive(Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct DefaultAgentConfig {
+    filesystem: buzz_server::FilesystemConfig,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DaemonConfig {
@@ -50,10 +56,8 @@ struct DaemonConfig {
     working_directory: PathBuf,
     #[serde(default)]
     owner_secret_file: Option<PathBuf>,
-    /// Accepted only so installations can restart with pre-v0.1.7 config.
-    /// Per-agent filesystem identities supersede this field completely.
-    #[serde(default, rename = "runtime_user")]
-    _runtime_user: Option<String>,
+    #[serde(default)]
+    default_agent: DefaultAgentConfig,
     signer_conditions: String,
     runtime_catalog: RuntimeCatalog,
     harness: ExecutableIdentity,
@@ -112,6 +116,10 @@ impl DaemonConfig {
 
     fn validate(&self) -> Result<(), DaemonError> {
         self.runtime_catalog.validate()?;
+        self.default_agent
+            .filesystem
+            .validate()
+            .map_err(|error| DaemonError::InvalidConfig(error.to_string()))?;
         for path in [
             &self.state_database,
             &self.log_directory,
@@ -1669,14 +1677,20 @@ fn resolve_user_groups(user: &str, primary_gid: u32) -> Result<Vec<u32>, DaemonE
     Ok(gids)
 }
 
-fn selected_agent_user(configured_user: Option<&str>) -> &str {
-    configured_user.unwrap_or(DEFAULT_AGENT_USER)
+fn selected_agent_user<'a>(
+    configured_user: Option<&'a str>,
+    default_user: Option<&'a str>,
+) -> &'a str {
+    configured_user
+        .or(default_user)
+        .unwrap_or(DEFAULT_AGENT_USER)
 }
 
 fn ensure_agent_user(
     configured_user: Option<&str>,
+    default_user: Option<&str>,
 ) -> Result<(String, (u32, u32), PathBuf), DaemonError> {
-    let user = selected_agent_user(configured_user).to_owned();
+    let user = selected_agent_user(configured_user, default_user).to_owned();
     let identity = resolve_user(&user).map_err(|_| {
         DaemonError::InvalidConfig(format!("filesystem user {user} does not exist"))
     })?;
@@ -1826,8 +1840,10 @@ fn reconcile_dynamic_lifecycle_operation(
         .parent()
         .ok_or_else(|| DaemonError::InvalidConfig("agent receipt path has no parent".into()))?;
     fs::create_dir_all(state_root)?;
-    let (agent_user, agent_identity, agent_home) =
-        ensure_agent_user(resolved.filesystem.user.as_deref())?;
+    let (agent_user, agent_identity, agent_home) = ensure_agent_user(
+        resolved.filesystem.user.as_deref(),
+        context.config.default_agent.filesystem.user.as_deref(),
+    )?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::{chown, PermissionsExt};
@@ -2388,17 +2404,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_runtime_user_is_accepted_but_not_validated_or_used() {
+    fn runtime_user_is_rejected_after_installer_migration() {
         let source = include_str!("../config/buzz-server.dev.example.json");
         let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
-        value["runtime_user"] = serde_json::json!("removed-account-does-not-exist");
-        let config: DaemonConfig = serde_json::from_value(value).unwrap();
-
-        assert_eq!(
-            config._runtime_user.as_deref(),
-            Some("removed-account-does-not-exist")
-        );
-        config.validate().unwrap();
+        value["runtime_user"] = serde_json::json!("ec2-user");
+        assert!(serde_json::from_value::<DaemonConfig>(value).is_err());
     }
 
     #[test]
@@ -2429,8 +2439,12 @@ mod tests {
     fn default_agent_account_matches_the_common_group() {
         assert_eq!(DEFAULT_AGENT_USER, "buzz-agent");
         assert_eq!(AGENT_GROUP, "buzz-agent");
-        assert_eq!(selected_agent_user(None), "buzz-agent");
-        assert_eq!(selected_agent_user(Some("ec2-user")), "ec2-user");
+        assert_eq!(selected_agent_user(None, None), "buzz-agent");
+        assert_eq!(selected_agent_user(None, Some("ec2-user")), "ec2-user");
+        assert_eq!(
+            selected_agent_user(Some("agent-user"), Some("ec2-user")),
+            "agent-user"
+        );
     }
 
     #[test]

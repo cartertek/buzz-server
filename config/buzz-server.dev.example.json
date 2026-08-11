@@ -3,6 +3,11 @@
   "log_directory": "/var/log/buzz-server/agents",
   "working_directory": "/var/lib/buzz-server",
   "owner_secret_file": "/run/buzz-server/credentials/owner-secret",
+  "default_agent": {
+    "filesystem": {
+      "user": "buzz-agent"
+    }
+  },
   "signer_conditions": "kind=9",
   "runtime_catalog": {
     "runtimes": [
