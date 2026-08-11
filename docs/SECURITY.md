@@ -4,7 +4,7 @@
 
 - API callers may request lifecycle operations but may not request arbitrary
   signatures or raw supervisor commands.
-- The MVP local backend may request only typed launch and lifecycle operations
+- The local backend may request only typed launch and lifecycle operations
   from its least-privilege headless process supervisor, never arbitrary commands.
 - The signer is isolated from the local backend, the API daemon, the relay,
   supervised agent processes, and workspaces as far as the host permits.
@@ -47,19 +47,9 @@ Community identities enter through `buzz-server communities join`. The CLI never
   argument, environment, filesystem, signal, and lifecycle policy instead of an
   arbitrary command surface in the API daemon.
 
-## Future provider and Compose controls
+## Provider controls
 
-- Provider executables are trusted deployment plugins because the current Buzz
-  protocol may give them agent secrets. Future provider installation is
-  administrator-only and requires allowlisting, checksum pinning, bounded
-  input/output, redacted logging, and subprocess sandboxing.
-- A future Docker Compose provider must keep plaintext secrets out of generated
-  YAML, launch receipts, logs, and audit records; isolate projects and secret
-  paths by community and agent; deny agents access to the Docker socket; and use
-  a narrow helper rather than granting Docker access to the API daemon.
-
-## Residual threat-model questions
-
-- agent-to-signer network and filesystem isolation;
-- authorization revocation semantics for already issued NIP-OA tags;
-- identity attribution and membership policy for future external bridges.
+Provider executables are trusted deployment plugins because the current Buzz protocol
+may give them agent secrets. Buzz Server therefore requires explicit administrator
+trust, path/hash pinning, bounded input/output, redacted logging, private staged
+execution, and a restricted subprocess environment before invoking a provider.

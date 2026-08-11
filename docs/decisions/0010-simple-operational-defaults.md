@@ -10,7 +10,7 @@ Accepted; Compose-specific MVP clause partially superseded by
 The MVP uses one active Server/reconciler, SQLite WAL, numbered transactional
 forward migrations, and encrypted backup before migration. Runtime artifacts are
 pinned by immutable version or digest. Upgrades are explicit and backup-first.
-Future provider executables are allowlisted and checksum-pinned.
+Provider executables are allowlisted and checksum-pinned.
 
 Community onboarding normalizes and deduplicates relay URLs, verifies required capabilities through ordinary Buzz protocols, and confirms owner authority. Recoverable deletion retains identity and workspace for 30 days by default, configurable per installation, followed by an idempotent daily purge.
 

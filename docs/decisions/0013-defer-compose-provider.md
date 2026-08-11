@@ -4,7 +4,8 @@ Status: accepted
 
 ## Context
 
-Milestone 4 evaluates Docker Compose as an optional external deployment path.
+The provider-compatibility work evaluated Docker Compose as an optional external
+deployment path.
 Provider protocol v1 gives a provider the complete authorized deploy payload,
 including the agent private key, but defines only `info` and `deploy`. Compose
 can create a container, but durable lifecycle reconciliation, log ownership,
@@ -19,18 +20,15 @@ or a new secret-injection mechanism that protocol v1 does not specify.
 
 ## Decision
 
-Do not include a Docker Compose provider in Milestone 4. Keep Compose eligible
-as a separately installed `buzz-backend-*` provider after it has:
+Do not include a Docker Compose provider in the initial provider-compatibility
+implementation. Keep Compose as a possible external deployment provider, but defer
+it until its lifecycle and secret-delivery behavior can be defined without creating
+an incompatible provider contract or persisting agent credentials in generated
+Compose configuration.
 
-- a non-persistent secret delivery design (generated Compose YAML must never
-  contain agent credentials);
-- versioned lifecycle capabilities or an explicit server reconciliation
-  adapter;
-- immutable image and provider-binary trust policy;
-- golden wire and end-to-end readiness fixtures shared with Buzz.
-
-Milestone 4 instead proves the existing provider-v1 contract with the upstream
-Kubernetes fixture corpus and a deterministic fake provider.
+The existing Buzz provider protocol and Kubernetes fixtures remain the compatibility
+target in the meantime. Compose can be added later through the same external-provider
+boundary once the missing lifecycle and secret-delivery pieces are defined.
 
 ## Consequences
 

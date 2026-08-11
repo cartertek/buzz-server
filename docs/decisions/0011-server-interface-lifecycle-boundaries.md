@@ -26,10 +26,9 @@ The supervisor accepts typed, validated process and lifecycle requests, not
 arbitrary shell commands. Durable launch receipts identify processes without
 containing secrets.
 
-Future provider v1 `info` and `deploy` calls may accept provider-specific
-deployment configuration, but do not standardize later lifecycle calls.
-Unsupported operations return an explicit capability error; a future extension
-must be versioned.
+Provider v1 `info` and `deploy` calls may accept provider-specific deployment
+configuration, but do not standardize later lifecycle calls. Unsupported operations
+return an explicit capability error; any lifecycle extension must be versioned.
 
 ### Crash recovery
 
