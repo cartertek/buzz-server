@@ -7,9 +7,10 @@ import os
 import sqlite3
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 
-def migrate(config_path: Path, owner_pubkey: str) -> bool:
+def migrate(config_path: Path, owner_pubkey: str, kms_key_id: Optional[str] = None) -> bool:
     config = json.loads(config_path.read_text())
     if "owner_secret_file" not in config:
         return False
@@ -42,6 +43,8 @@ def migrate(config_path: Path, owner_pubkey: str) -> bool:
         connection.close()
 
     del config["owner_secret_file"]
+    if kms_key_id:
+        config.setdefault("identity_custody", {})["kms_key_id"] = kms_key_id
     fd, temporary_name = tempfile.mkstemp(prefix=config_path.name + ".", dir=config_path.parent)
     try:
         with os.fdopen(fd, "w") as temporary:
@@ -64,8 +67,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("config", type=Path)
     parser.add_argument("owner_pubkey")
+    parser.add_argument("--kms-key-id")
     args = parser.parse_args()
-    return 0 if migrate(args.config, args.owner_pubkey) else 3
+    return 0 if migrate(args.config, args.owner_pubkey, args.kms_key_id) else 3
 
 
 if __name__ == "__main__":

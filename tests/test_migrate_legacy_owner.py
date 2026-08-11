@@ -73,6 +73,16 @@ class LegacyOwnerMigrationTests(unittest.TestCase):
         module.migrate(self.config, owner)
         self.assertEqual(self.read_community("current")["identity_pubkey"], existing)
 
+
+    def test_preserves_kms_custody_configuration(self):
+        owner = "a" * 64
+        self.write_config()
+        self.put_community("legacy")
+        module.migrate(self.config, owner, "alias/buzz-owner")
+        config = json.loads(self.config.read_text())
+        self.assertEqual(config["identity_custody"]["kms_key_id"], "alias/buzz-owner")
+        self.assertEqual(self.read_community("legacy")["identity_pubkey"], owner)
+
     def test_current_config_is_noop(self):
         self.config.write_text(json.dumps({"state_database": str(self.database)}))
         self.assertFalse(module.migrate(self.config, "a" * 64))

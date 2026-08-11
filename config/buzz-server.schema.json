@@ -98,6 +98,16 @@
           ]
         }
       }
+    },
+    "identity_custody": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kms_key_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   }
 }

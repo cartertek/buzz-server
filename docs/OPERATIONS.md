@@ -5,7 +5,7 @@ community identity custody, encrypted backup and restore, host restrictions, rel
 
 ## Community identity custody
 
-Clean installs do not create or require a global Buzz owner identity. Each `buzz-server communities join` operation accepts the identity for that community through a hidden terminal prompt or `--secret-file FILE`. The root CLI derives the pubkey, stores a canonical private key under `/var/lib/buzz-server/community-identities/<pubkey>.secret` with owner-only permissions, and sends only the pubkey through the lifecycle API. Multiple communities using the same pubkey share one custodied secret. Deleting the last community reference removes that secret.
+Clean installs do not create or require a global Buzz owner identity. Each `buzz-server communities join` operation accepts the identity for that community through a hidden terminal prompt or `--secret-file FILE`. The root CLI derives the pubkey and stores the private key per pubkey. When `identity_custody.kms_key_id` is configured, the persisted form is a KMS envelope. Otherwise Buzz Server follows Buzz Desktop: it prefers the OS keyring and falls back to an owner-only local file when no keyring backend is available. The daemon reads only root-only ephemeral materializations under `/run/buzz-server/community-identities`. Only the pubkey crosses the lifecycle API. Multiple communities using the same pubkey share one custodied secret, and deleting the last reference removes its custody artifacts.
 
 The daemon uses the associated community identity for Desktop-compatible NIP-43 join verification, channel administration, and NIP-OA authorization of hosted agents. There is no public active/current identity concept.
 
@@ -13,7 +13,7 @@ When upgrading from the former single-owner configuration, the installer migrate
 
 ## Encrypted backup and restore
 
-A backup stops the daemon for a consistent SQLite/filesystem snapshot and archives `/etc/buzz-server`, `/var/lib/buzz-server`, and `/var/log/buzz-server` with numeric ownership. Community identity files under `/var/lib/buzz-server/community-identities` are therefore included in the encrypted archive. AWS KMS is used when a key ID is supplied; otherwise the archive uses a passphrase-derived scrypt key with AES-256-GCM authenticated encryption.
+A backup stops the daemon for a consistent SQLite/filesystem snapshot and archives `/etc/buzz-server`, `/var/lib/buzz-server`, and `/var/log/buzz-server` with numeric ownership. KMS envelopes and restricted-file identity custody are included directly. OS-keyring identities are exported as verified NIP-49 recovery artifacts inside the encrypted backup and restored through the normal keyring-first fallback path. AWS KMS is used when a key ID is supplied; otherwise the archive uses a passphrase-derived scrypt key with AES-256-GCM authenticated encryption.
 
 For a portable passphrase backup:
 

@@ -28,7 +28,7 @@ install -m 0644 "$payload_dir/config/buzz-server.dev.example.json" "$payload_dir
 install -m 0644 "$payload_dir/deploy/README.md" "$payload_dir/deploy/"*.service "$payload_dir/deploy/"*.timer "$stage/deploy/"
 sed -e "s/@BUZZ_SERVER_IDENTITY@/${identity}/g" -e "s/@BUZZ_SERVER_TARGET@/${target}/g" "$payload_dir/deploy/install.sh.in" > "$stage/deploy/install.sh"
 chmod 0755 "$stage/deploy/install.sh"
-for file in install-package.sh install-release.sh buzz-serverctl provision-runtimes.sh migrate-legacy-owner.py backup.sh restore.sh healthcheck.sh; do
+for file in install-package.sh install-release.sh buzz-serverctl provision-runtimes.sh prepare-community-identities.sh migrate-legacy-owner.py backup.sh restore.sh healthcheck.sh; do
   install -m 0755 "$payload_dir/deploy/$file" "$stage/deploy/$file"
 done
 

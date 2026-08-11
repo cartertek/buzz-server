@@ -48,6 +48,7 @@ $package/deploy/buzz-server-healthcheck.service
 $package/deploy/buzz-server-healthcheck.timer
 $package/deploy/backup.sh
 $package/deploy/healthcheck.sh
+$package/deploy/prepare-community-identities.sh
 $package/deploy/restore.sh
 $package/deploy/buzz-serverctl
 $package/deploy/install.sh
@@ -82,7 +83,7 @@ root="$work/$package"
 
 for file in buzz-server buzz-server-daemon buzz-agentctl buzz-secretsctl buzz-runtime-probe buzz-cli \
   deploy/install.sh deploy/install-package.sh deploy/install-release.sh deploy/buzz-serverctl \
-  deploy/provision-runtimes.sh deploy/migrate-legacy-owner.py deploy/backup.sh deploy/restore.sh \
+  deploy/provision-runtimes.sh deploy/prepare-community-identities.sh deploy/migrate-legacy-owner.py deploy/backup.sh deploy/restore.sh \
   deploy/healthcheck.sh; do
   [ -f "$root/$file" ] && [ -x "$root/$file" ] || { echo "expected executable missing or not executable: $file" >&2; exit 65; }
   [ "$(stat -c %a "$root/$file")" = 755 ] || { echo "unexpected executable mode for $file" >&2; exit 65; }

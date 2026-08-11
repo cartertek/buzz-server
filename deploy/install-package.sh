@@ -171,6 +171,7 @@ chmod 0555 \
   "$release_staging/share/deploy/install-package.sh" \
   "$release_staging/share/deploy/install-release.sh" \
   "$release_staging/share/deploy/provision-runtimes.sh" \
+  "$release_staging/share/deploy/prepare-community-identities.sh" \
   "$release_staging/share/deploy/migrate-legacy-owner.py" \
   "$release_staging/share/deploy/backup.sh" \
   "$release_staging/share/deploy/restore.sh" \
@@ -205,18 +206,48 @@ raise SystemExit(0 if "owner_secret_file" in config else 1)
 PYLEGACYOWNER
 then
   legacy_owner_secret="$temporary/legacy-owner.secret"
+  legacy_kms_key_id=
   if [ -f /etc/buzz-server/owner-secret.envelope.json ]; then
-    run_bounded 60 "Decrypting legacy owner identity for migration"       "$release_source/buzz-secretsctl" decrypt       --input /etc/buzz-server/owner-secret.envelope.json       --output "$legacy_owner_secret"
+    legacy_kms_key_id=$(python3 - /etc/buzz-server/owner-secret.envelope.json <<'PYKMS'
+import json, sys
+print(json.load(open(sys.argv[1])).get("kms_key_id", ""))
+PYKMS
+)
+    [ -n "$legacy_kms_key_id" ] || fail "legacy KMS owner envelope has no key ID"
+    run_bounded 60 "Decrypting legacy owner identity for migration" \
+      "$release_source/buzz-secretsctl" decrypt \
+      --input /etc/buzz-server/owner-secret.envelope.json \
+      --output "$legacy_owner_secret"
   else
-    run_bounded 30 "Materializing legacy owner identity for migration"       "$release_source/buzz-secretsctl" materialize       --output "$legacy_owner_secret"       --key-file /etc/buzz-server/owner-secret       --marker /etc/buzz-server/owner-secret.keyring
+    run_bounded 30 "Materializing legacy owner identity for migration" \
+      "$release_source/buzz-secretsctl" materialize \
+      --output "$legacy_owner_secret" \
+      --key-file /etc/buzz-server/owner-secret \
+      --marker /etc/buzz-server/owner-secret.keyring
   fi
-  install -d -o root -g root -m 0700 /var/lib/buzz-server/community-identities
-  custody_result=$("$release_source/buzz-secretsctl" custody-community     --input "$legacy_owner_secret"     --directory /var/lib/buzz-server/community-identities)
-  legacy_owner_pubkey=${custody_result%% *}
+  legacy_owner_pubkey=$("$release_source/buzz-secretsctl" public-key --input "$legacy_owner_secret")
   [ -n "$legacy_owner_pubkey" ] || fail "legacy owner migration did not produce a public key"
+  identity_store=/var/lib/buzz-server/community-identities
+  install -d -o root -g root -m 0700 "$identity_store"
+  if [ -n "$legacy_kms_key_id" ]; then
+    run_bounded 60 "Migrating legacy owner identity into KMS-backed community custody" \
+      "$release_source/buzz-secretsctl" encrypt \
+      --kms-key-id "$legacy_kms_key_id" \
+      --input "$legacy_owner_secret" \
+      --output "$identity_store/$legacy_owner_pubkey.envelope.json"
+  else
+    run_bounded 30 "Migrating legacy owner identity into Desktop-compatible local custody" \
+      "$release_source/buzz-secretsctl" persist \
+      --input "$legacy_owner_secret" \
+      --key-file "$identity_store/$legacy_owner_pubkey.secret" \
+      --marker "$identity_store/$legacy_owner_pubkey.keyring" \
+      --service buzz-server \
+      --name "community-identity:$legacy_owner_pubkey"
+  fi
+  set -- /etc/buzz-server/config.json "$legacy_owner_pubkey"
+  if [ -n "$legacy_kms_key_id" ]; then set -- "$@" --kms-key-id "$legacy_kms_key_id"; fi
   run_bounded 30 "Migrating legacy owner configuration" \
-    python3 "$release_source/share/deploy/migrate-legacy-owner.py" \
-    /etc/buzz-server/config.json "$legacy_owner_pubkey"
+    python3 "$release_source/share/deploy/migrate-legacy-owner.py" "$@"
   chown root:buzz-server /etc/buzz-server/config.json
   chmod 0640 /etc/buzz-server/config.json
   config_migrated=true

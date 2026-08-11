@@ -45,6 +45,7 @@ $package/deploy/buzz-server-healthcheck.service
 $package/deploy/buzz-server-healthcheck.timer
 $package/deploy/backup.sh
 $package/deploy/healthcheck.sh
+$package/deploy/prepare-community-identities.sh
 $package/deploy/restore.sh
 $package/deploy/buzz-serverctl
 $package/deploy/install.sh

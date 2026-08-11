@@ -245,6 +245,9 @@ buzz-server secrets encrypt-passphrase
 buzz-server secrets decrypt-passphrase
 buzz-server secrets export-nip49
 buzz-server secrets import-nip49
+buzz-server secrets persist
+buzz-server secrets materialize
+buzz-server secrets clear-local
 ```
 
 Run `buzz-server secrets <command> --help` for exact arguments.

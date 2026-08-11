@@ -41,6 +41,30 @@ fi
 cp -a /etc/buzz-server "$root/etc/"
 cp -a /var/lib/buzz-server "$root/var/lib/"
 [ ! -d /var/log/buzz-server ] || cp -a /var/log/buzz-server "$root/var/log/"
+identity_store=/var/lib/buzz-server/community-identities
+identity_stage="$root/var/lib/buzz-server/community-identities"
+if [ -d "$identity_store" ]; then
+  for marker in "$identity_store"/*.keyring; do
+    [ -f "$marker" ] || continue
+    pubkey=$(basename "$marker" .keyring)
+    [ -n "$passphrase_file" ] && [ -f "$passphrase_file" ] || {
+      echo "keyring-backed community identity backup requires BUZZ_BACKUP_PASSPHRASE_FILE" >&2
+      exit 64
+    }
+    staged_secret="$temporary/$pubkey.secret"
+    "$secretsctl" materialize \
+      --output "$staged_secret" \
+      --key-file "$identity_store/$pubkey.secret" \
+      --marker "$marker" \
+      --service buzz-server \
+      --name "community-identity:$pubkey"
+    "$secretsctl" export-nip49 \
+      --input "$staged_secret" \
+      --output "$identity_stage/$pubkey.ncryptsec" \
+      --passphrase-file "$passphrase_file"
+    rm -f "$identity_stage/$pubkey.keyring" "$identity_stage/$pubkey.secret"
+  done
+fi
 manifest="$root/MANIFEST"
 {
   printf 'format=buzz-server-backup-v2\n'

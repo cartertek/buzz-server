@@ -55,6 +55,8 @@ struct DaemonConfig {
     log_directory: PathBuf,
     working_directory: PathBuf,
     #[serde(default)]
+    identity_custody: IdentityCustodyConfig,
+    #[serde(default)]
     default_agent: DefaultAgentConfig,
     signer_conditions: String,
     runtime_catalog: RuntimeCatalog,
@@ -65,6 +67,12 @@ struct DaemonConfig {
     health: HealthPolicy,
     #[serde(default)]
     lifecycle_api: LifecycleApiConfig,
+}
+
+#[derive(Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct IdentityCustodyConfig {
+    kms_key_id: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -114,6 +122,16 @@ impl DaemonConfig {
 
     fn validate(&self) -> Result<(), DaemonError> {
         self.runtime_catalog.validate()?;
+        if self
+            .identity_custody
+            .kms_key_id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(DaemonError::InvalidConfig(
+                "identity_custody.kms_key_id must not be empty".into(),
+            ));
+        }
         self.default_agent
             .filesystem
             .validate()
@@ -200,6 +218,7 @@ struct LifecycleWake {
     store: Arc<SqliteStore>,
     community_join: buzz_server::community_join::DesktopCommunityJoinVerifier,
     community_identity_root: PathBuf,
+    community_identity_store: PathBuf,
     agent_files: AgentFileStore,
     custody: FilesystemAgentIdentityCustody,
     auto_join_sender: tokio::sync::mpsc::UnboundedSender<buzz_server::CommunityConfigId>,
@@ -310,6 +329,50 @@ impl LifecycleWake {
     }
 }
 
+fn remove_community_identity_custody(
+    runtime_root: &Path,
+    store_root: &Path,
+    pubkey: &str,
+) -> Result<(), String> {
+    let runtime_path = runtime_root.join(format!("{pubkey}.secret"));
+    if let Err(error) = fs::remove_file(&runtime_path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(format!(
+                "remove runtime community identity {}: {error}",
+                runtime_path.display()
+            ));
+        }
+    }
+
+    let key_file = store_root.join(format!("{pubkey}.secret"));
+    let marker = store_root.join(format!("{pubkey}.keyring"));
+    let envelope = store_root.join(format!("{pubkey}.envelope.json"));
+    if marker.exists() {
+        let name = format!("community-identity:{pubkey}");
+        match keyring::Entry::new("buzz-server", &name)
+            .and_then(|entry| entry.delete_credential())
+        {
+            Ok(()) | Err(keyring::Error::NoEntry) => {
+                let _ = fs::remove_file(&marker);
+            }
+            Err(error) => {
+                return Err(format!("delete community identity from OS keyring: {error}"));
+            }
+        }
+    }
+    for path in [key_file, envelope] {
+        if let Err(error) = fs::remove_file(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(format!(
+                    "remove community identity custody {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl LifecycleEffects for LifecycleWake {
     fn community_changed(&self, community_id: buzz_server::CommunityConfigId) {
         let _ = self.auto_join_sender.send(community_id);
@@ -342,13 +405,12 @@ impl LifecycleEffects for LifecycleWake {
                 return;
             }
         }
-        let path = self
-            .community_identity_root
-            .join(format!("{pubkey}.secret"));
-        if let Err(error) = fs::remove_file(&path) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("community identity cleanup failed for {pubkey}: {error}");
-            }
+        if let Err(error) = remove_community_identity_custody(
+            &self.community_identity_root,
+            &self.community_identity_store,
+            pubkey,
+        ) {
+            eprintln!("community identity cleanup deferred for {pubkey}: {error}");
         }
     }
 
@@ -721,11 +783,12 @@ async fn main() -> Result<(), DaemonError> {
     let config = Arc::new(config);
     let (operation_tx, operation_rx) = mpsc::channel();
     let (relay_publication_tx, relay_publication_rx) = mpsc::channel();
-    let community_identity_root = config
+    let community_identity_store = config
         .state_database
         .parent()
         .ok_or_else(|| DaemonError::InvalidConfig("state database has no parent".into()))?
         .join("community-identities");
+    let community_identity_root = PathBuf::from("/run/buzz-server/community-identities");
     let community_join = buzz_server::community_join::DesktopCommunityJoinVerifier::new(
         community_identity_root.clone(),
     )
@@ -740,6 +803,7 @@ async fn main() -> Result<(), DaemonError> {
             store: Arc::clone(&store),
             community_join,
             community_identity_root: community_identity_root.clone(),
+            community_identity_store: community_identity_store.clone(),
             agent_files: agent_files.clone(),
             custody: custody.clone(),
             auto_join_sender: auto_join_tx.clone(),
@@ -765,6 +829,7 @@ async fn main() -> Result<(), DaemonError> {
         RelayPublicationContext {
             store: Arc::clone(&store),
             community_identity_root: community_identity_root.clone(),
+            community_identity_store: community_identity_store.clone(),
             agent_files: agent_files.clone(),
             custody: custody.clone(),
         },
@@ -1182,6 +1247,7 @@ async fn auto_join_wait_or_shutdown(
 struct RelayPublicationContext {
     store: Arc<SqliteStore>,
     community_identity_root: PathBuf,
+    community_identity_store: PathBuf,
     agent_files: AgentFileStore,
     custody: FilesystemAgentIdentityCustody,
 }
@@ -1424,14 +1490,12 @@ fn cleanup_unreferenced_projection_owner(
     {
         return Ok(());
     }
-    let path = context
-        .community_identity_root
-        .join(format!("{owner_pubkey}.secret"));
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
+    remove_community_identity_custody(
+        &context.community_identity_root,
+        &context.community_identity_store,
+        owner_pubkey,
+    )
+    .map_err(DaemonError::Task)
 }
 
 struct ReconcileContext {
