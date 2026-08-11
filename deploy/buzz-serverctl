@@ -24,10 +24,6 @@ case "$command" in
     [ "$#" -eq 2 ] || { echo "usage: buzz-serverctl restore BACKUP" >&2; exit 64; }
     exec /opt/buzz-server/current/share/deploy/restore.sh "$2"
     ;;
-  rotate-owner)
-    [ "$#" -ge 2 ] && [ "$#" -le 3 ] || { echo "usage: buzz-serverctl rotate-owner SECRET_FILE [KMS_KEY_ID]" >&2; exit 64; }
-    exec /opt/buzz-server/current/share/deploy/rotate-owner.sh "$2" "${3:-}"
-    ;;
   check)
     exec /opt/buzz-server/current/share/deploy/healthcheck.sh
     ;;
@@ -72,7 +68,7 @@ case "$command" in
     fi
     ;;
   *)
-    echo "usage: buzz-serverctl {health|check|start|restart|stop|status|redeploy|rollback|backup|restore|rotate-owner}" >&2
+    echo "usage: buzz-serverctl {health|check|start|restart|stop|status|redeploy|rollback|backup|restore}" >&2
     exit 64
     ;;
 esac

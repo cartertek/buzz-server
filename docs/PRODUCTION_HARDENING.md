@@ -10,7 +10,7 @@ Clean installs do not create or require a global Buzz owner identity. Each `buzz
 
 The daemon uses the associated community identity for Desktop-compatible NIP-43 join verification, channel administration, and NIP-OA authorization of hosted agents. There is no public active/current identity concept.
 
-Upgraded installations may still contain the former `/etc/buzz-server/owner-secret*` credential and `owner_secret_file` configuration. It is retained only as a migration/compatibility fallback for community records created before per-community identity association; new communities never depend on it.
+When upgrading from the former single-owner configuration, the installer migrates that identity into per-community custody and updates legacy community records before starting the new daemon. The old global owner configuration and credential are removed after the upgraded service passes health checks.
 
 ## Encrypted backup and restore
 
@@ -40,36 +40,6 @@ sudo env BUZZ_BACKUP_PASSPHRASE_FILE=/root/buzz-backup-passphrase \
 ```
 
 Copy encrypted backups off-host and apply an independent retention policy. KMS policy and backup storage policy remain separate controls when KMS is selected.
-
-## Owner rotation and reauthorization
-
-```sh
-sudo buzz-server rotate-owner ./new-owner-secret
-# Or keep/use KMS custody:
-sudo buzz-server rotate-owner ./new-owner-secret alias/buzz-server-owner
-```
-
-Rotation writes through the selected custody backend, restarts the daemon, and restores the previous owner and custody mode if readiness fails. Startup reissues agent authorization through the
-constrained signer. Confirm relay reachability and expected signed presence after
-rotation; already published authorization revocation remains relay/owner policy.
-
-## Disaster-recovery exercise
-
-The exercise performs a real encrypted backup, rotates to a different owner key,
-checks readiness, restores the pre-rotation backup, verifies the original owner
-fingerprint, and runs the monitoring check. It is intentionally destructive and
-requires an explicit acknowledgement:
-
-```sh
-sudo env \
-  BUZZ_CONFIRM_DESTRUCTIVE_DR_EXERCISE=YES \
-  BUZZ_BACKUP_PASSPHRASE_FILE=/root/buzz-backup-passphrase \
-  /opt/buzz-server/current/share/deploy/disaster-recovery-exercise.sh \
-  ./new-owner-secret /secure/dr-exercise.json
-```
-
-Record the output, relay presence, recovery time, and KMS audit events when KMS is used as the
-Milestone 5 acceptance artifact. Run it first against a disposable community.
 
 ## Resource and network restrictions
 
@@ -112,7 +82,6 @@ cat /var/lib/buzz-server/metrics.prom
 - The host uses an instance role rather than static AWS credentials.
 - Plaintext owner-key files have been removed.
 - Encrypted backups are copied off-host and restored in an exercise.
-- Owner rotation and relay reauthorization have been exercised.
 - Retention expiry and immediate purge have both been exercised.
 - Host firewall/VPC egress and ingress policies are reviewed.
 - Release provenance verification and rollback are exercised.

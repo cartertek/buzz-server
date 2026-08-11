@@ -8,7 +8,6 @@
     "state_database",
     "log_directory",
     "working_directory",
-    "owner_secret_file",
     "signer_conditions",
     "runtime_catalog",
     "harness",
@@ -27,9 +26,6 @@
     "working_directory": {
       "type": "string",
       "pattern": "^/var/lib/buzz-server(?:/|$)"
-    },
-    "owner_secret_file": {
-      "const": "/run/buzz-server/credentials/owner-secret"
     },
     "default_agent": {
       "type": "object",

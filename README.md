@@ -37,7 +37,6 @@ The packaged host deployment currently targets a systemd-based Linux host with:
 - root access for installation
 - `curl` and `tar`
 - a reachable Buzz relay
-- an owner Nostr secret key; AWS KMS is optional and requires the AWS CLI
 - model/runtime credentials such as an OpenAI API key
 - HTTPS URLs and SHA-256 values for the pinned Sprig and Codex ACP runtime packages
 
@@ -199,8 +198,7 @@ stored durably, so channels created while Buzz Server is offline are joined afte
 restarts, without joining older channels. Switching away from `"new"` clears that
 boundary; enabling it again starts a new boundary. Private channels remain invite-only.
 
-The owner key is stored through KMS when configured, otherwise through the OS keyring
-or restricted-file fallback. The host configuration schema is
+Community identities are stored per public key under the root-only community identity custody directory. The host configuration schema is
 [`config/buzz-server.schema.json`](config/buzz-server.schema.json).
 
 
@@ -239,7 +237,7 @@ not copying a locally built binary directly into the production filesystem.
 
 ## Security model
 
-- The owner key is stored through AWS KMS when configured, otherwise in the OS secret manager with a restricted key-file fallback, and materialized only into a root-only runtime file.
+- Community identity keys are stored in root-only per-community custody and are never exposed through the lifecycle API.
 - Runtime and model credentials are stored separately from JSON configuration.
 - Agent processes run under the existing account selected by the agent's
   `filesystem.user`, then `default_agent.filesystem.user`, and finally the shared

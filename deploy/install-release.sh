@@ -45,13 +45,11 @@ $package/deploy/buzz-server-healthcheck.service
 $package/deploy/buzz-server-healthcheck.timer
 $package/deploy/backup.sh
 $package/deploy/healthcheck.sh
-$package/deploy/disaster-recovery-exercise.sh
-$package/deploy/prepare-owner-credential.sh
 $package/deploy/restore.sh
-$package/deploy/rotate-owner.sh
 $package/deploy/buzz-serverctl
 $package/deploy/install.sh
 $package/deploy/install-package.sh
+$package/deploy/migrate-legacy-owner.py
 $package/deploy/install-release.sh
 $package/deploy/provision-runtimes.sh
 EOF

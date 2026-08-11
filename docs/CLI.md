@@ -5,7 +5,7 @@ hosted-agent, and secret management. It also bundles the pinned upstream Buzz CL
 and exposes selected Buzz operations through the same namespace.
 
 ```text
-buzz-server health|status|start|stop|restart|backup|restore|rollback|rotate-owner
+buzz-server health|status|start|stop|restart|backup|restore|rollback
 buzz-server communities COMMAND [OPTIONS]
 buzz-server agents COMMAND [OPTIONS]
 buzz-server channels COMMAND --community ID [OPTIONS]
@@ -245,9 +245,6 @@ buzz-server secrets encrypt-passphrase
 buzz-server secrets decrypt-passphrase
 buzz-server secrets export-nip49
 buzz-server secrets import-nip49
-buzz-server secrets persist
-buzz-server secrets materialize
-buzz-server secrets clear-local
 ```
 
 Run `buzz-server secrets <command> --help` for exact arguments.

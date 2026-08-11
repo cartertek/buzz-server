@@ -191,9 +191,6 @@ Commands:
   decrypt-passphrase  Decrypt a passphrase envelope
   export-nip49        Export a NIP-49 encrypted secret
   import-nip49        Import a NIP-49 encrypted secret
-  persist             Persist a secret using the local secure backend
-  materialize         Materialize a persisted secret into a file
-  clear-local         Remove a locally persisted secret
 
 Run `buzz-server secrets <command> --help` for command-specific help.
 EOF_HELP
@@ -208,9 +205,6 @@ secrets_command_help() {
     decrypt-passphrase) printf '%s\n' 'Usage: buzz-server secrets decrypt-passphrase --input FILE --output FILE --passphrase-file FILE' ;;
     export-nip49)       printf '%s\n' 'Usage: buzz-server secrets export-nip49 --input FILE --output FILE --passphrase-file FILE' ;;
     import-nip49)       printf '%s\n' 'Usage: buzz-server secrets import-nip49 --input FILE --output FILE --passphrase-file FILE' ;;
-    persist)            printf '%s\n' 'Usage: buzz-server secrets persist --input FILE --key-file FILE --marker FILE [--service NAME] [--name NAME]' ;;
-    materialize)        printf '%s\n' 'Usage: buzz-server secrets materialize --output FILE --key-file FILE --marker FILE [--service NAME] [--name NAME]' ;;
-    clear-local)        printf '%s\n' 'Usage: buzz-server secrets clear-local --key-file FILE --marker FILE [--service NAME] [--name NAME]' ;;
     *) return 1 ;;
   esac
 }
@@ -231,10 +225,8 @@ community_identity_secret() {
     printf '%s\n' "$secret"
     return 0
   fi
-  # Legacy pre-join records used the installation owner identity.
-  secret=/run/buzz-server/credentials/owner-secret
-  [ -r "$secret" ] || { echo "Legacy Buzz Server owner credential is unavailable" >&2; return 77; }
-  printf '%s\n' "$secret"
+  echo "Community has no associated identity" >&2
+  return 77
 }
 
 join_community() {

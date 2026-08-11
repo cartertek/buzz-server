@@ -34,25 +34,6 @@ for path in /etc/buzz-server /var/lib/buzz-server; do
 done
 mkdir -p "$root/etc" "$root/var/lib" "$root/var/log"
 
-# Secret Service entries are not portable. Materialize the owner before
-# stopping the service, export a verified NIP-49 recovery artifact, and omit
-# the host-specific marker from the staged copy.
-if [ -f /etc/buzz-server/owner-secret.keyring ]; then
-  [ -n "$passphrase_file" ] && [ -f "$passphrase_file" ] || {
-    echo "keyring-backed backup requires BUZZ_BACKUP_PASSPHRASE_FILE for NIP-49 recovery" >&2
-    exit 64
-  }
-  staged_owner="$temporary/owner-secret"
-  "$secretsctl" materialize \
-    --output "$staged_owner" \
-    --key-file /etc/buzz-server/owner-secret \
-    --marker /etc/buzz-server/owner-secret.keyring
-  "$secretsctl" export-nip49 \
-    --input "$staged_owner" \
-    --output "$temporary/owner-secret.ncryptsec" \
-    --passphrase-file "$passphrase_file"
-fi
-
 if systemctl is-active --quiet buzz-server.service; then
   was_active=true
   systemctl stop buzz-server.service
@@ -60,11 +41,6 @@ fi
 cp -a /etc/buzz-server "$root/etc/"
 cp -a /var/lib/buzz-server "$root/var/lib/"
 [ ! -d /var/log/buzz-server ] || cp -a /var/log/buzz-server "$root/var/log/"
-if [ -f "$temporary/owner-secret.ncryptsec" ]; then
-  install -m 0400 "$temporary/owner-secret.ncryptsec" \
-    "$root/etc/buzz-server/owner-secret.ncryptsec"
-  rm -f "$root/etc/buzz-server/owner-secret.keyring"
-fi
 manifest="$root/MANIFEST"
 {
   printf 'format=buzz-server-backup-v2\n'

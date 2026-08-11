@@ -16,13 +16,14 @@ jobs:
       - run: rustup toolchain install 1.88.0 --profile minimal --component rustfmt,clippy
       - run: rustup override set 1.88.0
       - run: cargo fmt --check
+      - name: Test configuration migrations
+        run: python3 -m unittest tests/test_migrate_legacy_owner.py
       - name: Validate deployment scripts and units
         run: |
           set -eu
           for script in deploy/*.sh deploy/buzz-server deploy/buzz-serverctl scripts/package-artifact.sh scripts/prepare-ci-payload.sh scripts/verify-package-artifact.sh scripts/github-tag-sha.sh scripts/resolve-release.sh scripts/publish-release.sh scripts/mock-gh-release.sh; do sh -n "$script"; done
           sudo install -d /opt/buzz-server/current/share/deploy
           sudo install -m 0755 /bin/true /opt/buzz-server/current/buzz-server
-          sudo install -m 0755 /bin/true /opt/buzz-server/current/share/deploy/prepare-owner-credential.sh
           sudo install -m 0755 /bin/true /opt/buzz-server/current/share/deploy/healthcheck.sh
           systemd-analyze verify deploy/buzz-server.service deploy/buzz-server-healthcheck.service deploy/buzz-server-healthcheck.timer
       - run: cargo test --all-targets --locked
