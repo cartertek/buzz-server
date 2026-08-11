@@ -250,7 +250,7 @@ not copying a locally built binary directly into the production filesystem.
 - Provider binaries require explicit path and digest trust before staged execution.
 - Audit and log records reject credential-shaped material.
 
-See [Security](docs/SECURITY.md), [Production hardening](docs/PRODUCTION_HARDENING.md), and [Architecture](docs/ARCHITECTURE.md).
+See [Security](docs/SECURITY.md), [Production operations](docs/OPERATIONS.md), and [Architecture](docs/ARCHITECTURE.md).
 
 ## Documentation
 
@@ -260,7 +260,7 @@ See [Security](docs/SECURITY.md), [Production hardening](docs/PRODUCTION_HARDENI
 - [`buzz-server` CLI](docs/CLI.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Security](docs/SECURITY.md)
-- [Production hardening](docs/PRODUCTION_HARDENING.md)
+- [Production operations](docs/OPERATIONS.md)
 - [Provider compatibility](docs/PROVIDER_COMPATIBILITY.md)
 - [Provider lifecycle integration](docs/PROVIDER_LIFECYCLE_INTEGRATION.md)
 - [Compatibility with Buzz](docs/COMPATIBILITY_WITH_BUZZ.md)

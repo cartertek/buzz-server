@@ -47,19 +47,9 @@ Community identities enter through `buzz-server communities join`. The CLI never
   argument, environment, filesystem, signal, and lifecycle policy instead of an
   arbitrary command surface in the API daemon.
 
-## Provider and Compose controls
+## Provider controls
 
-- Provider executables are trusted deployment plugins because the current Buzz
-  protocol may give them agent secrets. Provider installation is administrator-only;
-  Buzz Server requires explicit trust, path/hash pinning, bounded input/output,
-  redacted logging, private staged execution, and restricted subprocess context.
-- A future Docker Compose provider must keep plaintext secrets out of generated
-  YAML, launch receipts, logs, and audit records; isolate projects and secret
-  paths by community and agent; deny agents access to the Docker socket; and use
-  a narrow helper rather than granting Docker access to the API daemon.
-
-## Residual threat-model questions
-
-- agent-to-signer network and filesystem isolation;
-- authorization revocation semantics for already issued NIP-OA tags;
-- identity attribution and membership policy for future external bridges.
+Provider executables are trusted deployment plugins because the current Buzz protocol
+may give them agent secrets. Buzz Server therefore requires explicit administrator
+trust, path/hash pinning, bounded input/output, redacted logging, private staged
+execution, and a restricted subprocess environment before invoking a provider.

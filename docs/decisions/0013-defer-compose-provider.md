@@ -20,20 +20,14 @@ or a new secret-injection mechanism that protocol v1 does not specify.
 
 ## Decision
 
-Do not include a Docker Compose provider in the provider-compatibility
-implementation. Keep Compose eligible
-as a separately installed `buzz-backend-*` provider after it has:
+Do not implement a Buzz Server-specific Docker Compose provider. The existing Buzz
+provider protocol and Kubernetes fixtures define the compatibility target; adding a
+Compose provider here would create a separate provider contract and a new secret
+delivery mechanism that Buzz itself does not define.
 
-- a non-persistent secret delivery design (generated Compose YAML must never
-  contain agent credentials);
-- versioned lifecycle capabilities or an explicit server reconciliation
-  adapter;
-- immutable image and provider-binary trust policy;
-- golden wire and end-to-end readiness fixtures shared with Buzz.
-
-The provider-compatibility implementation instead proves the existing provider-v1
-contract with the upstream
-Kubernetes fixture corpus and a deterministic fake provider.
+If Buzz gains a Compose provider or the provider protocol later defines the lifecycle
+and secret-delivery behavior Compose needs, Buzz Server can support it through the
+same external-provider compatibility boundary.
 
 ## Consequences
 

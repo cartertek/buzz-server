@@ -1,8 +1,8 @@
-# Production hardening
+# Production operations
 
-Buzz Server includes production host controls around the lifecycle implementation.
-These controls assume a single trusted Linux host and do not claim protection from
-a fully compromised root account.
+This guide covers the production-only operational controls shipped with Buzz Server:
+community identity custody, encrypted backup and restore, credential rotation,
+disaster-recovery testing, host restrictions, release verification, and monitoring.
 
 ## Community identity custody
 
@@ -10,7 +10,7 @@ Clean installs do not create or require a global Buzz owner identity. Each `buzz
 
 The daemon uses the associated community identity for Desktop-compatible NIP-43 join verification, channel administration, and NIP-OA authorization of hosted agents. There is no public active/current identity concept.
 
-Upgraded installations may still contain the former `/etc/buzz-server/owner-secret*` credential and `owner_secret_file` configuration. It is retained only as a migration/compatibility fallback for community records created before per-community identity association; new communities never depend on it.
+Installations upgraded from the older single-owner design may still have `/etc/buzz-server/owner-secret*` and `owner_secret_file`. Buzz Server uses that legacy key only for existing community records that do not yet have a per-community identity; communities joined with current versions use `/var/lib/buzz-server/community-identities/<pubkey>.secret` instead.
 
 ## Encrypted backup and restore
 
