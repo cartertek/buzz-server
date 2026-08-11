@@ -1540,16 +1540,6 @@ fn parse_args() -> Result<PathBuf, DaemonError> {
     Ok(path.into())
 }
 
-fn read_secret_file(path: &Path) -> Result<String, DaemonError> {
-    let value = fs::read_to_string(path)
-        .map_err(|_| DaemonError::MissingSecret(path.display().to_string()))?;
-    let value = value.trim_end_matches(['\r', '\n']).to_owned();
-    if value.is_empty() {
-        return Err(DaemonError::MissingSecret(path.display().to_string()));
-    }
-    Ok(value)
-}
-
 fn secret_generation(value: &str) -> String {
     format!("sha256:{:x}", Sha256::digest(value.as_bytes()))
 }
@@ -2316,8 +2306,6 @@ enum DaemonError {
     Usage,
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
-    #[error("required secret is unavailable: {0}")]
-    MissingSecret(String),
     #[error("configured owner secret is invalid")]
     InvalidOwnerSecret,
     #[error("daemon task failed: {0}")]
