@@ -20,11 +20,12 @@ storage, an internal local launch specification and headless process-supervisor
 contracts, reconciliation, process receipts, concurrent community configurations,
 audit records, and optional drafts.
 
-External provider discovery and provider v1 request handling remain future
-extensions, as does a possible Docker Compose provider. Until then, retain provider
-golden fixtures as compatibility evidence without making provider hosting part of
-the MVP. ACP runtimes and their model API providers/configuration remain distinct
-from deployment backends and external backend providers.
+External provider discovery and provider v1 request handling were originally
+deferred from the first local deployment path, as was a possible Docker Compose
+provider. Provider discovery and provider v1 compatibility have since been
+implemented; Docker Compose remains deferred. ACP runtimes and their model API
+providers/configuration remain distinct from deployment backends and external
+backend providers.
 
 The dependency lock records the exact reviewed Buzz commit for reproducible builds, but the pin is not a promise to remain stale. Automation checks Buzz `main` at least weekly and on every planned release, reports upstream commits affecting shared crates, provider contracts, runtimes, or protocol behavior, and opens a compatibility update. Dependency bumps are reviewed changes that run the shared fixtures and full test suite before merging. Implementation work begins by refreshing the pin, and long-lived feature branches rebase or re-audit against the current reviewed pin before merge.
 

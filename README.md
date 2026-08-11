@@ -9,10 +9,11 @@ Buzz Server is not a relay and does not replace `buzz-acp`. The Buzz relay
 remains the shared Nostr transport and event authority. `buzz-acp` remains the
 bridge between Buzz events and ACP-compatible agent runtimes.
 
-> **Project status:** Milestones 1–4 are implemented. The software is usable for
-> controlled deployments, but production-hardening work such as encrypted owner
-> custody, backup/restore exercises, monitoring, and broader resource isolation
-> remains planned. See [Project planning](docs/MVP_PLAN.md).
+> **Project status:** Buzz Server provides the durable local agent lifecycle,
+> authenticated administration, provider-protocol compatibility, release packaging,
+> and production host hardening described below. External providers are compatible
+> deployment targets, but selecting one as an agent's durable lifecycle backend is
+> not yet implemented.
 
 ## Features
 
@@ -261,9 +262,8 @@ See [Security](docs/SECURITY.md), [Production hardening](docs/PRODUCTION_HARDENI
 - [Security](docs/SECURITY.md)
 - [Production hardening](docs/PRODUCTION_HARDENING.md)
 - [Provider compatibility](docs/PROVIDER_COMPATIBILITY.md)
+- [Provider lifecycle integration](docs/PROVIDER_LIFECYCLE_INTEGRATION.md)
 - [Compatibility with Buzz](docs/COMPATIBILITY_WITH_BUZZ.md)
-- [Project planning and status](docs/MVP_PLAN.md)
-- [Implementation milestones](docs/FOLLOW_UP_IMPLEMENTATION_PLAN.md)
 
 ## Contributing
 

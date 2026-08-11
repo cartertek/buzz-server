@@ -1,8 +1,8 @@
 # Production hardening
 
-Milestone 5 adds production host controls around the lifecycle implementation. It
-still assumes a single trusted Linux host and does not claim protection from a
-fully compromised root account.
+Buzz Server includes production host controls around the lifecycle implementation.
+These controls assume a single trusted Linux host and do not claim protection from
+a fully compromised root account.
 
 ## Community identity custody
 
@@ -68,8 +68,9 @@ sudo env \
   ./new-owner-secret /secure/dr-exercise.json
 ```
 
-Record the output, relay presence, recovery time, and KMS audit events when KMS is used as the
-Milestone 5 acceptance artifact. Run it first against a disposable community.
+Record the output, relay presence, recovery time, and KMS audit events when KMS is
+used. Run the exercise first against a disposable community before relying on the
+procedure for production recovery.
 
 ## Resource and network restrictions
 

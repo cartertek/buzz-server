@@ -18,9 +18,9 @@ durable launch receipts, desired and observed state, reconciliation after
 restart, secret release, audit, and lifecycle operations.
 
 External `buzz-backend-*` discovery and provider v1 `info`/`deploy`
-compatibility remain planned extensions rather than dependencies of the first
-vertical slice. A Docker Compose provider may be added as one such optional
-deployment path.
+compatibility were deliberately excluded from the first vertical slice and were
+implemented later. A Docker Compose provider remains an optional future deployment
+path.
 
 ## Consequences
 

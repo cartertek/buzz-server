@@ -43,7 +43,7 @@ future bridge with separate authorization and audit.
 ## Terminology
 
 - **Deployment backend**: the choice between Desktop-style `Local` execution and
-  an external `Provider { id, config }` deployment. The MVP implements a
+  an external `Provider { id, config }` deployment. Buzz Server implements a
   Server-native durable local backend; Desktop Local is not a `buzz-backend-*`
   provider.
 - **Backend provider**: an external Buzz-compatible deployment adapter. Existing
@@ -61,8 +61,9 @@ future bridge with separate authorization and audit.
 - **Signer**: isolated service permitted only to issue policy-constrained owner
   authorizations for new agents.
 
-Docker Compose, containers, and remote supervisors are future execution options,
-not part of the local MVP or the product-facing agent identity.
+Docker Compose, container-based execution, and remote supervisors are possible
+future execution options and are not part of the current product-facing agent
+identity.
 
 ## Core components
 
@@ -72,7 +73,7 @@ Owns validation, policy, idempotent operations, desired-state transitions,
 reconciliation, audit records, deployment-backend selection, and health
 aggregation.
 
-Initial lifecycle:
+Agent lifecycle:
 
 ```text
 authorizing -> authorized -> provisioning -> running
@@ -91,7 +92,7 @@ identity or duplicating a deployment.
 
 ### Durable local backend
 
-The MVP models Buzz Desktop Local semantics in a Server-native durable backend.
+The durable local backend models Buzz Desktop Local semantics in a Server-native form.
 It resolves shared launch, runtime, model-configuration, and credential semantics
 into an internal launch specification, then reconciles that specification through
 the headless process supervisor. It reuses or extracts Tauri-free shared types and pure
@@ -135,8 +136,9 @@ specification containing:
 - working directory and persistent workspace/runtime-state paths;
 - process group, restart, resource, and health policy.
 
-Container image, mount, network, and orchestration fields are future backend or
-supervisor extensions rather than MVP launch-contract requirements.
+Container image, mount, network, and orchestration fields are not part of the
+current local launch contract and belong to any future backend or supervisor
+extension that requires them.
 
 Model API provider configuration and credentials are runtime inputs represented by
 validated configuration and opaque secret references; they do not select the
@@ -144,7 +146,7 @@ deployment backend.
 
 ### Headless process supervisor
 
-The initial behavioral interface is:
+The process-supervisor interface is:
 
 ```text
 apply(LocalLaunchSpec) -> ProcessReceipt
@@ -168,14 +170,16 @@ must not embed secrets.
 
 ### Runtime catalog
 
-Buzz Server should ultimately share or generate its runtime catalog from Buzz's
-canonical definitions. “Supports Desktop runtimes” means compatible command,
+Buzz Server keeps its runtime catalog compatible with Buzz's canonical runtime
+definitions and should prefer shared or generated definitions where practical.
+“Supports Desktop runtimes” means compatible command,
 argument, configuration, and packaging semantics; it does not imply one artifact
 contains every runtime.
 
-The local-process MVP supports the existing Codex deployment first. Harness and
-runtime executables, packages, and adapters must be version-pinned. Additional
-runtimes follow after the catalog sharing strategy is decided.
+The local-process backend supports version-pinned runtime packages, including the
+Codex deployment. Harness and runtime executables, packages, and adapters are
+version-pinned; additional runtimes are added through the runtime catalog and
+readiness fixtures.
 
 ### API
 
@@ -184,7 +188,7 @@ deployment may use a Unix socket with peer/filesystem authorization. Remote
 administration uses a TLS network listener with explicit API authentication,
 authorization, and audit. Neither transport assumes the relay is local.
 
-Candidate resources:
+Core resources:
 
 ```text
 POST   /v1/agents
