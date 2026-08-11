@@ -173,7 +173,8 @@ agent belongs to. This setting controls message selection only; the agent's
 `respond_to` policy still controls which authors it accepts work from. Changes to an
 existing agent's environment take effect after restarting Buzz Server.
 
-Agent processes use the shared `buzz-agent` Unix account by default; see
+Agent processes use the account in `default_agent.filesystem.user` (the shared
+`buzz-agent` Unix account when omitted) unless the agent file overrides it; see
 [host deployment details](deploy/README.md#agent-unix-accounts) for account and
 `filesystem.user` configuration.
 
@@ -240,8 +241,9 @@ not copying a locally built binary directly into the production filesystem.
 
 - The owner key is stored through AWS KMS when configured, otherwise in the OS secret manager with a restricted key-file fallback, and materialized only into a root-only runtime file.
 - Runtime and model credentials are stored separately from JSON configuration.
-- Agent processes run under the shared `buzz-agent` Unix account by default, or
-  the existing account selected by `filesystem.user`.
+- Agent processes run under the existing account selected by the agent's
+  `filesystem.user`, then `default_agent.filesystem.user`, and finally the shared
+  `buzz-agent` Unix account.
 - Administrative Unix access is authorized using `SO_PEERCRED` UIDs.
 - Remote API access uses TLS and request-bound NIP-98 signatures with replay protection.
 - Provider binaries require explicit path and digest trust before staged execution.

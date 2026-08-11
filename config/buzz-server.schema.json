@@ -31,6 +31,22 @@
     "owner_secret_file": {
       "const": "/run/buzz-server/credentials/owner-secret"
     },
+    "default_agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "filesystem": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "user": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]{0,31}$"
+            }
+          }
+        }
+      }
+    },
     "signer_conditions": {
       "type": "string"
     },
