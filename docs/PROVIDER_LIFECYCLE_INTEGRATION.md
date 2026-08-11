@@ -1,4 +1,4 @@
-# Provider operation-worker integration
+# Provider lifecycle integration
 
 The provider host and durable deployment coordinator deliberately do not run
 inside `LifecycleApplication::create_agent`. Create records intent before the
@@ -6,7 +6,7 @@ signer has produced the deployment authorization; invoking a provider there
 would invert the required signer-before-provider ordering.
 
 Provider protocol compatibility is complete. To make an external provider a
-selectable durable lifecycle backend, a future provider adapter must:
+selectable durable lifecycle backend, the provider lifecycle adapter must:
 
 1. add a durable backend selection to agent intent:
    `Local` or `Provider { id, config }`; provider config is validated against
@@ -33,6 +33,6 @@ selectable durable lifecycle backend, a future provider adapter must:
    and retains the host's timeout, input/output cap, private staging, process
    group, and systemd filesystem/UID restrictions.
 
-This is intentionally a narrow post-M3 patch. It avoids coupling provider
-hosting to HTTP/Tauri code and avoids pretending that protocol-v1 deploy is a
-complete lifecycle backend.
+This integration stays deliberately narrow: provider hosting remains separate
+from HTTP/Tauri code, and protocol-v1 deploy is not treated as a complete lifecycle
+backend.

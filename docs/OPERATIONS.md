@@ -1,8 +1,7 @@
-# Production hardening
+# Production operations
 
-Milestone 5 adds production host controls around the lifecycle implementation. It
-still assumes a single trusted Linux host and does not claim protection from a
-fully compromised root account.
+This guide covers operational controls shipped with Buzz Server:
+community identity custody, encrypted backup and restore, host restrictions, release verification, and monitoring.
 
 ## Community identity custody
 
@@ -10,11 +9,11 @@ Clean installs do not create or require a global Buzz owner identity. Each `buzz
 
 The daemon uses the associated community identity for Desktop-compatible NIP-43 join verification, channel administration, and NIP-OA authorization of hosted agents. There is no public active/current identity concept.
 
-When upgrading from the former single-owner configuration, the installer migrates that identity into per-community custody and updates legacy community records before starting the new daemon. The old global owner configuration and credential are removed after the upgraded service passes health checks.
+When upgrading from the former single-owner configuration, the installer migrates that identity into per-community custody and updates legacy community records before starting the new daemon. The old global owner configuration and credential are removed only after the upgraded service passes health checks.
 
 ## Encrypted backup and restore
 
-A backup stops the daemon for a consistent SQLite/filesystem snapshot and archives `/etc/buzz-server`, `/var/lib/buzz-server`, and `/var/log/buzz-server` with numeric ownership. AWS KMS is used when a key ID is supplied; otherwise the archive uses a passphrase-derived scrypt key with AES-256-GCM authenticated encryption.
+A backup stops the daemon for a consistent SQLite/filesystem snapshot and archives `/etc/buzz-server`, `/var/lib/buzz-server`, and `/var/log/buzz-server` with numeric ownership. Community identity files under `/var/lib/buzz-server/community-identities` are therefore included in the encrypted archive. AWS KMS is used when a key ID is supplied; otherwise the archive uses a passphrase-derived scrypt key with AES-256-GCM authenticated encryption.
 
 For a portable passphrase backup:
 
@@ -29,8 +28,6 @@ For KMS-backed encryption:
 ```sh
 sudo buzz-server backup /secure/buzz-backup.json alias/buzz-server-backup
 ```
-
-When the owner is held in Secret Service, backup materializes it before shutdown and embeds a decrypt-verified NIP-49 `ncryptsec` recovery artifact. Restore imports that artifact through the normal keyring-first, restricted-file-fallback custody path; it never attempts to copy OS keyring internals.
 
 Restore validates authenticated encryption, archive paths and file types, the manifest, and the configuration digest before replacing state. It automatically restores the pre-restore configuration and state if health checks fail:
 
@@ -80,7 +77,7 @@ cat /var/lib/buzz-server/metrics.prom
 
 - KMS key has rotation enabled and a least-privilege decrypt policy.
 - The host uses an instance role rather than static AWS credentials.
-- Plaintext owner-key files have been removed.
+- Community identity files are root-only and included in encrypted backups.
 - Encrypted backups are copied off-host and restored in an exercise.
 - Retention expiry and immediate purge have both been exercised.
 - Host firewall/VPC egress and ingress policies are reviewed.

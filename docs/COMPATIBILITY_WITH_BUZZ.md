@@ -1,12 +1,11 @@
 # Compatibility with Buzz
 
-## Assessment
+## Product boundary
 
-The proposal is compatible with Buzz when Buzz Server is described as an optional
-headless Buzz client rather than the relay or a replacement for
-`buzz-acp`.
+Buzz Server is an optional headless Buzz client. It is not the relay and does not
+replace `buzz-acp`.
 
-This follows existing Buzz boundaries:
+The compatibility boundary follows Buzz's existing architecture:
 
 - the relay transports and stores signed Nostr events;
 - applications hold identities and perform authorized operations;
@@ -15,80 +14,69 @@ This follows existing Buzz boundaries:
 - `buzz-acp` bridges relay events to an ACP runtime;
 - supervisors keep deployed processes alive.
 
-The name **Buzz Server** can be confused with the Buzz relay, which existing
-documentation also calls the server. Product documentation must consistently say
-“headless Buzz client” and preserve `buzz-relay` as the protocol/shared-state
-authority. “Headless Buzz Desktop” is a long-term direction, not the v0 contract.
+Product documentation therefore uses “headless Buzz client” for Buzz Server and
+reserves relay terminology for `buzz-relay`. “Headless Buzz Desktop” is a broader
+direction rather than the current server contract.
 
-## Already implemented by public Buzz
+## Shared Buzz behavior
+
+Buzz Server relies on public Buzz behavior for:
 
 - relay protocol, event persistence, membership, authorization, and client SDKs;
 - `buzz-acp` relay-to-ACP harness and child runtime/session management;
-- Desktop-managed agent identity generation and owner authorization;
-- access policy and runtime/model configuration;
-- Desktop's built-in local process supervision;
-- Desktop's multiple-community model, with each community backed by a relay and
-  community-scoped state reset at relay-boundary changes;
-- `Local` versus `Provider { id, config }` backend model;
-- `buzz-backend-*` discovery and the `info`/`deploy` executable protocol;
-- a public Kubernetes backend provider on current Buzz `main`, pending exact revision pinning and audit;
-- provider JSON configuration schemas and provider-aware Desktop UI;
-- complete remote deployment payload construction;
-- ACP runtime command and argument configuration.
+- NIP-OA construction and verification through the shared `buzz-sdk`;
+- access-policy and runtime/model configuration semantics;
+- multiple-community semantics and community-scoped state;
+- the `Local` versus `Provider { id, config }` deployment model;
+- `buzz-backend-*` provider discovery and the provider v1 `info`/`deploy` wire contract;
+- provider JSON configuration schemas and the upstream provider fixture corpus.
 
-## New work in Buzz Server
+The repository pins a reviewed Buzz revision for reproducible builds. Compatibility
+checks compare the pin with upstream movement, and dependency updates run the shared
+fixtures and full test suite before merge.
 
-- persistent headless administrative API;
-- server-native agent identity and constrained owner signer;
+## Buzz Server responsibilities
+
+Buzz Server adds the durable unattended operating layer:
+
+- persistent authenticated administrative APIs;
+- server-native agent identities and constrained community-identity signing;
 - desired-state registry and durable lifecycle operations;
 - reconciliation, readiness, health, recovery, and audit behavior;
-- durable Server-native local backend modeled on Desktop Local semantics;
-- durable headless process supervision for local agent child processes;
-- remote update, status, enable, disable, deletion, logs, and retention behavior;
-- secure secret storage and rotation procedures;
-- trusted provider-host discovery, negotiation, and compatibility outside Desktop;
-- future bridges such as Discord.
+- a durable Server-native local backend modeled on Buzz Desktop Local semantics;
+- headless process supervision for local agent child processes;
+- remote lifecycle operations, logs, retention, backup, restore, and rotation;
+- trusted provider-host discovery, negotiation, staging, and protocol compatibility.
 
-The earlier inventory was made at Buzz commit `b1b283cd4c7f926e12eeee8ae1f38c7471922b16`. Phase 0 refreshed it against commit `7ff5fc31895efe6265a379d01637c8ee301872e5`, which supplied the NIP-OA and provider-wire fixtures. The dependency pin was reviewed again at `79c52166cfe6b6d36bdc7686f943595c74e2f578`. Changes since the previous reviewed pin affected `buzz-acp` pooling/prompts and Desktop managed-agent behavior, but not the shared `buzz-core`, `buzz-sdk`, or `buzz-ws-client` contracts consumed here; the compatibility fixtures remained green. A separate weekly workflow reports later upstream movement without making ordinary PR and release verification race against a moving branch.
-
-Milestone 4 refreshed the exact dependency pin to
-`0afeac8a7c173fd3ede8a22e27919e63161bf07c`. The commits since the preceding
-pin affect only Desktop profile/sidebar UI and managed-agent restart-diff
-presentation/state; shared Rust crates and the Kubernetes provider
-contract/fixtures are unchanged.
+Provider compatibility does not make an external provider the durable lifecycle
+backend. The built-in local backend remains the operational lifecycle backend today.
+Persisting `Provider { id, config }` in agent intent and routing lifecycle operations
+through that backend is a separate control-plane integration; see
+[Provider lifecycle integration](PROVIDER_LIFECYCLE_INTEGRATION.md).
 
 ## Compatibility decisions
 
-1. Implement the MVP as a durable Server-native local backend modeled on Buzz
-   Desktop Local. Local is not a `buzz-backend-*` provider.
+1. The built-in durable local backend follows Buzz Desktop Local semantics. Local
+   is not a `buzz-backend-*` provider.
 2. Reuse or extract Tauri-free launch, configuration, runtime, and shared-type
    semantics; do not import the Desktop/Tauri application layer.
-3. Keep the local launch specification, process supervision, receipts, and
+3. Keep local launch specifications, process supervision, receipts, and
    reconciliation as internal Server contracts. Do not call supervisor drivers
    providers.
 4. Keep external provider compatibility separate from the built-in local backend.
    Trusted discovery and provider v1 `info`/`deploy` compatibility are implemented;
-   provider-backed lifecycle selection and container/Compose supervision remain
-   later integrations.
-5. Keep the signer before the external-provider boundary; providers receive
-   an already authorized deployment, matching Desktop's trust model. Treat existing
-   providers as deploy-only unless they advertise a future, versioned lifecycle
-   capability.
+   provider-backed lifecycle selection remains a separate integration.
+5. Keep signing before the external-provider boundary. Providers receive an
+   already authorized deployment, matching Desktop's trust model. Existing
+   providers are deploy-only unless they advertise a versioned lifecycle capability.
 6. Keep operational secrets and desired state in Buzz Server. Publish only
    appropriate non-secret lifecycle/audit information as signed Buzz events.
-7. Support generic ACP runtime configuration while working toward a shared
-   canonical runtime catalog instead of maintaining a drifting copy. An ACP
-   runtime and its model API provider/configuration are distinct from the
-   deployment backend and any backend provider.
+7. Keep ACP runtime/model configuration distinct from deployment-backend selection.
 8. Keep Buzz Server deployable independently of the relay host.
-9. Support multiple explicit communities as isolated client workspaces, not as a
-   multi-tenant control-plane namespace. Scope every agent and all operational
-   state by Server-local `community_config_id`, following Desktop's community
-   boundary. The authoritative relay URL is the shared community locator.
-10. Communicate with every relay exactly as another Buzz client: use its configured
-   URL, standard NIP-42/NIP-98 authentication, and ordinary Buzz/Nostr APIs. Do
-   not require a tenant-administration API, relay database access, special
-   headers, or co-location.
+9. Scope every agent and all operational state to one explicit community
+   configuration, matching Desktop's community boundary.
+10. Communicate with relays as an ordinary Buzz client through configured URLs and
+    standard Buzz/Nostr authentication and APIs.
 
 ## Sources
 

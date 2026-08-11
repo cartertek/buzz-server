@@ -2,8 +2,9 @@
 
 Status: superseded by [ADR 0012](0012-built-in-local-backend-first.md)
 
-**Current consequence:** provider discovery and provider v1 compatibility are
-future external-provider work, not part of the MVP's first deployment path.
+**Subsequent implementation:** provider discovery and provider v1 compatibility
+were later implemented while the built-in local backend remained the primary
+durable lifecycle path.
 
 ## Superseded decision
 
