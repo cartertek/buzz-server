@@ -1,6 +1,6 @@
 # Production operations
 
-This guide covers the production-only operational controls shipped with Buzz Server:
+This guide covers operational controls shipped with Buzz Server:
 community identity custody, encrypted backup and restore, credential rotation,
 disaster-recovery testing, host restrictions, release verification, and monitoring.
 
