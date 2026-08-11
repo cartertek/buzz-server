@@ -349,14 +349,15 @@ fn remove_community_identity_custody(
     let envelope = store_root.join(format!("{pubkey}.envelope.json"));
     if marker.exists() {
         let name = format!("community-identity:{pubkey}");
-        match keyring::Entry::new("buzz-server", &name)
-            .and_then(|entry| entry.delete_credential())
+        match keyring::Entry::new("buzz-server", &name).and_then(|entry| entry.delete_credential())
         {
             Ok(()) | Err(keyring::Error::NoEntry) => {
                 let _ = fs::remove_file(&marker);
             }
             Err(error) => {
-                return Err(format!("delete community identity from OS keyring: {error}"));
+                return Err(format!(
+                    "delete community identity from OS keyring: {error}"
+                ));
             }
         }
     }
