@@ -669,50 +669,139 @@ fn redact_log(input: &str) -> String {
     // Child runtimes receive credentials. Their arbitrary output cannot be
     // reliably classified by key-shaped heuristics, especially across read
     // boundaries, so persisted diagnostics record only that output occurred.
-    if input.is_empty() {
-        String::new()
-    } else {
-        "[REDACTED CHILD OUTPUT]\n".to_owned()
+    let mut redacted = String::new();
+    for line in input.lines() {
+        let diagnostic = sanitized_child_diagnostic(line);
+        redacted.push_str(diagnostic.as_deref().unwrap_or("[REDACTED CHILD OUTPUT]"));
+        redacted.push('\n');
     }
+    redacted
 }
 
-fn spawn_log_drain<R>(mut reader: R, path: PathBuf, max_bytes: u64)
+fn sanitized_child_diagnostic(line: &str) -> Option<String> {
+    let line = line.trim();
+    if matches!(
+        line,
+        "[CHILD INITIALIZATION ERROR]" | "[CHILD ERROR class=sqlite_state_initialization_failed]"
+    ) {
+        return Some(line.to_owned());
+    }
+    for prefix in ["[CHILD ADAPTER ERROR code=", "[CHILD PROCESS EXIT code="] {
+        if line
+            .strip_prefix(prefix)
+            .and_then(|value| value.strip_suffix(']'))
+            .is_some_and(valid_error_code)
+        {
+            return Some(line.to_owned());
+        }
+    }
+
+    if line.starts_with("agent initialize failed:") {
+        let mut diagnostic = "[CHILD INITIALIZATION ERROR]".to_owned();
+        if let Some(code) = numeric_value_after(line, "Agent reported error (code ") {
+            diagnostic.push_str(&format!("\n[CHILD ADAPTER ERROR code={code}]"));
+        }
+        if let Some(code) = numeric_value_after(line, "process has exited with code ") {
+            diagnostic.push_str(&format!("\n[CHILD PROCESS EXIT code={code}]"));
+        }
+        return Some(diagnostic);
+    }
+    if let Some(code) = numeric_value_after(line, "Agent reported error (code ") {
+        let mut diagnostic = format!("[CHILD ADAPTER ERROR code={code}]");
+        if let Some(exit_code) = numeric_value_after(line, "process has exited with code ") {
+            diagnostic.push_str(&format!("\n[CHILD PROCESS EXIT code={exit_code}]"));
+        }
+        return Some(diagnostic);
+    }
+    if let Some(code) = numeric_value_after(line, "process has exited with code ") {
+        return Some(format!("[CHILD PROCESS EXIT code={code}]"));
+    }
+    if line.starts_with("Error: failed to initialize sqlite state runtime") {
+        return Some("[CHILD ERROR class=sqlite_state_initialization_failed]".to_owned());
+    }
+    None
+}
+
+fn numeric_value_after<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+    let value = line.split_once(marker)?.1;
+    let end = value
+        .find(|character: char| !character.is_ascii_digit() && character != '-')
+        .unwrap_or(value.len());
+    let value = &value[..end];
+    valid_error_code(value).then_some(value)
+}
+
+fn valid_error_code(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 11 && value.parse::<i32>().is_ok()
+}
+
+fn spawn_log_drain<R>(reader: R, path: PathBuf, max_bytes: u64)
 where
     R: Read + Send + 'static,
 {
     thread::spawn(move || {
+        const MAX_DIAGNOSTIC_LINE_BYTES: usize = 4096;
+        let mut reader = reader;
         let mut buffer = [0_u8; 8192];
+        let mut pending = Vec::with_capacity(MAX_DIAGNOSTIC_LINE_BYTES);
+        let mut discarding_line = false;
         loop {
             let read = match reader.read(&mut buffer) {
-                Ok(0) | Err(_) => return,
+                Ok(0) => {
+                    if !discarding_line && !pending.is_empty() {
+                        let sanitized = redact_log(&String::from_utf8_lossy(&pending));
+                        let _ = append_sanitized_log(&path, max_bytes, &sanitized);
+                    }
+                    return;
+                }
+                Err(_) => return,
                 Ok(read) => read,
             };
-            let mut options = OpenOptions::new();
-            options.create(true).append(true).read(true);
-            #[cfg(unix)]
-            options.mode(0o600);
-            let Ok(mut file) = options.open(&path) else {
-                return;
-            };
-            let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
-                return;
-            };
-            let sanitized = redact_log(&String::from_utf8_lossy(&buffer[..read]));
-            let sanitized = sanitized.as_bytes();
-            if length.saturating_add(sanitized.len() as u64) > max_bytes && file.set_len(0).is_err()
-            {
-                return;
-            }
-            let keep =
-                usize::try_from(max_bytes.min(sanitized.len() as u64)).unwrap_or(sanitized.len());
-            if file
-                .write_all(&sanitized[sanitized.len() - keep..])
-                .is_err()
-            {
-                return;
+            for byte in &buffer[..read] {
+                if discarding_line {
+                    if *byte == b'\n' {
+                        discarding_line = false;
+                    }
+                    continue;
+                }
+                if *byte == b'\n' {
+                    let sanitized = redact_log(&String::from_utf8_lossy(&pending));
+                    if append_sanitized_log(&path, max_bytes, &sanitized).is_err() {
+                        return;
+                    }
+                    pending.clear();
+                } else if pending.len() < MAX_DIAGNOSTIC_LINE_BYTES {
+                    pending.push(*byte);
+                } else {
+                    if append_sanitized_log(&path, max_bytes, "[REDACTED CHILD OUTPUT]\n").is_err()
+                    {
+                        return;
+                    }
+                    pending.clear();
+                    discarding_line = true;
+                }
             }
         }
     });
+}
+
+fn append_sanitized_log(path: &Path, max_bytes: u64, sanitized: &str) -> io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true).read(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path)?;
+    let sanitized = sanitized.as_bytes();
+    if file
+        .metadata()?
+        .len()
+        .saturating_add(sanitized.len() as u64)
+        > max_bytes
+    {
+        file.set_len(0)?;
+    }
+    let keep = usize::try_from(max_bytes.min(sanitized.len() as u64)).unwrap_or(sanitized.len());
+    file.write_all(&sanitized[sanitized.len() - keep..])
 }
 
 #[cfg(all(test, unix))]
@@ -993,6 +1082,69 @@ mod tests {
             Err(SupervisorError::ReceiptMismatch)
         ));
         adapter.stop(&receipt).unwrap();
+    }
+
+    #[test]
+    fn preserves_only_allowlisted_child_initialization_diagnostics() {
+        assert_eq!(
+            redact_log(
+                "agent initialize failed: Agent reported error (code 1001): Codex process has exited with code 1: token=secret\n"
+            ),
+            concat!(
+                "[CHILD INITIALIZATION ERROR]\n",
+                "[CHILD ADAPTER ERROR code=1001]\n",
+                "[CHILD PROCESS EXIT code=1]\n",
+            )
+        );
+        let input = concat!(
+            "agent initialize failed: Agent reported error (code 1001): secret-value\n",
+            "Agent reported error (code 1001): Codex process has exited with code 1: token=secret\n",
+            "Error: failed to initialize sqlite state runtime under /secret/home\n",
+            "agent initialize failed but not a diagnostic: secret-value\n",
+            "Error: token=secret-value\n",
+        );
+
+        let redacted = redact_log(input);
+
+        assert!(redacted.contains("[CHILD INITIALIZATION ERROR]"));
+        assert!(redacted.contains("[CHILD ADAPTER ERROR code=1001]"));
+        assert!(redacted.contains("[CHILD PROCESS EXIT code=1]"));
+        assert!(redacted.contains("[CHILD ERROR class=sqlite_state_initialization_failed]"));
+        assert_eq!(redacted.matches("[REDACTED CHILD OUTPUT]").count(), 2);
+        assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("/secret/home"));
+    }
+
+    #[test]
+    fn preserves_diagnostics_when_child_writes_them_across_read_boundaries() {
+        struct ChunkedReader<R>(R);
+
+        impl<R: Read> Read for ChunkedReader<R> {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let limit = buffer.len().min(7);
+                self.0.read(&mut buffer[..limit])
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("stderr.log");
+        let input = ChunkedReader(io::Cursor::new(concat!(
+            "Agent reported error (code 1001): process has exited with code 1\n",
+            "Error: failed to initialize sqlite state runtime under /secret/home\n",
+        )));
+        spawn_log_drain(input, path.clone(), 4096);
+
+        for _ in 0..50 {
+            if fs::read_to_string(&path).is_ok_and(|contents| contents.lines().count() >= 3) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let persisted = fs::read_to_string(path).unwrap();
+        assert!(persisted.contains("[CHILD ADAPTER ERROR code=1001]"));
+        assert!(persisted.contains("[CHILD PROCESS EXIT code=1]"));
+        assert!(persisted.contains("[CHILD ERROR class=sqlite_state_initialization_failed]"));
+        assert!(!persisted.contains("secret"));
     }
 
     #[test]
