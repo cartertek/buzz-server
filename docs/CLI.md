@@ -117,6 +117,17 @@ The resulting agent configuration is written to
 `/var/lib/buzz-server/agent-config/agents/<agent-id>.json` and is reloaded when the
 service restarts.
 
+For standalone agents, `--system-prompt-file PATH` loads a UTF-8 prompt when the
+inline prompt is empty. `PATH` must be an absolute administrator-selected path;
+it is read directly and is not reinterpreted relative to the agent-config store.
+The file is reread whenever the agent configuration is
+resolved, so edits take effect on the next reconcile. Missing, unreadable,
+non-regular, and invalid-UTF-8 files fail with an actionable error.
+A non-empty inline `--system-prompt` always wins. To transition an existing inline
+agent, update it with `--system-prompt-file PATH` alone; this stores an explicit
+blank inline prompt and activates file-backed resolution. Supplying a non-empty
+inline prompt in the same update keeps that prompt authoritative.
+
 ### `get` / `list`
 
 ```sh

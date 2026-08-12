@@ -1,6 +1,6 @@
 //! Desired agent lifecycle state plus human-authored file configuration.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 use serde::{Deserialize, Serialize};
 
@@ -158,6 +158,9 @@ pub struct AgentConfigFile {
     pub avatar_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+    /// Absolute path to a UTF-8 prompt file selected by the administrator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<RuntimeId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -214,7 +217,27 @@ impl AgentConfigFile {
             validate_identifier("persona_id", persona_id)?;
         }
         if let Some(prompt) = self.system_prompt.as_deref() {
-            validate_nonempty("system_prompt", prompt, 65_536)?;
+            if prompt.chars().count() > 65_536 || prompt.contains('\0') {
+                return Err(ValidationError::new(
+                    "system_prompt",
+                    "must be at most 65536 NUL-free characters",
+                ));
+            }
+        }
+        if let Some(path) = self.system_prompt_file.as_deref() {
+            validate_nonempty("system_prompt_file", path, 4_096)?;
+            if !Path::new(path).is_absolute() {
+                return Err(ValidationError::new(
+                    "system_prompt_file",
+                    "must be an absolute path",
+                ));
+            }
+        }
+        if self.persona_id.is_some() && self.system_prompt_file.is_some() {
+            return Err(ValidationError::new(
+                "system_prompt_file",
+                "cannot be used with persona_id",
+            ));
         }
         validate_environment(&self.environment)?;
         self.filesystem.validate()?;

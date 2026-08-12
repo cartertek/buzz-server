@@ -548,6 +548,7 @@ impl LifecycleEffects for LifecycleWake {
                 input.display_name.clone(),
                 input.persona_id.clone(),
                 input.system_prompt.clone(),
+                input.system_prompt_file.clone(),
                 input.runtime_id.clone(),
                 input.filesystem_user.clone(),
             )
@@ -577,6 +578,7 @@ impl LifecycleEffects for LifecycleWake {
                 input.display_name.clone(),
                 input.persona_id.clone(),
                 input.system_prompt.clone(),
+                input.system_prompt_file.clone(),
                 input.runtime_id.clone(),
                 input.filesystem_user.clone(),
             )
@@ -612,6 +614,23 @@ impl LifecycleEffects for LifecycleWake {
             }
             file.system_prompt = Some(value.clone());
         }
+        if let Some(value) = &changes.system_prompt_file {
+            if file.persona_id.is_some() {
+                return Err(buzz_server::api::ApplicationError::Invalid(
+                    buzz_server::ValidationError::new(
+                        "system_prompt_file",
+                        "is defined by the selected persona; update the persona instead",
+                    ),
+                ));
+            }
+            file.system_prompt_file = Some(value.clone());
+            if changes.system_prompt.is_none() {
+                // A file-only update explicitly transitions from inline to
+                // file-backed prompting. A simultaneous inline value remains
+                // authoritative and is never cleared.
+                file.system_prompt = Some(String::new());
+            }
+        }
         if let Some(value) = &changes.runtime_id {
             file.runtime = Some(value.clone());
         }
@@ -628,6 +647,13 @@ impl LifecycleEffects for LifecycleWake {
             .load(agent_id)
             .ok()
             .map(|keys| keys.public_key().to_hex())
+    }
+
+    fn agent_system_prompt_file(&self, agent_id: buzz_server::AgentId) -> Option<String> {
+        self.agent_files
+            .load_agent(agent_id)
+            .ok()
+            .and_then(|file| file.system_prompt_file)
     }
 
     fn operation_ready(
@@ -2299,6 +2325,12 @@ fn agent_file_application_error(
             buzz_server::api::ApplicationError::Invalid(buzz_server::ValidationError::new(
                 "runtime_id",
                 "is required when no persona is selected",
+            ))
+        }
+        buzz_server::AgentFileError::SystemPromptFile { path, message } => {
+            buzz_server::api::ApplicationError::Invalid(buzz_server::ValidationError::new(
+                "system_prompt_file",
+                format!("{path}: {message}"),
             ))
         }
         _ => buzz_server::api::ApplicationError::Internal,

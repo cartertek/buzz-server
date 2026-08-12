@@ -36,6 +36,8 @@ pub enum AgentFileError {
     StandaloneRuntimeRequired,
     #[error("agent file id {found} does not match expected id {expected}")]
     AgentIdMismatch { expected: AgentId, found: AgentId },
+    #[error("cannot read system prompt file {path}: {message}")]
+    SystemPromptFile { path: String, message: String },
 }
 
 impl AgentFileStore {
@@ -178,6 +180,7 @@ impl AgentFileStore {
             persona_id: None,
             avatar_url: None,
             system_prompt: (!spec.system_prompt.is_empty()).then(|| spec.system_prompt.clone()),
+            system_prompt_file: None,
             runtime: Some(spec.runtime.runtime_id.clone()),
             model: None,
             provider: None,
@@ -222,11 +225,7 @@ impl AgentFileStore {
                     file.runtime
                         .clone()
                         .ok_or(AgentFileError::StandaloneRuntimeRequired)?,
-                    file.system_prompt
-                        .as_deref()
-                        .map(str::trim)
-                        .unwrap_or_default()
-                        .to_owned(),
+                    resolve_system_prompt(file)?,
                     nonblank(file.model.clone()),
                     nonblank(file.provider.clone()),
                     file.environment.clone(),
@@ -270,6 +269,7 @@ impl AgentFileStore {
         display_name: String,
         persona_id: Option<String>,
         system_prompt: Option<String>,
+        system_prompt_file: Option<String>,
         runtime: Option<RuntimeId>,
         filesystem_user: Option<String>,
     ) -> Result<AgentConfigFile, AgentFileError> {
@@ -299,6 +299,7 @@ impl AgentFileStore {
             persona_id,
             avatar_url,
             system_prompt: prompt_snapshot,
+            system_prompt_file,
             runtime,
             model: None,
             provider: None,
@@ -317,6 +318,39 @@ impl AgentFileStore {
         file.validate()?;
         Ok(file)
     }
+}
+
+fn resolve_system_prompt(file: &AgentConfigFile) -> Result<String, AgentFileError> {
+    if let Some(prompt) = file.system_prompt.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        return Ok(prompt.to_owned());
+    }
+    let Some(path) = file.system_prompt_file.as_deref() else {
+        return Ok(String::new());
+    };
+    let resolved = PathBuf::from(path).canonicalize().map_err(|error| AgentFileError::SystemPromptFile {
+        path: path.to_owned(),
+        message: format!("cannot resolve file: {error}"),
+    })?;
+    let metadata = fs::metadata(&resolved).map_err(|error| AgentFileError::SystemPromptFile {
+        path: path.to_owned(),
+        message: format!("cannot inspect file: {error}"),
+    })?;
+    if !metadata.is_file() {
+        return Err(AgentFileError::SystemPromptFile {
+            path: path.to_owned(),
+            message: "path is not a regular file".into(),
+        });
+    }
+    let bytes = fs::read(&resolved).map_err(|error| AgentFileError::SystemPromptFile {
+        path: path.to_owned(),
+        message: format!("cannot read file: {error}"),
+    })?;
+    String::from_utf8(bytes)
+        .map(|prompt| prompt.trim().to_owned())
+        .map_err(|error| AgentFileError::SystemPromptFile {
+            path: path.to_owned(),
+            message: format!("file is not valid UTF-8: {error}"),
+        })
 }
 
 fn nonblank(value: Option<String>) -> Option<String> {
@@ -379,6 +413,7 @@ mod tests {
             persona_id: Some("reviewer".into()),
             avatar_url: Some("snapshot-avatar".into()),
             system_prompt: Some("stale snapshot".into()),
+            system_prompt_file: None,
             runtime: Some("claude-acp".parse().unwrap()),
             model: Some("stale-model".into()),
             provider: Some("stale-provider".into()),
@@ -413,6 +448,95 @@ mod tests {
     }
 
     #[test]
+    fn system_prompt_file_resolves_and_inline_prompt_wins() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = AgentFileStore::new(directory.path()).unwrap();
+        let prompt_path = directory.path().join("prompt.md");
+        std::fs::write(&prompt_path, "from file\n").unwrap();
+        let mut file = store
+            .build_create_file(
+                AgentId::new(),
+                "Builder".into(),
+                None,
+                Some(String::new()),
+                None,
+                Some("codex-acp".parse().unwrap()),
+                None,
+            )
+            .unwrap();
+        file.system_prompt_file = Some(prompt_path.display().to_string());
+        assert_eq!(
+            store
+                .resolve(&file, CommunityConfigId::new(), DesiredAgentState::Enabled)
+                .unwrap()
+                .spec
+                .system_prompt,
+            "from file"
+        );
+        std::fs::write(&prompt_path, "changed").unwrap();
+        assert_eq!(
+            store
+                .resolve(&file, CommunityConfigId::new(), DesiredAgentState::Enabled)
+                .unwrap()
+                .spec
+                .system_prompt,
+            "changed"
+        );
+        file.system_prompt = Some("inline".into());
+        assert_eq!(
+            store
+                .resolve(&file, CommunityConfigId::new(), DesiredAgentState::Enabled)
+                .unwrap()
+                .spec
+                .system_prompt,
+            "inline"
+        );
+
+        let created = store
+            .build_create_file(
+                AgentId::new(),
+                "Inline wins".into(),
+                None,
+                Some("inline at create".into()),
+                Some(prompt_path.display().to_string()),
+                Some("codex-acp".parse().unwrap()),
+                None,
+            )
+            .unwrap();
+        assert_eq!(created.system_prompt.as_deref(), Some("inline at create"));
+    }
+
+    #[test]
+    fn system_prompt_file_failures_are_actionable() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = AgentFileStore::new(directory.path()).unwrap();
+        let mut file = store
+            .build_create_file(
+                AgentId::new(),
+                "Builder".into(),
+                None,
+                Some(String::new()),
+                None,
+                Some("codex-acp".parse().unwrap()),
+                None,
+            )
+            .unwrap();
+        let missing = directory.path().join("missing.md");
+        file.system_prompt_file = Some(missing.display().to_string());
+        let error = store
+            .resolve(&file, CommunityConfigId::new(), DesiredAgentState::Enabled)
+            .unwrap_err();
+        assert!(error.to_string().contains("cannot resolve file"));
+        let invalid = directory.path().join("invalid.md");
+        std::fs::write(&invalid, [0xff, 0xfe]).unwrap();
+        file.system_prompt_file = Some(invalid.display().to_string());
+        let error = store
+            .resolve(&file, CommunityConfigId::new(), DesiredAgentState::Enabled)
+            .unwrap_err();
+        assert!(error.to_string().contains("not valid UTF-8"));
+    }
+
+    #[test]
     fn create_from_persona_mints_desktop_behavioral_snapshot() {
         let directory = tempfile::tempdir().unwrap();
         let store = AgentFileStore::new(directory.path()).unwrap();
@@ -423,6 +547,7 @@ mod tests {
                 id,
                 "Reviewer one".into(),
                 Some("reviewer".into()),
+                None,
                 None,
                 None,
                 None,
@@ -452,6 +577,7 @@ mod tests {
                 "Builder".into(),
                 None,
                 Some("Build safely.".into()),
+                None,
                 Some("codex-acp".parse().unwrap()),
                 None,
             )
@@ -476,6 +602,7 @@ mod tests {
                 "Builder".into(),
                 None,
                 Some("Build safely.".into()),
+                None,
                 Some("codex-acp".parse().unwrap()),
                 Some("ec2-user".into()),
             )
@@ -489,5 +616,40 @@ mod tests {
             )
             .unwrap();
         assert_eq!(resolved.filesystem.user.as_deref(), Some("ec2-user"));
+    }
+
+    #[test]
+    fn file_prompt_supports_precedence_reload_and_absolute_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = AgentFileStore::new(directory.path()).unwrap();
+        let prompt = directory.path().join("prompt.md");
+        fs::write(&prompt, "from file\n").unwrap();
+        let id = AgentId::new();
+        let mut file = store
+            .build_create_file(
+                id,
+                "Builder".into(),
+                None,
+                Some("".into()),
+                Some(prompt.display().to_string()),
+                Some("codex-acp".parse().unwrap()),
+                None,
+            )
+            .unwrap();
+        assert_eq!(store.resolve(&file, CommunityConfigId::new(), DesiredAgentState::Enabled).unwrap().spec.system_prompt, "from file");
+        fs::write(&prompt, "reloaded").unwrap();
+        assert_eq!(store.resolve(&file, CommunityConfigId::new(), DesiredAgentState::Enabled).unwrap().spec.system_prompt, "reloaded");
+        file.system_prompt = Some("inline wins".into());
+        assert_eq!(store.resolve(&file, CommunityConfigId::new(), DesiredAgentState::Enabled).unwrap().spec.system_prompt, "inline wins");
+
+        let relative = AgentConfigFile {
+            system_prompt_file: Some("prompt.md".into()),
+            ..file
+        };
+        assert!(relative
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("absolute"));
     }
 }

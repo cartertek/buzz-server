@@ -69,6 +69,8 @@ pub struct CreateAgentInput {
     #[serde(default)]
     pub system_prompt: Option<String>,
     #[serde(default)]
+    pub system_prompt_file: Option<String>,
+    #[serde(default)]
     pub runtime_id: Option<RuntimeId>,
     #[serde(default)]
     pub filesystem_user: Option<String>,
@@ -78,12 +80,32 @@ impl CreateAgentInput {
     pub fn validate(&self) -> Result<(), ValidationError> {
         validate_token("display_name", &self.display_name, 120)?;
         if let Some(prompt) = self.system_prompt.as_deref() {
-            validate_token("system_prompt", prompt, 65_536)?;
+            if prompt.chars().count() > 65_536 || prompt.contains('\0') {
+                return Err(ValidationError::new(
+                    "system_prompt",
+                    "must be at most 65536 NUL-free characters",
+                ));
+            }
+        }
+        if let Some(path) = self.system_prompt_file.as_deref() {
+            validate_token("system_prompt_file", path, 4_096)?;
+            if !std::path::Path::new(path).is_absolute() {
+                return Err(ValidationError::new(
+                    "system_prompt_file",
+                    "must be an absolute path",
+                ));
+            }
         }
         if self.persona_id.is_some() && self.system_prompt.is_some() {
             return Err(ValidationError::new(
                 "system_prompt",
                 "is defined by the selected persona; omit --system-prompt",
+            ));
+        }
+        if self.persona_id.is_some() && self.system_prompt_file.is_some() {
+            return Err(ValidationError::new(
+                "system_prompt_file",
+                "is defined by the selected persona; omit --system-prompt-file",
             ));
         }
         if self.persona_id.is_none() && self.runtime_id.is_none() {
@@ -106,8 +128,36 @@ pub struct CreateAgentRequest {
 pub struct UpdateAgentInput {
     pub display_name: Option<String>,
     pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub system_prompt_file: Option<String>,
     pub runtime_id: Option<RuntimeId>,
     pub filesystem_user: Option<String>,
+}
+
+impl UpdateAgentInput {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if let Some(value) = self.display_name.as_deref() {
+            validate_token("display_name", value, 120)?;
+        }
+        if let Some(value) = self.system_prompt.as_deref() {
+            if value.chars().count() > 65_536 || value.contains('\0') {
+                return Err(ValidationError::new(
+                    "system_prompt",
+                    "must be at most 65536 NUL-free characters",
+                ));
+            }
+        }
+        if let Some(value) = self.system_prompt_file.as_deref() {
+            validate_token("system_prompt_file", value, 4_096)?;
+            if !std::path::Path::new(value).is_absolute() {
+                return Err(ValidationError::new(
+                    "system_prompt_file",
+                    "must be an absolute path",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -148,6 +198,8 @@ pub struct AgentResource {
     pub community_config_id: CommunityConfigId,
     pub display_name: String,
     pub system_prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_file: Option<String>,
     pub runtime_id: RuntimeId,
     pub desired_state: DesiredAgentState,
     pub purge_after: Option<i64>,
@@ -512,6 +564,7 @@ impl<S: LifecycleApplication> LifecycleHandler<S> {
                 "must include at least one field",
             )));
         }
+        request.changes.validate().map_err(api_validation)?;
         self.application
             .update_agent(actor, request)
             .map_err(api_application)
@@ -886,6 +939,7 @@ mod tests {
             display_name: "Builder".into(),
             persona_id: None,
             system_prompt: Some("Build safely.".into()),
+            system_prompt_file: None,
             runtime_id: Some("codex-acp".parse().unwrap()),
             filesystem_user: None,
         }

@@ -293,6 +293,7 @@ fn route(
             changes: UpdateAgentInput {
                 display_name: options.get("--display-name").cloned(),
                 system_prompt: options.get("--system-prompt").cloned(),
+                system_prompt_file: options.get("--system-prompt-file").cloned(),
                 runtime_id: optional_parse(options, "--runtime", "runtime ID")?,
                 filesystem_user: options.get("--filesystem-user").cloned(),
             },
@@ -339,6 +340,7 @@ fn create_input(options: &BTreeMap<String, String>) -> Result<CreateAgentInput, 
         display_name: required(options, "--display-name")?.into(),
         persona_id: options.get("--persona").cloned(),
         system_prompt: options.get("--system-prompt").cloned(),
+        system_prompt_file: options.get("--system-prompt-file").cloned(),
         runtime_id: optional_parse(options, "--runtime", "runtime ID")?,
         filesystem_user: options.get("--filesystem-user").cloned(),
     })
