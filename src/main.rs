@@ -31,8 +31,8 @@ use buzz_server::{
         LifecycleJsonRouter, SqliteReplayGuard, TlsLifecycleServer, TlsNip98Authenticator,
         UnixLifecycleServer,
     },
-    AgentFileStore, DurableOperation, LaunchSpec, LocalLaunchContext, ProcessReceipt,
-    ResolvedAgentConfig, RuntimeCatalog, SqliteStore, StorageError,
+    AgentCreateFileOptions, AgentFileStore, DurableOperation, LaunchSpec, LocalLaunchContext,
+    ProcessReceipt, ResolvedAgentConfig, RuntimeCatalog, SqliteStore, StorageError,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -545,12 +545,14 @@ impl LifecycleEffects for LifecycleWake {
             .agent_files
             .build_create_file(
                 id,
-                input.display_name.clone(),
-                input.persona_id.clone(),
-                input.system_prompt.clone(),
-                input.system_prompt_file.clone(),
-                input.runtime_id.clone(),
-                input.filesystem_user.clone(),
+                AgentCreateFileOptions {
+                    display_name: input.display_name.clone(),
+                    persona_id: input.persona_id.clone(),
+                    system_prompt: input.system_prompt.clone(),
+                    system_prompt_file: input.system_prompt_file.clone(),
+                    runtime: input.runtime_id.clone(),
+                    filesystem_user: input.filesystem_user.clone(),
+                },
             )
             .map_err(agent_file_application_error)?;
         self.agent_files
@@ -575,12 +577,14 @@ impl LifecycleEffects for LifecycleWake {
             .agent_files
             .build_create_file(
                 agent.id,
-                input.display_name.clone(),
-                input.persona_id.clone(),
-                input.system_prompt.clone(),
-                input.system_prompt_file.clone(),
-                input.runtime_id.clone(),
-                input.filesystem_user.clone(),
+                AgentCreateFileOptions {
+                    display_name: input.display_name.clone(),
+                    persona_id: input.persona_id.clone(),
+                    system_prompt: input.system_prompt.clone(),
+                    system_prompt_file: input.system_prompt_file.clone(),
+                    runtime: input.runtime_id.clone(),
+                    filesystem_user: input.filesystem_user.clone(),
+                },
             )
             .map_err(agent_file_application_error)?;
         self.agent_files

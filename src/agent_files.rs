@@ -18,6 +18,16 @@ pub struct AgentFileStore {
     root: PathBuf,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct AgentCreateFileOptions {
+    pub display_name: String,
+    pub persona_id: Option<String>,
+    pub system_prompt: Option<String>,
+    pub system_prompt_file: Option<String>,
+    pub runtime: Option<RuntimeId>,
+    pub filesystem_user: Option<String>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AgentFileError {
     #[error("I/O error: {0}")]
@@ -266,15 +276,10 @@ impl AgentFileStore {
     pub fn build_create_file(
         &self,
         id: AgentId,
-        display_name: String,
-        persona_id: Option<String>,
-        system_prompt: Option<String>,
-        system_prompt_file: Option<String>,
-        runtime: Option<RuntimeId>,
-        filesystem_user: Option<String>,
+        options: AgentCreateFileOptions,
     ) -> Result<AgentConfigFile, AgentFileError> {
         let (avatar_url, parallelism, respond_to, respond_to_allowlist, prompt_snapshot) =
-            match persona_id.as_deref() {
+            match options.persona_id.as_deref() {
                 Some(pid) => {
                     let p = self.load_persona(pid)?;
                     (
@@ -290,22 +295,22 @@ impl AgentFileStore {
                     DEFAULT_AGENT_PARALLELISM,
                     RespondToMode::OwnerOnly,
                     vec![],
-                    system_prompt,
+                    options.system_prompt,
                 ),
             };
         let file = AgentConfigFile {
             id,
-            display_name,
-            persona_id,
+            display_name: options.display_name,
+            persona_id: options.persona_id,
             avatar_url,
             system_prompt: prompt_snapshot,
-            system_prompt_file,
-            runtime,
+            system_prompt_file: options.system_prompt_file,
+            runtime: options.runtime,
             model: None,
             provider: None,
             environment: BTreeMap::new(),
             filesystem: FilesystemConfig {
-                user: filesystem_user,
+                user: options.filesystem_user,
             },
             auto_join_open_channels: AutoJoinOpenChannels::Disabled,
             agent_args: vec![],
@@ -464,12 +469,11 @@ mod tests {
         let mut file = store
             .build_create_file(
                 AgentId::new(),
-                "Builder".into(),
-                None,
-                None,
-                None,
-                Some("codex-acp".parse().unwrap()),
-                None,
+                AgentCreateFileOptions {
+                    display_name: "Builder".into(),
+                    runtime: Some("codex-acp".parse().unwrap()),
+                    ..Default::default()
+                },
             )
             .unwrap();
         file.system_prompt_file = Some(prompt_path.display().to_string());
@@ -503,12 +507,13 @@ mod tests {
         let created = store
             .build_create_file(
                 AgentId::new(),
-                "Inline wins".into(),
-                None,
-                Some("inline at create".into()),
-                Some(prompt_path.display().to_string()),
-                Some("codex-acp".parse().unwrap()),
-                None,
+                AgentCreateFileOptions {
+                    display_name: "Inline wins".into(),
+                    system_prompt: Some("inline at create".into()),
+                    system_prompt_file: Some(prompt_path.display().to_string()),
+                    runtime: Some("codex-acp".parse().unwrap()),
+                    ..Default::default()
+                },
             )
             .unwrap();
         assert_eq!(created.system_prompt.as_deref(), Some("inline at create"));
@@ -521,12 +526,11 @@ mod tests {
         let mut file = store
             .build_create_file(
                 AgentId::new(),
-                "Builder".into(),
-                None,
-                None,
-                None,
-                Some("codex-acp".parse().unwrap()),
-                None,
+                AgentCreateFileOptions {
+                    display_name: "Builder".into(),
+                    runtime: Some("codex-acp".parse().unwrap()),
+                    ..Default::default()
+                },
             )
             .unwrap();
         let missing = directory.path().join("missing.md");
@@ -553,12 +557,11 @@ mod tests {
         let file = store
             .build_create_file(
                 id,
-                "Reviewer one".into(),
-                Some("reviewer".into()),
-                None,
-                None,
-                None,
-                None,
+                AgentCreateFileOptions {
+                    display_name: "Reviewer one".into(),
+                    persona_id: Some("reviewer".into()),
+                    ..Default::default()
+                },
             )
             .unwrap();
         assert_eq!(file.system_prompt.as_deref(), Some("Review carefully."));
@@ -583,12 +586,13 @@ mod tests {
         let file = store
             .build_create_file(
                 id,
-                "Builder".into(),
-                None,
-                Some("Build safely.".into()),
-                Some(prompt_path.display().to_string()),
-                Some("codex-acp".parse().unwrap()),
-                None,
+                AgentCreateFileOptions {
+                    display_name: "Builder".into(),
+                    system_prompt: Some("Build safely.".into()),
+                    system_prompt_file: Some(prompt_path.display().to_string()),
+                    runtime: Some("codex-acp".parse().unwrap()),
+                    ..Default::default()
+                },
             )
             .unwrap();
         store.write_agent(&file).unwrap();
@@ -612,12 +616,13 @@ mod tests {
         let file = store
             .build_create_file(
                 id,
-                "Builder".into(),
-                None,
-                Some("Build safely.".into()),
-                None,
-                Some("codex-acp".parse().unwrap()),
-                Some("ec2-user".into()),
+                AgentCreateFileOptions {
+                    display_name: "Builder".into(),
+                    system_prompt: Some("Build safely.".into()),
+                    runtime: Some("codex-acp".parse().unwrap()),
+                    filesystem_user: Some("ec2-user".into()),
+                    ..Default::default()
+                },
             )
             .unwrap();
         store.write_agent(&file).unwrap();
@@ -641,12 +646,13 @@ mod tests {
         let mut file = store
             .build_create_file(
                 id,
-                "Builder".into(),
-                None,
-                Some("".into()),
-                Some(prompt.display().to_string()),
-                Some("codex-acp".parse().unwrap()),
-                None,
+                AgentCreateFileOptions {
+                    display_name: "Builder".into(),
+                    system_prompt: Some("".into()),
+                    system_prompt_file: Some(prompt.display().to_string()),
+                    runtime: Some("codex-acp".parse().unwrap()),
+                    ..Default::default()
+                },
             )
             .unwrap();
         assert_eq!(
