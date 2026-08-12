@@ -129,6 +129,7 @@ Hosted-agent commands:
   update         Update an agent
   enable         Enable an agent
   disable        Disable an agent
+  reload         Disable and then re-enable an agent
   logs           Read agent logs
   delete         Recoverably delete an agent
   purge          Permanently purge an agent
@@ -154,6 +155,7 @@ agents_command_help() {
     update)       printf '%s\n' 'Usage: buzz-server agents update --agent ID [--display-name NAME] [--system-prompt PROMPT] [--runtime ID] [--idempotency KEY] [--correlation ID]' ;;
     enable)       printf '%s\n' 'Usage: buzz-server agents enable --agent ID [--idempotency KEY] [--correlation ID]' ;;
     disable)      printf '%s\n' 'Usage: buzz-server agents disable --agent ID [--idempotency KEY] [--correlation ID]' ;;
+    reload)       printf '%s\n' 'Usage: buzz-server agents reload --agent ID [--idempotency KEY] [--correlation ID]' ;;
     logs)         printf '%s\n' 'Usage: buzz-server agents logs --agent ID [--after CURSOR] [--limit N]' ;;
     delete)       printf '%s\n' 'Usage: buzz-server agents delete --agent ID [--idempotency KEY] [--correlation ID]' ;;
     purge)        printf '%s\n' 'Usage: buzz-server agents purge --agent ID [--idempotency KEY] [--correlation ID]' ;;
@@ -396,6 +398,16 @@ case "$command" in
           ;;
         create|get|list|update|enable|disable|logs|delete|purge|operation)
           exec "$release/buzz-agentctl" "$subcommand" "$@"
+          ;;
+        reload)
+          if disable_output=$("$release/buzz-agentctl" disable "$@"); then
+            :
+          else
+            disable_status=$?
+            printf '%s\n' "$disable_output"
+            exit "$disable_status"
+          fi
+          "$release/buzz-agentctl" enable "$@"
           ;;
         draft-create|draft-update)
           [ "${1:-}" = --community ] && [ -n "${2:-}" ] || { agents_command_help "$subcommand" >&2; exit 64; }

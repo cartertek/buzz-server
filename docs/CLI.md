@@ -151,12 +151,16 @@ sudo buzz-server agents update \
 
 Include at least one of `--display-name`, `--system-prompt`, or `--runtime`.
 
-### `enable` / `disable`
+### `enable` / `disable` / `reload`
 
 ```sh
 sudo buzz-server agents enable --agent agent_...
 sudo buzz-server agents disable --agent agent_...
+sudo buzz-server agents reload --agent agent_...
 ```
+
+`reload` composes `disable` followed by `enable` for the selected agent. The
+enable operation is not attempted if disabling fails.
 
 ### `logs`
 
