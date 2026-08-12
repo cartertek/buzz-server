@@ -579,13 +579,14 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = AgentFileStore::new(directory.path()).unwrap();
         let id = AgentId::new();
+        let prompt_path = directory.path().join("prompt.md");
         let file = store
             .build_create_file(
                 id,
                 "Builder".into(),
                 None,
                 Some("Build safely.".into()),
-                None,
+                Some(prompt_path.display().to_string()),
                 Some("codex-acp".parse().unwrap()),
                 None,
             )
@@ -593,6 +594,10 @@ mod tests {
         store.write_agent(&file).unwrap();
         assert_eq!(store.load_agent(id).unwrap(), file);
         let json = std::fs::read_to_string(store.agent_path(id)).unwrap();
+        assert!(json.contains(&format!(
+            "\"system_prompt_file\": \"{}\"",
+            prompt_path.display()
+        )));
         assert!(
             json.contains("\n  \"display_name\""),
             "files are pretty-printed"

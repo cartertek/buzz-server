@@ -394,4 +394,35 @@ mod tests {
             serde_json::to_vec(&route(command, &options).unwrap()).unwrap();
         }
     }
+
+    #[test]
+    fn create_command_round_trips_system_prompt_file_into_request() {
+        let community = CommunityConfigId::new().to_string();
+        let options = parse_options(
+            [
+                "--community",
+                community.as_str(),
+                "--display-name",
+                "Builder",
+                "--system-prompt-file",
+                "/etc/buzz/prompts/builder.md",
+                "--runtime",
+                "codex-acp",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        )
+        .unwrap();
+        let request = route("create", &options).unwrap();
+        let encoded = serde_json::to_vec(&request).unwrap();
+        let decoded: LifecycleRouteRequest = serde_json::from_slice(&encoded).unwrap();
+        let LifecycleRouteRequest::CreateAgent(request) = decoded else {
+            panic!("expected create-agent request");
+        };
+        assert_eq!(
+            request.agent.system_prompt_file.as_deref(),
+            Some("/etc/buzz/prompts/builder.md")
+        );
+    }
 }
