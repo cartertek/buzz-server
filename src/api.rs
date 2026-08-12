@@ -80,6 +80,9 @@ impl CreateAgentInput {
     pub fn validate(&self) -> Result<(), ValidationError> {
         validate_token("display_name", &self.display_name, 120)?;
         if let Some(prompt) = self.system_prompt.as_deref() {
+            if self.system_prompt_file.is_none() {
+                validate_token("system_prompt", prompt, 65_536)?;
+            }
             if prompt.chars().count() > 65_536 || prompt.contains('\0') {
                 return Err(ValidationError::new(
                     "system_prompt",

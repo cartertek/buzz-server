@@ -321,16 +321,24 @@ impl AgentFileStore {
 }
 
 fn resolve_system_prompt(file: &AgentConfigFile) -> Result<String, AgentFileError> {
-    if let Some(prompt) = file.system_prompt.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+    if let Some(prompt) = file
+        .system_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
         return Ok(prompt.to_owned());
     }
     let Some(path) = file.system_prompt_file.as_deref() else {
         return Ok(String::new());
     };
-    let resolved = PathBuf::from(path).canonicalize().map_err(|error| AgentFileError::SystemPromptFile {
-        path: path.to_owned(),
-        message: format!("cannot resolve file: {error}"),
-    })?;
+    let resolved =
+        PathBuf::from(path)
+            .canonicalize()
+            .map_err(|error| AgentFileError::SystemPromptFile {
+                path: path.to_owned(),
+                message: format!("cannot resolve file: {error}"),
+            })?;
     let metadata = fs::metadata(&resolved).map_err(|error| AgentFileError::SystemPromptFile {
         path: path.to_owned(),
         message: format!("cannot inspect file: {error}"),
@@ -458,7 +466,7 @@ mod tests {
                 AgentId::new(),
                 "Builder".into(),
                 None,
-                Some(String::new()),
+                None,
                 None,
                 Some("codex-acp".parse().unwrap()),
                 None,
@@ -515,7 +523,7 @@ mod tests {
                 AgentId::new(),
                 "Builder".into(),
                 None,
-                Some(String::new()),
+                None,
                 None,
                 Some("codex-acp".parse().unwrap()),
                 None,
@@ -636,11 +644,32 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(store.resolve(&file, CommunityConfigId::new(), DesiredAgentState::Enabled).unwrap().spec.system_prompt, "from file");
+        assert_eq!(
+            store
+                .resolve(&file, CommunityConfigId::new(), DesiredAgentState::Enabled)
+                .unwrap()
+                .spec
+                .system_prompt,
+            "from file"
+        );
         fs::write(&prompt, "reloaded").unwrap();
-        assert_eq!(store.resolve(&file, CommunityConfigId::new(), DesiredAgentState::Enabled).unwrap().spec.system_prompt, "reloaded");
+        assert_eq!(
+            store
+                .resolve(&file, CommunityConfigId::new(), DesiredAgentState::Enabled)
+                .unwrap()
+                .spec
+                .system_prompt,
+            "reloaded"
+        );
         file.system_prompt = Some("inline wins".into());
-        assert_eq!(store.resolve(&file, CommunityConfigId::new(), DesiredAgentState::Enabled).unwrap().spec.system_prompt, "inline wins");
+        assert_eq!(
+            store
+                .resolve(&file, CommunityConfigId::new(), DesiredAgentState::Enabled)
+                .unwrap()
+                .spec
+                .system_prompt,
+            "inline wins"
+        );
 
         let relative = AgentConfigFile {
             system_prompt_file: Some("prompt.md".into()),

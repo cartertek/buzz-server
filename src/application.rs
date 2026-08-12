@@ -650,16 +650,17 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
                 request.include_deleted || agent.desired_state != DesiredAgentState::Deleted
             })
             .map(|agent| {
+                let agent_id = agent.id;
                 let purge_after = self
                     .store
-                    .agent_retention(agent.id)?
+                    .agent_retention(agent_id)?
                     .map(|value| value.purge_after);
-                let public_key = self.effects.agent_public_key(agent.id);
+                let public_key = self.effects.agent_public_key(agent_id);
                 Ok(agent_resource(
                     agent,
                     purge_after,
                     public_key,
-                    self.effects.agent_system_prompt_file(agent.id),
+                    self.effects.agent_system_prompt_file(agent_id),
                 ))
             })
             .collect::<Result<Vec<_>, StorageError>>()?)
