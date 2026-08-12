@@ -400,7 +400,7 @@ case "$command" in
           exec "$release/buzz-agentctl" "$subcommand" "$@"
           ;;
         reload)
-          "$release/buzz-agentctl" disable "$@" &&
+          "$release/buzz-agentctl" disable "$@" >/dev/null &&
             "$release/buzz-agentctl" enable "$@"
           ;;
         draft-create|draft-update)
