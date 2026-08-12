@@ -400,8 +400,14 @@ case "$command" in
           exec "$release/buzz-agentctl" "$subcommand" "$@"
           ;;
         reload)
-          "$release/buzz-agentctl" disable "$@" >/dev/null &&
-            "$release/buzz-agentctl" enable "$@"
+          if disable_output=$("$release/buzz-agentctl" disable "$@"); then
+            :
+          else
+            disable_status=$?
+            printf '%s\n' "$disable_output"
+            exit "$disable_status"
+          fi
+          "$release/buzz-agentctl" enable "$@"
           ;;
         draft-create|draft-update)
           [ "${1:-}" = --community ] && [ -n "${2:-}" ] || { agents_command_help "$subcommand" >&2; exit 64; }
