@@ -44,7 +44,10 @@ RestrictRealtime=true
 RestrictSUIDSGID=false
 LockPersonality=true
 SystemCallArchitectures=native
-TasksMax=512
+# The daemon owns every managed harness and its ACP worker pool. A single
+# configured agent may intentionally run many Codex workers, each with several
+# threads, so the service-wide task ceiling must leave substantial headroom.
+TasksMax=30%
 LimitNOFILE=8192
 MemoryMax=4G
 
