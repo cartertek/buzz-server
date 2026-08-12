@@ -57,7 +57,7 @@ jobs:
       - name: Build pinned upstream Buzz CLI
         env:
           TARGET: ${{ matrix.target }}
-          BUZZ_REV: ee33722615ca1e7b8efb03e2ed641d99448c8899
+          BUZZ_REV: 1fb49103002e898607a7f6fd554cb51e94d92e08
         run: |
           set -eu
           git clone --filter=blob:none https://github.com/block/buzz.git upstream-buzz
