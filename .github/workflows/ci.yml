@@ -22,6 +22,7 @@ jobs:
         run: |
           set -eu
           for script in deploy/*.sh deploy/buzz-server deploy/buzz-serverctl scripts/package-artifact.sh scripts/prepare-ci-payload.sh scripts/verify-package-artifact.sh scripts/github-tag-sha.sh scripts/resolve-release.sh scripts/publish-release.sh scripts/mock-gh-release.sh; do sh -n "$script"; done
+          tests/test_agent_reload.sh
           sudo install -d /opt/buzz-server/current/share/deploy
           sudo install -m 0755 /bin/true /opt/buzz-server/current/buzz-server
           sudo install -m 0755 /bin/true /opt/buzz-server/current/share/deploy/healthcheck.sh
