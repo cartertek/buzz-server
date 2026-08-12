@@ -114,6 +114,15 @@ sudo buzz-server agents create \
 
 Optionally pass either `--persona <persona-id>` or `--system-prompt '...'`.
 
+For a prompt maintained outside the JSON config, use
+`--system-prompt-file /absolute/path/to/prompt.md`. The path must be absolute
+and readable by the Buzz Server service account. A non-empty inline
+`system_prompt` takes precedence; otherwise the file is read as strict UTF-8
+each time the agent configuration is resolved, so edits take effect on the
+next restart or reconciliation. If the file is inside the agent's
+workspace, workspace-write access can therefore influence the next session's
+prompt; treat that as part of the workspace security boundary.
+
 Creating the agent starts its ACP runtime against the selected community relay.
 The response includes the new `agent_...` ID and the agent's Nostr public key.
 

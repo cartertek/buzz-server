@@ -601,6 +601,7 @@ mod tests {
                 community_config_id: input.community_config_id,
                 display_name: input.display_name.clone(),
                 system_prompt: input.system_prompt.clone().unwrap_or_default(),
+                system_prompt_file: input.system_prompt_file.clone(),
                 runtime_id: input.runtime_id.clone().expect("test input has runtime"),
                 desired_state: crate::DesiredAgentState::Enabled,
                 purge_after: None,
@@ -720,6 +721,7 @@ mod tests {
                 display_name: "Builder".into(),
                 persona_id: None,
                 system_prompt: Some("Build safely.".into()),
+                system_prompt_file: Some("/etc/buzz/prompts/builder.md".into()),
                 runtime_id: Some("codex-acp".parse().unwrap()),
                 filesystem_user: None,
             },
@@ -741,6 +743,10 @@ mod tests {
         let listed: serde_json::Value = serde_json::from_slice(&listed.body).unwrap();
         assert_eq!(listed["value"]["resource"], "agents");
         assert_eq!(listed["value"]["value"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            listed["value"]["value"][0]["system_prompt_file"],
+            "/etc/buzz/prompts/builder.md"
+        );
 
         let malformed = router.handle(&administrator(), b"not-json");
         assert_eq!(malformed.status, 400);

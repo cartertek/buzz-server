@@ -31,8 +31,8 @@ use buzz_server::{
         LifecycleJsonRouter, SqliteReplayGuard, TlsLifecycleServer, TlsNip98Authenticator,
         UnixLifecycleServer,
     },
-    AgentFileStore, DurableOperation, LaunchSpec, LocalLaunchContext, ProcessReceipt,
-    ResolvedAgentConfig, RuntimeCatalog, SqliteStore, StorageError,
+    AgentCreateFileOptions, AgentFileStore, DurableOperation, LaunchSpec, LocalLaunchContext,
+    ProcessReceipt, ResolvedAgentConfig, RuntimeCatalog, SqliteStore, StorageError,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -545,11 +545,14 @@ impl LifecycleEffects for LifecycleWake {
             .agent_files
             .build_create_file(
                 id,
-                input.display_name.clone(),
-                input.persona_id.clone(),
-                input.system_prompt.clone(),
-                input.runtime_id.clone(),
-                input.filesystem_user.clone(),
+                AgentCreateFileOptions {
+                    display_name: input.display_name.clone(),
+                    persona_id: input.persona_id.clone(),
+                    system_prompt: input.system_prompt.clone(),
+                    system_prompt_file: input.system_prompt_file.clone(),
+                    runtime: input.runtime_id.clone(),
+                    filesystem_user: input.filesystem_user.clone(),
+                },
             )
             .map_err(agent_file_application_error)?;
         self.agent_files
@@ -574,11 +577,14 @@ impl LifecycleEffects for LifecycleWake {
             .agent_files
             .build_create_file(
                 agent.id,
-                input.display_name.clone(),
-                input.persona_id.clone(),
-                input.system_prompt.clone(),
-                input.runtime_id.clone(),
-                input.filesystem_user.clone(),
+                AgentCreateFileOptions {
+                    display_name: input.display_name.clone(),
+                    persona_id: input.persona_id.clone(),
+                    system_prompt: input.system_prompt.clone(),
+                    system_prompt_file: input.system_prompt_file.clone(),
+                    runtime: input.runtime_id.clone(),
+                    filesystem_user: input.filesystem_user.clone(),
+                },
             )
             .map_err(agent_file_application_error)?;
         self.agent_files
@@ -612,6 +618,23 @@ impl LifecycleEffects for LifecycleWake {
             }
             file.system_prompt = Some(value.clone());
         }
+        if let Some(value) = &changes.system_prompt_file {
+            if file.persona_id.is_some() {
+                return Err(buzz_server::api::ApplicationError::Invalid(
+                    buzz_server::ValidationError::new(
+                        "system_prompt_file",
+                        "is defined by the selected persona; update the persona instead",
+                    ),
+                ));
+            }
+            file.system_prompt_file = Some(value.clone());
+            if changes.system_prompt.is_none() {
+                // A file-only update explicitly transitions from inline to
+                // file-backed prompting. A simultaneous inline value remains
+                // authoritative and is never cleared.
+                file.system_prompt = Some(String::new());
+            }
+        }
         if let Some(value) = &changes.runtime_id {
             file.runtime = Some(value.clone());
         }
@@ -628,6 +651,13 @@ impl LifecycleEffects for LifecycleWake {
             .load(agent_id)
             .ok()
             .map(|keys| keys.public_key().to_hex())
+    }
+
+    fn agent_system_prompt_file(&self, agent_id: buzz_server::AgentId) -> Option<String> {
+        self.agent_files
+            .load_agent(agent_id)
+            .ok()
+            .and_then(|file| file.system_prompt_file)
     }
 
     fn operation_ready(
@@ -2299,6 +2329,12 @@ fn agent_file_application_error(
             buzz_server::api::ApplicationError::Invalid(buzz_server::ValidationError::new(
                 "runtime_id",
                 "is required when no persona is selected",
+            ))
+        }
+        buzz_server::AgentFileError::SystemPromptFile { path, message } => {
+            buzz_server::api::ApplicationError::Invalid(buzz_server::ValidationError::new(
+                "system_prompt_file",
+                format!("{path}: {message}"),
             ))
         }
         _ => buzz_server::api::ApplicationError::Internal,

@@ -113,6 +113,9 @@ pub trait LifecycleEffects: Send + Sync {
     fn agent_public_key(&self, _agent_id: AgentId) -> Option<String> {
         None
     }
+    fn agent_system_prompt_file(&self, _agent_id: AgentId) -> Option<String> {
+        None
+    }
 
     /// Wakes the reconciler after the complete durable command transaction commits.
     fn operation_ready(&self, operation: &DurableOperation) -> Result<(), ApplicationError>;
@@ -631,6 +634,7 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
                 .agent_retention(id)?
                 .map(|value| value.purge_after),
             public_key,
+            self.effects.agent_system_prompt_file(id),
         ))
     }
 
@@ -646,12 +650,18 @@ impl<E: LifecycleEffects> LifecycleApplication for SqliteLifecycleApplication<E>
                 request.include_deleted || agent.desired_state != DesiredAgentState::Deleted
             })
             .map(|agent| {
+                let agent_id = agent.id;
                 let purge_after = self
                     .store
-                    .agent_retention(agent.id)?
+                    .agent_retention(agent_id)?
                     .map(|value| value.purge_after);
-                let public_key = self.effects.agent_public_key(agent.id);
-                Ok(agent_resource(agent, purge_after, public_key))
+                let public_key = self.effects.agent_public_key(agent_id);
+                Ok(agent_resource(
+                    agent,
+                    purge_after,
+                    public_key,
+                    self.effects.agent_system_prompt_file(agent_id),
+                ))
             })
             .collect::<Result<Vec<_>, StorageError>>()?)
     }
@@ -856,12 +866,14 @@ fn agent_resource(
     agent: AgentSpec,
     purge_after: Option<i64>,
     public_key: Option<String>,
+    system_prompt_file: Option<String>,
 ) -> AgentResource {
     AgentResource {
         id: agent.id,
         community_config_id: agent.community_config_id,
         display_name: agent.display_name,
         system_prompt: agent.system_prompt,
+        system_prompt_file,
         runtime_id: agent.runtime.runtime_id,
         desired_state: agent.desired_state,
         purge_after,
@@ -954,6 +966,7 @@ mod tests {
                     display_name: "Builder".into(),
                     persona_id: None,
                     system_prompt: Some("Build safely.".into()),
+                    system_prompt_file: None,
                     runtime_id: Some("codex-acp".parse().unwrap()),
                     filesystem_user: None,
                 },
@@ -992,6 +1005,7 @@ mod tests {
                 display_name: "Builder".into(),
                 persona_id: None,
                 system_prompt: Some("Build safely.".into()),
+                system_prompt_file: None,
                 runtime_id: Some("codex-acp".parse().unwrap()),
                 filesystem_user: None,
             },
@@ -1042,6 +1056,7 @@ mod tests {
                     display_name: "Builder".into(),
                     persona_id: None,
                     system_prompt: Some("Build safely.".into()),
+                    system_prompt_file: None,
                     runtime_id: Some("codex-acp".parse().unwrap()),
                     filesystem_user: None,
                 },
@@ -1099,6 +1114,7 @@ mod tests {
                         display_name: "Builder".into(),
                         persona_id: None,
                         system_prompt: Some("Build safely.".into()),
+                        system_prompt_file: None,
                         runtime_id: Some("codex-acp".parse().unwrap()),
                         filesystem_user: None,
                     },
@@ -1157,6 +1173,7 @@ mod tests {
                     display_name: "Builder".into(),
                     persona_id: None,
                     system_prompt: Some("Build safely.".into()),
+                    system_prompt_file: None,
                     runtime_id: Some("codex-acp".parse().unwrap()),
                     filesystem_user: None,
                 },

@@ -31,7 +31,7 @@ pub use agent::{
     AgentConfigFile, AgentSpec, AutoJoinOpenChannels, DesiredAgentState, FilesystemConfig,
     PersonaDefinition, ResolvedAgentConfig, RespondToMode, RuntimeSpec, DEFAULT_AGENT_PARALLELISM,
 };
-pub use agent_files::{AgentFileError, AgentFileStore};
+pub use agent_files::{AgentCreateFileOptions, AgentFileError, AgentFileStore};
 pub use community::CommunityConfig;
 pub use error::{ApiError, ErrorCode, ValidationError};
 pub use id::{AgentId, CommunityConfigId, OperationId};

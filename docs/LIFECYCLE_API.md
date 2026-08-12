@@ -21,6 +21,21 @@ Configured callers receive one fixed authority:
 Clients cannot include an authority in request JSON. The transport derives the
 authenticated principal before decoding the lifecycle request.
 
+## Managed-agent prompt files
+
+`CreateAgentInput` and `UpdateAgentInput` accept the optional
+`system_prompt_file` property, and `AgentResource` returns the configured path
+when present. The path must be absolute and readable by the Buzz Server service
+account. Prompt selection is non-empty inline `system_prompt`, then the
+contents of `system_prompt_file`, then no agent-specific prompt. Prompt files
+are read as strict UTF-8 whenever the agent configuration is resolved, so a
+restart or reconciliation observes edits without copying text into JSON.
+
+A configured file that is missing, unreadable, non-regular, or invalid UTF-8
+fails resolution with a field-specific diagnostic. If the path is within an
+agent workspace, workspace-write access can influence the next session's
+prompt; this is an intentional part of the workspace-write security boundary.
+
 ## Response envelope
 
 Successful responses use:
