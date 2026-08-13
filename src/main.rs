@@ -1028,8 +1028,10 @@ async fn run_community_auto_join(
 ) -> Result<(), DaemonError> {
     prepare_auto_join_state(&context, &community)?;
     let owner_keys = auto_join_owner_keys(&context, &community)?;
+    let owner_pubkey = owner_keys.public_key().to_hex();
     let subscription_id = format!("server-auto-join-{}", community.id);
-    let request = buzz_server::auto_join::channel_creation_subscription(&subscription_id);
+    let request =
+        buzz_server::auto_join::channel_notification_subscription(&subscription_id, &owner_pubkey);
     let mut backoff = Duration::from_secs(1);
     while !*shutdown.borrow() {
         let connection = tokio::select! {
@@ -1071,9 +1073,31 @@ async fn run_community_auto_join(
         }
         backoff = Duration::from_secs(1);
         loop {
-            match buzz_server::auto_join::next_open_channel(&mut connection, &mut shutdown).await {
-                Ok(Some(channel)) => {
-                    reconcile_auto_join_channel(&context, &community, &owner_keys, channel).await
+            match buzz_server::auto_join::next_channel_notification(
+                &mut connection,
+                &mut shutdown,
+                &owner_pubkey,
+            )
+            .await
+            {
+                Ok(Some(channel_id)) => {
+                    match buzz_server::auto_join::fetch_open_channel(
+                        &community.relay_url,
+                        &owner_keys,
+                        channel_id,
+                    )
+                    .await
+                    {
+                        Ok(Some(channel)) => {
+                            reconcile_auto_join_channel(&context, &community, &owner_keys, channel)
+                                .await;
+                        }
+                        Ok(None) => {}
+                        Err(error) => eprintln!(
+                            "auto-join could not validate channel {channel_id} for {}: {error}",
+                            community.id
+                        ),
+                    }
                 }
                 Ok(None) => {
                     let _ = connection.disconnect().await;
