@@ -247,6 +247,33 @@ Available upstream channel subcommands at the pinned revision are `list`, `get`,
 `unarchive`, `delete`, `members`, `add-member`, `remove-member`, and
 `set-add-policy`.
 
+## Messages
+
+Buzz Server forwards the pinned upstream message CLI without duplicating its
+implementation. Select the community before any upstream options:
+
+```sh
+buzz-server messages get --community community_... --channel <uuid>
+buzz-server messages send --community community_... --channel <uuid> --content 'hello'
+```
+
+The wrapper supplies the selected community relay and owner identity while
+preserving upstream arguments, standard streams, and exit status.
+
+## Live events
+
+Subscribe to every event accepted by the selected community relay:
+
+```sh
+buzz-server events subscribe --community community_...
+```
+
+Output is JSONL. `event`, `eose`, `closed`, `notice`, and `error` objects are
+reported as received. EOSE does not end the stream; relay closure or transport
+failure reconnects with a fresh unrestricted request. Press Ctrl-C (or send
+SIGTERM) to close the connection. Events are ephemeral output only: events are
+not replayed or persisted, and only events received while connected are shown.
+
 ## Secrets
 
 The former singular `secret` namespace is now plural to match the resource naming

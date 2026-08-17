@@ -19,7 +19,7 @@ stage="$output_dir/$package"
 rm -rf "$stage"
 mkdir -p "$stage/config" "$stage/deploy"
 
-for file in buzz-server-daemon buzz-agentctl buzz-secretsctl buzz-runtime-probe buzz-cli; do
+for file in buzz-server-daemon buzz-agentctl buzz-secretsctl buzz-runtime-probe buzz-events buzz-cli; do
   install -m 0755 "$payload_dir/$file" "$stage/$file"
 done
 sed "s/@BUZZ_SERVER_IDENTITY@/${identity}/g" "$payload_dir/buzz-server.in" > "$stage/buzz-server"
