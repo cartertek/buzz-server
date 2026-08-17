@@ -11,6 +11,7 @@ pub mod community_join;
 pub mod community_session;
 pub mod custody;
 pub mod error;
+pub mod events;
 pub mod id;
 pub mod launch;
 pub mod operation;
