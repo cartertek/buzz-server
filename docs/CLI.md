@@ -269,10 +269,14 @@ buzz-server events subscribe --community community_...
 ```
 
 Output is JSONL. `event`, `eose`, `closed`, `notice`, and `error` objects are
-reported as received. EOSE does not end the stream; relay closure or transport
-failure reconnects with a fresh unrestricted request. Press Ctrl-C (or send
-SIGTERM) to close the connection. Events are ephemeral output only: events are
-not replayed or persisted, and only events received while connected are shown.
+reported as received. The initial request uses `since` at connection time while
+remaining unrestricted by kind, author, or channel. EOSE does not end the stream;
+relay closure or transport failure reconnects from the last seen event timestamp,
+deduplicating inclusive replay by event ID. Events created during a disconnect are
+therefore recovered when the relay supports timestamp queries. Press Ctrl-C (or
+send SIGTERM) to close the connection. Events are ephemeral output only: events
+are not persisted, and only the in-memory subscription session is used for replay
+gap recovery.
 
 ## Secrets
 
