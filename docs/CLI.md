@@ -269,10 +269,13 @@ buzz-server events subscribe --community community_...
 ```
 
 Output is JSONL. `event`, `eose`, `closed`, `notice`, and `error` objects are
-reported as received. EOSE does not end the stream; relay closure or transport
-failure reconnects with a fresh unrestricted request. Press Ctrl-C (or send
+reported as received. The initial request uses a five-minute wall-clock overlap
+while remaining unrestricted by kind, author, or channel. EOSE does not end the
+stream; relay closure or transport failure reconnects with the current wall-clock
+overlap and a bounded in-memory event-ID cache. Gap recovery is best-effort because
+relay delivery is not required to be timestamp-ordered. Press Ctrl-C (or send
 SIGTERM) to close the connection. Events are ephemeral output only: events are
-not replayed or persisted, and only events received while connected are shown.
+not persisted.
 
 ## Secrets
 
