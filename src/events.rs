@@ -1,6 +1,9 @@
 //! Authenticated, non-persistent relay event streaming for the operator CLI.
 
-use std::time::Duration;
+use std::{
+    collections::HashSet,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use buzz_ws_client::RelayMessage;
 use nostr::{Keys, Tag};
@@ -11,8 +14,8 @@ use crate::relay_adapter::RelayTransportFactory;
 
 pub const SUBSCRIPTION_ID: &str = "buzz-server-events";
 
-pub fn all_events_request() -> Value {
-    json!(["REQ", SUBSCRIPTION_ID, {}])
+pub fn all_events_request(since: u64) -> Value {
+    json!(["REQ", SUBSCRIPTION_ID, {"since": since}])
 }
 
 pub fn relay_message_json(message: &RelayMessage) -> Value {
@@ -55,6 +58,8 @@ where
     Output: FnMut(Value),
 {
     let mut backoff = Duration::from_secs(1);
+    let mut since = unix_seconds();
+    let mut seen_event_ids = HashSet::new();
     while !*shutdown.borrow() {
         let connection = tokio::select! {
             result = factory.connect(relay_url) => result,
@@ -71,7 +76,7 @@ where
                 continue;
             }
         };
-        if let Err(error) = transport.send(&all_events_request()).await {
+        if let Err(error) = transport.send(&all_events_request(since)).await {
             output(error_json(&error));
             let _ = transport.close().await;
             if wait_or_shutdown(backoff, &mut shutdown).await {
@@ -88,6 +93,12 @@ where
             };
             match message {
                 Ok(message) => {
+                    if let RelayMessage::Event { event, .. } = &message {
+                        if !seen_event_ids.insert(event.id.to_hex()) {
+                            continue;
+                        }
+                        since = since.max(event.created_at.as_secs());
+                    }
                     let closed = matches!(message, RelayMessage::Closed { .. });
                     output(relay_message_json(&message));
                     if closed {
@@ -110,6 +121,13 @@ where
     Ok(())
 }
 
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 async fn wait_or_shutdown(duration: Duration, shutdown: &mut watch::Receiver<bool>) -> bool {
     tokio::select! { () = tokio::time::sleep(duration) => false, changed = shutdown.changed() => changed.is_err() || *shutdown.borrow() }
 }
@@ -130,8 +148,11 @@ mod tests {
     use super::*;
     use nostr::{EventBuilder, Kind};
     #[test]
-    fn request_has_no_filter_narrowing() {
-        assert_eq!(all_events_request(), json!(["REQ", SUBSCRIPTION_ID, {}]));
+    fn request_is_live_only_but_unrestricted() {
+        assert_eq!(
+            all_events_request(1_700_000_000),
+            json!(["REQ", SUBSCRIPTION_ID, {"since": 1_700_000_000}])
+        );
     }
     #[test]
     fn event_and_eose_are_structured() {
