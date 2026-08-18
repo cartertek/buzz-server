@@ -294,7 +294,8 @@ buzz-server events subscribe --community community_... --user agent_...
 agent through its lifecycle registry, requires its `community_config_id` to
 match `--community`, and loads its private key from existing agent custody.
 Missing, invalid, or cross-community agents are rejected before the relay
-client starts. Read subscriptions do not use `BUZZ_AUTH_TAG`.
+client starts. Selected-agent subscriptions do not use `BUZZ_AUTH_TAG`;
+omitting `--user` preserves the owner launch and any inherited owner auth tag.
 
 ## Secrets
 

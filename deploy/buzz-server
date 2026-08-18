@@ -390,8 +390,13 @@ run_live_events() {
   else
     secret=$(community_identity_secret "$community") || exit $?
   fi
-  exec env -u BUZZ_AUTH_TAG BUZZ_RELAY_URL="$relay_url" BUZZ_PRIVATE_KEY="$(cat "$secret")" \
-    "$release/buzz-events" subscribe "$@"
+  if [ -n "$user" ]; then
+    exec env -u BUZZ_AUTH_TAG BUZZ_RELAY_URL="$relay_url" BUZZ_PRIVATE_KEY="$(cat "$secret")" \
+      "$release/buzz-events" subscribe "$@"
+  else
+    BUZZ_RELAY_URL=$relay_url BUZZ_PRIVATE_KEY=$(cat "$secret") \
+      exec "$release/buzz-events" subscribe "$@"
+  fi
 }
 
 command=${1:-}

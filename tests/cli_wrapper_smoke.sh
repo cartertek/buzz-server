@@ -15,7 +15,7 @@ printf '%s\n' '#!/bin/sh' '[ "$1" = messages ] && [ "$2" = send ] && [ "$3" = --
 printf '%s\n' '#!/bin/sh' '[ "$1" = subscribe ] && [ "$2" = --filter ] && [ "$3" = '\''{"kinds":[1]}'\'' ]' 'printf "%s\\n" "{\"type\":\"eose\"}"' 'printf "%s\\n" "{\"type\":\"event\",\"event\":{\"id\":\"after-eose\"}}"' 'trap "exit 0" TERM INT' 'while :; do sleep 1; done' >"$release/buzz-events"
 chmod +x "$release"/*
 printf '%s' agent-secret >"$root/identities/agent_test.secret"
-sed -i '2i [ -z "${BUZZ_AUTH_TAG+x}" ] || exit 1\ncase "$BUZZ_PRIVATE_KEY" in secret|agent-secret) ;; *) exit 1 ;; esac\n[ "$BUZZ_RELAY_URL" = ws://relay.test/ ] || exit 1' "$release/buzz-events"
+sed -i '2i case "$BUZZ_PRIVATE_KEY:$BUZZ_AUTH_TAG" in secret:owner-auth-tag|agent-secret:) ;; *) exit 1 ;; esac\n[ "$BUZZ_RELAY_URL" = ws://relay.test/ ] || exit 1' "$release/buzz-events"
 set +e
 output=$("$release/buzz-server" messages send --community community_test --channel chan --content 'hello world' 2>"$release/err")
 status=$?
@@ -23,6 +23,7 @@ set -e
 [ "$status" -eq 23 ]
 [ "$output" = 'messages send --channel chan --content hello world' ]
 [ "$(cat "$release/err")" = delegated ]
+export BUZZ_AUTH_TAG=owner-auth-tag
 events_output=$("$release/buzz-server" events subscribe --community community_test --filter '{"kinds":[1]}' & pid=$!; sleep 0.1; kill -TERM "$pid"; wait "$pid" || exit 1)
 printf '%s\n' "$events_output" | grep -q after-eose
 echo 'PASS: positional community, delegated argv/stdio/exit, packaged events discovery, post-EOSE output, SIGTERM'
