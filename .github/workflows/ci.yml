@@ -28,6 +28,8 @@ jobs:
           sudo install -m 0755 /bin/true /opt/buzz-server/current/share/deploy/healthcheck.sh
           sudo install -m 0755 /bin/true /opt/buzz-server/current/share/deploy/prepare-community-identities.sh
           systemd-analyze verify deploy/buzz-server.service deploy/buzz-server-healthcheck.service deploy/buzz-server-healthcheck.timer
+      - name: Test Buzz upstream release resolution
+        run: bash tests/check_buzz_upstream.sh
       - run: cargo test --all-targets --locked
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
       - run: scripts/check-provider-upstream.sh
