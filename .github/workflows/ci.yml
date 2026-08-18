@@ -158,7 +158,6 @@ jobs:
           retention-days: ${{ github.event_name == 'push' && 90 || 7 }}
 
   release-dry-run:
-    if: github.event_name == 'pull_request'
     needs: build
     uses: ./.github/workflows/release-core.yml
     permissions:

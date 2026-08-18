@@ -196,11 +196,12 @@ EOF_HELP
 
 events_help() {
   cat <<'EOF_HELP'
-Usage: buzz-server events subscribe --community ID
+Usage: buzz-server events subscribe --community ID [--filter '<Nostr filter JSON>']
 
-Streams all relay events as JSONL until SIGINT or SIGTERM. EOSE, CLOSED, NOTICE,
-and transport errors are emitted as control/error objects. Events are ephemeral:
-only events received while connected are output and none are persisted.
+Streams authenticated live relay events as JSONL until SIGINT or SIGTERM. The
+optional filter is a documented Nostr filter object; its `since` is managed by
+the live-only/reconnect cursor. EOSE, CLOSED, NOTICE, and transport errors are
+emitted as control/error objects. Events are ephemeral and none are persisted.
 EOF_HELP
 }
 
@@ -359,10 +360,9 @@ run_requester_buzz() {
 run_live_events() {
   community=$1
   shift
-  [ "$#" -eq 0 ] || { events_help >&2; exit 64; }
   relay_url=$(community_relay "$community")
   owner_secret=$(community_identity_secret "$community") || exit $?
-  BUZZ_RELAY_URL=$relay_url BUZZ_PRIVATE_KEY=$(cat "$owner_secret") exec "$release/buzz-events" subscribe
+  BUZZ_RELAY_URL=$relay_url BUZZ_PRIVATE_KEY=$(cat "$owner_secret") exec "$release/buzz-events" subscribe "$@"
 }
 
 command=${1:-}
@@ -486,6 +486,8 @@ case "$command" in
   events)
     shift
     if is_help "${1:-}" || [ "$#" -eq 0 ]; then
+      events_help
+    elif [ "$1" = subscribe ] && [ "$#" -eq 2 ] && is_help "${2}"; then
       events_help
     elif [ "$1" = subscribe ]; then
       shift
