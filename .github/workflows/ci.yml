@@ -166,6 +166,6 @@ jobs:
     with:
       source_sha: ${{ github.sha }}
       source_run_id: ${{ github.run_id }}
-      expected_event: pull_request
+      expected_event: ${{ github.event_name }}
       bump: patch
       publish: false
