@@ -26,6 +26,12 @@ fn help() -> ! {
 
 #[tokio::main]
 async fn main() {
+    // This binary is a separate process from `buzz-server`; initialize the
+    // provider here before the WebSocket client constructs a TLS connector.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install the Rustls ring crypto provider");
+
     let mut args = std::env::args().skip(1);
     if args.next().as_deref() != Some("subscribe") {
         usage();
