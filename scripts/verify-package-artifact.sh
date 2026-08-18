@@ -37,6 +37,7 @@ $package/buzz-server-daemon
 $package/buzz-agentctl
 $package/buzz-secretsctl
 $package/buzz-runtime-probe
+$package/buzz-events
 $package/buzz-cli
 $package/config/
 $package/config/buzz-server.dev.example.json
@@ -81,7 +82,7 @@ trap 'exit 143' HUP TERM
 tar --no-same-owner --no-same-permissions -C "$work" -xzf "$archive"
 root="$work/$package"
 
-for file in buzz-server buzz-server-daemon buzz-agentctl buzz-secretsctl buzz-runtime-probe buzz-cli \
+for file in buzz-server buzz-server-daemon buzz-agentctl buzz-secretsctl buzz-runtime-probe buzz-events buzz-cli \
   deploy/install.sh deploy/install-package.sh deploy/install-release.sh deploy/buzz-serverctl \
   deploy/provision-runtimes.sh deploy/prepare-community-identities.sh deploy/migrate-legacy-owner.py deploy/backup.sh deploy/restore.sh \
   deploy/healthcheck.sh; do
@@ -109,6 +110,7 @@ if [ -n "$payload_dir" ]; then
     "buzz-agentctl:buzz-agentctl" \
     "buzz-secretsctl:buzz-secretsctl" \
     "buzz-runtime-probe:buzz-runtime-probe" \
+    "buzz-events:buzz-events" \
     "buzz-cli:buzz-cli"; do
     packaged=${pair%%:*}
     payload=${pair#*:}
