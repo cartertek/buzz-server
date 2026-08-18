@@ -81,6 +81,10 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: scripts/prepare-ci-payload.sh "$TARGET" upstream-buzz "payload/$TARGET"
+      - name: Assert live event client is in build payload
+        env:
+          TARGET: ${{ matrix.target }}
+        run: test -x "payload/$TARGET/buzz-events"
       - name: Package downloadable CI artifact
         env:
           TARGET: ${{ matrix.target }}

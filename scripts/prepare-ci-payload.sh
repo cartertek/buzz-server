@@ -16,6 +16,7 @@ install -m 0755 "target/${target}/release/buzz-server" "$output_dir/buzz-server-
 install -m 0755 "target/${target}/release/buzz-agentctl" "$output_dir/buzz-agentctl"
 install -m 0755 "target/${target}/release/buzz-secretsctl" "$output_dir/buzz-secretsctl"
 install -m 0755 "target/${target}/release/buzz-runtime-probe" "$output_dir/buzz-runtime-probe"
+install -m 0755 "target/${target}/release/buzz-events" "$output_dir/buzz-events"
 install -m 0755 "$upstream_buzz_dir/target/${target}/release/buzz" "$output_dir/buzz-cli"
 install -m 0644 config/buzz-server.dev.example.json config/buzz-server.schema.json "$output_dir/config/"
 install -m 0755 deploy/buzz-server "$output_dir/buzz-server.in"
