@@ -102,7 +102,6 @@ where
         shutdown,
         output,
         Filter::default(),
-        unix_seconds().saturating_sub(RECONNECT_OVERLAP_SECONDS),
         unix_seconds,
     )
     .await
@@ -119,16 +118,8 @@ where
     F: RelayTransportFactory,
     Output: FnMut(Value),
 {
-    run_with_initial_since_and_clock(
-        factory,
-        relay_url,
-        shutdown,
-        output,
-        filter,
-        unix_seconds().saturating_sub(RECONNECT_OVERLAP_SECONDS),
-        unix_seconds,
-    )
-    .await
+    run_with_initial_since_and_clock(factory, relay_url, shutdown, output, filter, unix_seconds)
+        .await
 }
 
 async fn run_with_initial_since_and_clock<F, Output, Clock>(
@@ -137,7 +128,6 @@ async fn run_with_initial_since_and_clock<F, Output, Clock>(
     mut shutdown: watch::Receiver<bool>,
     mut output: Output,
     filter: Filter,
-    initial_since: u64,
     mut clock: Clock,
 ) -> Result<(), String>
 where
@@ -146,13 +136,9 @@ where
     Clock: FnMut() -> u64,
 {
     let mut backoff = Duration::from_secs(1);
-    let mut cursor = EventCursor::new(initial_since);
+    let mut cursor = EventCursor::new(0);
     let mut first_connection = true;
     while !*shutdown.borrow() {
-        if !first_connection {
-            cursor.since = clock().saturating_sub(RECONNECT_OVERLAP_SECONDS);
-        }
-        first_connection = false;
         let connection = tokio::select! {
             result = factory.connect(relay_url) => result,
             changed = shutdown.changed() => { if changed.is_err() || *shutdown.borrow() { return Ok(()); } continue; }
@@ -168,6 +154,12 @@ where
                 continue;
             }
         };
+        cursor.since = if first_connection {
+            clock()
+        } else {
+            clock().saturating_sub(RECONNECT_OVERLAP_SECONDS)
+        };
+        first_connection = false;
         if let Err(error) = transport.send(&events_request(cursor.since, &filter)).await {
             output(error_json(&error));
             let _ = transport.close().await;
@@ -399,14 +391,13 @@ mod tests {
                 }
             },
             Filter::default().kind(Kind::Custom(1)),
-            100,
             || 400,
         )
         .await
         .unwrap();
         let requests = sent.lock().unwrap();
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0][2]["since"], 100);
+        assert_eq!(requests[0][2]["since"], 400);
         assert_eq!(requests[1][2]["since"], 100);
         assert_eq!(requests[0][2]["kinds"], json!([1]));
         assert_eq!(requests[1][2]["kinds"], json!([1]));

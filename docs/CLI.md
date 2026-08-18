@@ -274,13 +274,14 @@ buzz-server events subscribe --community community_... \
 ```
 
 Output is JSONL. `event`, `eose`, `closed`, `notice`, and `error` objects are
-reported as received. The initial request uses a five-minute wall-clock overlap;
-on reconnect the cursor is refreshed with the same overlap. Any `since` supplied
-in the filter is replaced by that managed cursor, and duplicate event IDs are
-suppressed inclusively across reconnects. Authentication, EOSE handling, signal
-handling, and JSONL output are unchanged. Invalid JSON or invalid Nostr filter
-fields fail before connecting. Press Ctrl-C (or send SIGTERM) to close the
-connection. Events are ephemeral output only: events are not persisted.
+reported as received. The initial request starts at the connection-time clock,
+so startup is live-only; on reconnect the cursor is refreshed with a five-minute
+overlap for gap recovery. Any `since` supplied in the filter is replaced by that
+managed cursor, and duplicate event IDs are suppressed inclusively across
+reconnects. Authentication, EOSE handling, signal handling, and JSONL output are
+unchanged. Invalid JSON or invalid Nostr filter fields fail before connecting.
+Press Ctrl-C (or send SIGTERM) to close the connection. Events are ephemeral
+output only: events are not persisted.
 
 ## Secrets
 

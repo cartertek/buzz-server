@@ -200,8 +200,8 @@ Usage: buzz-server events subscribe --community ID [--filter '<Nostr filter JSON
 
 Streams authenticated live relay events as JSONL until SIGINT or SIGTERM. The
 optional filter is a documented Nostr filter object; its `since` is managed by
-the live cursor. EOSE, CLOSED, NOTICE, and transport errors are emitted as
-control/error objects. Events are ephemeral and none are persisted.
+the live-only/reconnect cursor. EOSE, CLOSED, NOTICE, and transport errors are
+emitted as control/error objects. Events are ephemeral and none are persisted.
 EOF_HELP
 }
 
