@@ -6,7 +6,7 @@ use std::{
 };
 
 use buzz_ws_client::RelayMessage;
-use nostr::{Keys, Tag};
+use nostr::{Filter, Keys, Tag, Timestamp};
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
@@ -49,7 +49,12 @@ impl EventCursor {
 }
 
 pub fn all_events_request(since: u64) -> Value {
-    json!(["REQ", SUBSCRIPTION_ID, {"since": since}])
+    events_request(since, &Filter::default())
+}
+
+pub fn events_request(since: u64, filter: &Filter) -> Value {
+    let filter = filter.clone().since(Timestamp::from(since));
+    json!(["REQ", SUBSCRIPTION_ID, filter])
 }
 
 pub fn relay_message_json(message: &RelayMessage) -> Value {
@@ -96,10 +101,25 @@ where
         relay_url,
         shutdown,
         output,
-        unix_seconds().saturating_sub(RECONNECT_OVERLAP_SECONDS),
+        Filter::default(),
         unix_seconds,
     )
     .await
+}
+
+pub async fn run_with_filter<F, Output>(
+    factory: &F,
+    relay_url: &str,
+    shutdown: watch::Receiver<bool>,
+    output: Output,
+    filter: Filter,
+) -> Result<(), String>
+where
+    F: RelayTransportFactory,
+    Output: FnMut(Value),
+{
+    run_with_initial_since_and_clock(factory, relay_url, shutdown, output, filter, unix_seconds)
+        .await
 }
 
 async fn run_with_initial_since_and_clock<F, Output, Clock>(
@@ -107,7 +127,7 @@ async fn run_with_initial_since_and_clock<F, Output, Clock>(
     relay_url: &str,
     mut shutdown: watch::Receiver<bool>,
     mut output: Output,
-    initial_since: u64,
+    filter: Filter,
     mut clock: Clock,
 ) -> Result<(), String>
 where
@@ -116,13 +136,9 @@ where
     Clock: FnMut() -> u64,
 {
     let mut backoff = Duration::from_secs(1);
-    let mut cursor = EventCursor::new(initial_since);
+    let mut cursor = EventCursor::new(0);
     let mut first_connection = true;
     while !*shutdown.borrow() {
-        if !first_connection {
-            cursor.since = clock().saturating_sub(RECONNECT_OVERLAP_SECONDS);
-        }
-        first_connection = false;
         let connection = tokio::select! {
             result = factory.connect(relay_url) => result,
             changed = shutdown.changed() => { if changed.is_err() || *shutdown.borrow() { return Ok(()); } continue; }
@@ -138,7 +154,13 @@ where
                 continue;
             }
         };
-        if let Err(error) = transport.send(&all_events_request(cursor.since)).await {
+        cursor.since = if first_connection {
+            clock()
+        } else {
+            clock().saturating_sub(RECONNECT_OVERLAP_SECONDS)
+        };
+        first_connection = false;
+        if let Err(error) = transport.send(&events_request(cursor.since, &filter)).await {
             output(error_json(&error));
             let _ = transport.close().await;
             if wait_or_shutdown(backoff, &mut shutdown).await {
@@ -204,6 +226,16 @@ pub fn parse_auth_tag(value: Option<&str>) -> Result<Option<Tag>, String> {
         .map_err(|error| format!("invalid BUZZ_AUTH_TAG: {error}"))
 }
 
+pub fn parse_filter(value: Option<&str>) -> Result<Filter, String> {
+    value
+        .map(|value| {
+            serde_json::from_str(value)
+                .map_err(|error| format!("invalid Nostr filter JSON: {error}"))
+        })
+        .transpose()
+        .map(|filter| filter.unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,6 +252,17 @@ mod tests {
             all_events_request(1_700_000_000),
             json!(["REQ", SUBSCRIPTION_ID, {"since": 1_700_000_000}])
         );
+    }
+
+    #[test]
+    fn filter_is_validated_and_live_cursor_replaces_filter_since() {
+        let filter = parse_filter(Some(r#"{"kinds":[1],"since":1,"limit":25}"#)).unwrap();
+        assert_eq!(
+            events_request(1_700_000_000, &filter),
+            json!(["REQ", SUBSCRIPTION_ID, {"kinds":[1],"since":1_700_000_000,"limit":25}])
+        );
+        let error = parse_filter(Some(r#"{"kinds":["message"]}"#)).unwrap_err();
+        assert!(error.starts_with("invalid Nostr filter JSON:"));
     }
     #[test]
     fn event_and_eose_are_structured() {
@@ -347,15 +390,17 @@ mod tests {
                     let _ = shutdown_tx.send(true);
                 }
             },
-            100,
+            Filter::default().kind(Kind::Custom(1)),
             || 400,
         )
         .await
         .unwrap();
         let requests = sent.lock().unwrap();
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0][2]["since"], 100);
+        assert_eq!(requests[0][2]["since"], 400);
         assert_eq!(requests[1][2]["since"], 100);
+        assert_eq!(requests[0][2]["kinds"], json!([1]));
+        assert_eq!(requests[1][2]["kinds"], json!([1]));
         let output = output.lock().unwrap();
         let events: Vec<_> = output
             .iter()
