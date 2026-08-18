@@ -196,12 +196,15 @@ EOF_HELP
 
 events_help() {
   cat <<'EOF_HELP'
-Usage: buzz-server events subscribe --community ID [--filter '<Nostr filter JSON>']
+Usage: buzz-server events subscribe --community ID [--user AGENT_ID] [--filter '<Nostr filter JSON>']
 
 Streams authenticated live relay events as JSONL until SIGINT or SIGTERM. The
 optional filter is a documented Nostr filter object; its `since` is managed by
-the live-only/reconnect cursor. EOSE, CLOSED, NOTICE, and transport errors are
-emitted as control/error objects. Events are ephemeral and none are persisted.
+the live-only/reconnect cursor. With --user, AGENT_ID must be an existing
+managed agent in the selected community; its custodied identity authenticates
+the subscription. Without --user, the community owner identity is used.
+EOSE, CLOSED, NOTICE, and transport errors are emitted as control/error
+objects. Events are ephemeral and none are persisted.
 EOF_HELP
 }
 
@@ -361,8 +364,39 @@ run_live_events() {
   community=$1
   shift
   relay_url=$(community_relay "$community")
-  owner_secret=$(community_identity_secret "$community") || exit $?
-  BUZZ_RELAY_URL=$relay_url BUZZ_PRIVATE_KEY=$(cat "$owner_secret") exec "$release/buzz-events" subscribe "$@"
+  user=
+  if [ "${1:-}" = --user ]; then
+    [ "$#" -ge 2 ] || { echo "events subscribe: --user requires an agent ID" >&2; exit 64; }
+    user=$2
+    shift 2
+    [ "${1:-}" != --user ] || { echo "events subscribe: --user may be used once" >&2; exit 64; }
+  fi
+  if [ -n "$user" ]; then
+    case "$user" in
+      agent_[A-Za-z0-9_][A-Za-z0-9_]*) ;;
+      *) echo "events subscribe: invalid agent ID" >&2; exit 64 ;;
+    esac
+    case "$user" in *[!A-Za-z0-9_]*) echo "events subscribe: invalid agent ID" >&2; exit 64 ;; esac
+    agent_community=$("$release/buzz-agentctl" agent-community --agent "$user" 2>/dev/null) || {
+      echo "events subscribe: managed agent was not found" >&2
+      exit 1
+    }
+    [ "$agent_community" = "$community" ] || {
+      echo "events subscribe: managed agent does not belong to selected community" >&2
+      exit 1
+    }
+    secret="/var/lib/buzz-server/identities/$user.secret"
+    [ -r "$secret" ] || { echo "events subscribe: managed agent credential is unavailable" >&2; exit 77; }
+  else
+    secret=$(community_identity_secret "$community") || exit $?
+  fi
+  if [ -n "$user" ]; then
+    exec env -u BUZZ_AUTH_TAG BUZZ_RELAY_URL="$relay_url" BUZZ_PRIVATE_KEY="$(cat "$secret")" \
+      "$release/buzz-events" subscribe "$@"
+  else
+    BUZZ_RELAY_URL=$relay_url BUZZ_PRIVATE_KEY=$(cat "$secret") \
+      exec "$release/buzz-events" subscribe "$@"
+  fi
 }
 
 command=${1:-}
