@@ -6,18 +6,18 @@ mock="$repo_root/tests/fixtures/mock-gh-buzz-release.sh"
 check="$repo_root/scripts/check-buzz-upstream.sh"
 
 success=$(GH_BIN="$mock" MOCK_BUZZ_RELEASE_CASE=success "$check")
-grep -Fx 'release_tag=desktop-v0.5.14' <<<"$success"
-grep -Fx 'expected_release_commit=391495e7d347d20b67e39e3c240d17ef63c5c2c0' <<<"$success"
+grep -Fx 'release_tag=desktop-v0.5.17' <<<"$success"
+grep -Fx 'expected_release_commit=c3bfd66947978fae93f4cfb46bea98ba20e32ccf' <<<"$success"
 
 annotated=$(GH_BIN="$mock" MOCK_BUZZ_RELEASE_CASE=annotated "$check")
-grep -Fx 'expected_release_commit=391495e7d347d20b67e39e3c240d17ef63c5c2c0' <<<"$annotated"
+grep -Fx 'expected_release_commit=c3bfd66947978fae93f4cfb46bea98ba20e32ccf' <<<"$annotated"
 
 if mismatch=$(GH_BIN="$mock" MOCK_BUZZ_RELEASE_CASE=mismatch "$check" 2>&1); then
   echo 'revision mismatch unexpectedly passed' >&2
   exit 1
 fi
-grep -F 'pinned=391495e7d347d20b67e39e3c240d17ef63c5c2c0' <<<"$mismatch"
-grep -F 'release_tag=desktop-v0.5.14' <<<"$mismatch"
+grep -F 'pinned=c3bfd66947978fae93f4cfb46bea98ba20e32ccf' <<<"$mismatch"
+grep -F 'release_tag=desktop-v0.5.17' <<<"$mismatch"
 grep -F 'expected_release_commit=1111111111111111111111111111111111111111' <<<"$mismatch"
 
 if GH_BIN="$mock" MOCK_BUZZ_RELEASE_CASE=malformed "$check" >/dev/null 2>&1; then
