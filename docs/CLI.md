@@ -262,20 +262,25 @@ preserving upstream arguments, standard streams, and exit status.
 
 ## Live events
 
-Subscribe to every event accepted by the selected community relay:
+Subscribe to live events accepted by the selected community relay. Pass one
+documented Nostr filter as a JSON object with `--filter`:
 
 ```sh
 buzz-server events subscribe --community community_...
+buzz-server events subscribe --community community_... \
+  --filter '{"kinds":[1],"#t":["release"]}'
+buzz-server events subscribe --community community_... \
+  --filter '{"authors":["<64-hex-pubkey>"],"limit":100}'
 ```
 
 Output is JSONL. `event`, `eose`, `closed`, `notice`, and `error` objects are
-reported as received. The initial request uses a five-minute wall-clock overlap
-while remaining unrestricted by kind, author, or channel. EOSE does not end the
-stream; relay closure or transport failure reconnects with the current wall-clock
-overlap and a bounded in-memory event-ID cache. Gap recovery is best-effort because
-relay delivery is not required to be timestamp-ordered. Press Ctrl-C (or send
-SIGTERM) to close the connection. Events are ephemeral output only: events are
-not persisted.
+reported as received. The initial request uses a five-minute wall-clock overlap;
+on reconnect the cursor is refreshed with the same overlap. Any `since` supplied
+in the filter is replaced by that managed cursor, and duplicate event IDs are
+suppressed inclusively across reconnects. Authentication, EOSE handling, signal
+handling, and JSONL output are unchanged. Invalid JSON or invalid Nostr filter
+fields fail before connecting. Press Ctrl-C (or send SIGTERM) to close the
+connection. Events are ephemeral output only: events are not persisted.
 
 ## Secrets
 
