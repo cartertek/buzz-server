@@ -15,7 +15,7 @@ case "${1:-}" in
         case "${MOCK_BUZZ_RELEASE_CASE:-success}" in
           malformed) printf '{}\n' ;;
           wrong-tag) printf '%s\n' '{"draft":false,"name":"Buzz Relay v1","prerelease":false,"published_at":"2026-08-15T01:09:59Z","tag_name":"v1.0.0"}' ;;
-          *) printf '%s\n' '{"draft":false,"name":"Buzz Desktop v0.5.14","prerelease":false,"published_at":"2026-08-15T01:09:59Z","tag_name":"desktop-v0.5.17"}' ;;
+          *) printf '%s\n' '{"draft":false,"name":"Buzz Desktop v0.5.17","prerelease":false,"published_at":"2026-08-15T01:09:59Z","tag_name":"desktop-v0.5.17"}' ;;
         esac
         ;;
       repos/block/buzz/git/ref/tags/desktop-v0.5.17)
