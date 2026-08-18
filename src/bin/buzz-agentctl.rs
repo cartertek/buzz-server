@@ -113,6 +113,15 @@ async fn run() -> Result<(), String> {
         return Ok(());
     }
 
+    if command == "agent-community" {
+        let community = value
+            .pointer("/value/value/community_config_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("agent response did not contain community_config_id")?;
+        println!("{community}");
+        return Ok(());
+    }
+
     print_value(&value)
 }
 
@@ -249,6 +258,9 @@ fn route(
                 )?,
             })
         }
+        "agent-community" => Ok(LifecycleRouteRequest::GetAgent {
+            agent_id: parse(required(options, "--agent")?, "agent ID")?,
+        }),
         "community-list" => Ok(LifecycleRouteRequest::ListCommunities),
         "community-delete" | "community-remove" => Ok(LifecycleRouteRequest::RemoveCommunity {
             community_id: parse::<CommunityConfigId>(
@@ -371,7 +383,7 @@ fn parse<T: FromStr>(value: &str, description: &str) -> Result<T, String> {
 }
 
 fn usage() -> String {
-    "usage: buzz-agentctl [--socket PATH] <community-*|persona-create|persona-get|persona-list|persona-update|persona-delete|create|get|list|update|enable|disable|logs|delete|purge|operation> [--name value ...]".into()
+    "usage: buzz-agentctl [--socket PATH] <community-*|agent-community|persona-create|persona-get|persona-list|persona-update|persona-delete|create|get|list|update|enable|disable|logs|delete|purge|operation> [--name value ...]".into()
 }
 
 #[cfg(test)]
@@ -386,6 +398,7 @@ mod tests {
         let operation = operation.to_string();
         let cases = [
             ("get", vec!["--agent", agent.as_str()]),
+            ("agent-community", vec!["--agent", agent.as_str()]),
             ("operation", vec!["--operation", operation.as_str()]),
             ("list", Vec::new()),
         ];

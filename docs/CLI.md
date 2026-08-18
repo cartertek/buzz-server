@@ -283,6 +283,19 @@ unchanged. Invalid JSON or invalid Nostr filter fields fail before connecting.
 Press Ctrl-C (or send SIGTERM) to close the connection. Events are ephemeral
 output only: events are not persisted.
 
+By default the persisted community owner identity is used. To supervise a
+managed agent, select its exact ID:
+
+```sh
+buzz-server events subscribe --community community_... --user agent_...
+```
+
+`--user` accepts only an existing managed agent ID. Buzz Server resolves that
+agent through its lifecycle registry, requires its `community_config_id` to
+match `--community`, and loads its private key from existing agent custody.
+Missing, invalid, or cross-community agents are rejected before the relay
+client starts. Read subscriptions do not use `BUZZ_AUTH_TAG`.
+
 ## Secrets
 
 The former singular `secret` namespace is now plural to match the resource naming
