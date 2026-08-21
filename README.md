@@ -138,9 +138,11 @@ Add the newly created agent to a channel:
 sudo buzz-server channels add-member \
   --community community_... \
   --channel <channel-uuid> \
-  --pubkey <agent-public-key> \
-  --role bot
+  --pubkey <agent-public-key>
 ```
+
+Buzz Server defaults an omitted add-member role to `bot`. Pass `--role`
+explicitly to select a different role.
 
 Once the agent is a channel member, its ACP runtime discovers the membership and
 subscribes to mentions automatically.

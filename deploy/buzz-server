@@ -501,6 +501,15 @@ case "$command" in
       [ "${1:-}" = --community ] && [ -n "${2:-}" ] || { channels_help >&2; exit 64; }
       community=$2
       shift 2
+      if [ "$subcommand" = add-member ]; then
+        has_role=false
+        for argument in "$@"; do
+          case "$argument" in
+            --role|--role=*) has_role=true ;;
+          esac
+        done
+        [ "$has_role" = true ] || set -- "$@" --role bot
+      fi
       run_owner_buzz channels "$subcommand" "$community" "$@"
     fi
     ;;

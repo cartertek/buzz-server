@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use buzz_core::channel::MemberRole;
 use buzz_ws_client::{NostrWsConnection, RelayMessage};
 use nostr::{Keys, Kind};
 use serde_json::{json, Value};
@@ -11,6 +12,10 @@ use uuid::Uuid;
 
 const CREATE_GROUP_KIND: u16 = 9007;
 const MEMBER_ADDED_NOTIFICATION_KIND: u16 = 44_100;
+
+fn auto_join_role(role: Option<MemberRole>) -> MemberRole {
+    role.unwrap_or(MemberRole::Bot)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OpenChannel {
@@ -131,20 +136,19 @@ pub async fn fetch_open_channel(
 
 pub async fn publish_join(
     relay_url: &Url,
-    keys: &Keys,
-    auth_tag_json: &str,
+    owner_keys: &Keys,
+    agent_pubkey: &str,
     channel_id: Uuid,
+    role: Option<MemberRole>,
 ) -> Result<(), String> {
-    let auth_tag = buzz_sdk::nip_oa::parse_auth_tag(auth_tag_json).map_err(|e| e.to_string())?;
-    let event = buzz_sdk::build_join(channel_id)
+    let role = auto_join_role(role);
+    let event = buzz_sdk::build_add_member(channel_id, agent_pubkey, Some(role))
         .map_err(|e| e.to_string())?
-        .tags([auth_tag.clone()])
-        .sign_with_keys(keys)
+        .sign_with_keys(owner_keys)
         .map_err(|e| e.to_string())?;
-    let result =
-        buzz_ws_client::publish_event(relay_url.as_str(), event, keys, Some(&auth_tag), 75)
-            .await
-            .map_err(|e| e.to_string())?;
+    let result = buzz_ws_client::publish_event(relay_url.as_str(), event, owner_keys, None, 75)
+        .await
+        .map_err(|e| e.to_string())?;
     if result.accepted {
         Ok(())
     } else {
@@ -179,6 +183,12 @@ pub async fn next_channel_notification(
 mod tests {
     use super::*;
     use nostr::{EventBuilder, Tag};
+
+    #[test]
+    fn omitted_auto_join_role_defaults_to_bot() {
+        assert_eq!(auto_join_role(None), MemberRole::Bot);
+        assert_eq!(auto_join_role(Some(MemberRole::Admin)), MemberRole::Admin);
+    }
 
     fn create(visibility: &str) -> nostr::Event {
         let channel = Uuid::now_v7();

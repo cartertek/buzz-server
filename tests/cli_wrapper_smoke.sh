@@ -23,6 +23,18 @@ set -e
 [ "$status" -eq 23 ]
 [ "$output" = 'messages send --channel chan --content hello world' ]
 [ "$(cat "$release/err")" = delegated ]
+set +e
+output=$("$release/buzz-server" channels add-member --community community_test --channel chan --pubkey agent 2>"$release/err")
+status=$?
+set -e
+[ "$status" -eq 23 ]
+[ "$output" = 'channels add-member --channel chan --pubkey agent --role bot' ]
+set +e
+output=$("$release/buzz-server" channels add-member --community community_test --channel chan --pubkey agent --role admin 2>"$release/err")
+status=$?
+set -e
+[ "$status" -eq 23 ]
+[ "$output" = 'channels add-member --channel chan --pubkey agent --role admin' ]
 export BUZZ_AUTH_TAG=owner-auth-tag
 events_output=$("$release/buzz-server" events subscribe --community community_test --filter '{"kinds":[1]}' & pid=$!; sleep 0.1; kill -TERM "$pid"; wait "$pid" || exit 1)
 printf '%s\n' "$events_output" | grep -q after-eose
