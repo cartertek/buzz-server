@@ -239,8 +239,10 @@ The bundled binary is internal; no separate public `buzz` executable is installe
 ```sh
 sudo buzz-server channels list --community community_...
 sudo buzz-server channels create --community community_... --name general --type stream --visibility open
-sudo buzz-server channels add-member --community community_... --channel <uuid> --pubkey <hex> --role bot
+sudo buzz-server channels add-member --community community_... --channel <uuid> --pubkey <hex>
 ```
+
+An omitted add-member role defaults to `bot`; pass `--role` to choose another role.
 
 Available upstream channel subcommands at the pinned revision are `list`, `get`,
 `search`, `create`, `update`, `topic`, `purpose`, `join`, `leave`, `archive`,

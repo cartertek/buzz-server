@@ -1190,21 +1190,8 @@ async fn reconcile_auto_join_channel(
                 }
             }
         }
-        let agent_keys = match context.custody.provision(agent.id) {
-            Ok(identity) => match context.custody.load(agent.id) {
-                Ok(keys) if keys.public_key().to_hex() == identity.public_key => keys,
-                Ok(_) => {
-                    eprintln!("auto-join identity mismatch for {}", agent.id);
-                    continue;
-                }
-                Err(error) => {
-                    eprintln!(
-                        "auto-join could not load identity for {}: {error}",
-                        agent.id
-                    );
-                    continue;
-                }
-            },
+        let identity = match context.custody.provision(agent.id) {
+            Ok(identity) => identity,
             Err(error) => {
                 eprintln!(
                     "auto-join could not provision identity for {}: {error}",
@@ -1213,22 +1200,12 @@ async fn reconcile_auto_join_channel(
                 continue;
             }
         };
-        let auth_tag = match buzz_sdk::nip_oa::compute_auth_tag(
-            owner_keys,
-            &agent_keys.public_key(),
-            "kind=9021",
-        ) {
-            Ok(tag) => tag,
-            Err(error) => {
-                eprintln!("auto-join authorization failed for {}: {error}", agent.id);
-                continue;
-            }
-        };
         match buzz_server::auto_join::publish_join(
             &community.relay_url,
-            &agent_keys,
-            &auth_tag,
+            owner_keys,
+            &identity.public_key,
             channel.id,
+            None,
         )
         .await
         {
