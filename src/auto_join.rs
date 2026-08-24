@@ -384,7 +384,7 @@ mod tests {
 
         let event = EventBuilder::new(Kind::Custom(CHANNEL_MEMBERS_KIND), "")
             .tags([
-                Tag::parse(["d", channel.to_string()]).unwrap(),
+                Tag::parse(["d", &channel.to_string()]).unwrap(),
                 Tag::parse(["p", member.as_str(), "bot"]).unwrap(),
             ])
             .sign_with_keys(&Keys::generate())
