@@ -1290,7 +1290,7 @@ fn auto_join_owner_keys(
 
 #[cfg(test)]
 mod auto_join_tests {
-    use super::auto_join_channel_is_new;
+    use super::{auto_join_channel_is_new, reconcile_auto_join_member};
     use std::{
         collections::HashSet,
         sync::{Arc, Mutex},
