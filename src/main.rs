@@ -1313,9 +1313,10 @@ mod auto_join_tests {
                     continue;
                 }
                 add_events.push(channel);
+                let channel_text = channel.to_string();
                 let snapshot = EventBuilder::new(Kind::Custom(39_002), "")
                     .tags([
-                        Tag::parse(["d", channel.to_string()]).unwrap(),
+                        Tag::parse(["d", channel_text.as_str()]).unwrap(),
                         Tag::parse(["p", agent.as_str(), "bot"]).unwrap(),
                     ])
                     .sign_with_keys(&Keys::generate())
