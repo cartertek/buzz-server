@@ -1,5 +1,6 @@
 //! Minimal Buzz Server development daemon.
 
+use std::future::Future;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs::{self, OpenOptions},
@@ -1089,8 +1090,21 @@ async fn run_community_auto_join(
                     .await
                     {
                         Ok(Some(channel)) => {
-                            reconcile_auto_join_channel(&context, &community, &owner_keys, channel)
-                                .await;
+                            if let Err(error) = reconcile_auto_join_channel(
+                                &context,
+                                &community,
+                                &owner_keys,
+                                channel,
+                            )
+                            .await
+                            {
+                                eprintln!(
+                                    "auto-join reconciliation failed for {}: {error}",
+                                    community.id
+                                );
+                                let _ = connection.disconnect().await;
+                                break;
+                            }
                         }
                         Ok(None) => {}
                         Err(error) => eprintln!(
@@ -1146,15 +1160,14 @@ async fn reconcile_auto_join_channel(
     community: &buzz_server::CommunityConfig,
     owner_keys: &Keys,
     channel: buzz_server::auto_join::OpenChannel,
-) {
+) -> Result<(), String> {
     let agents = match context.store.list_agents(Some(community.id)) {
         Ok(agents) => agents,
         Err(error) => {
-            eprintln!(
-                "auto-join could not list agents for {}: {error}",
+            return Err(format!(
+                "could not list agents for {}: {error}",
                 community.id
-            );
-            return;
+            ));
         }
     };
     for agent in agents {
@@ -1200,23 +1213,55 @@ async fn reconcile_auto_join_channel(
                 continue;
             }
         };
-        match buzz_server::auto_join::publish_join(
-            &community.relay_url,
-            owner_keys,
-            &identity.public_key,
-            channel.id,
-            None,
+        match reconcile_auto_join_member(
+            || {
+                buzz_server::auto_join::fetch_channel_membership(
+                    &community.relay_url,
+                    owner_keys,
+                    channel.id,
+                    &identity.public_key,
+                )
+            },
+            || {
+                buzz_server::auto_join::publish_join(
+                    &community.relay_url,
+                    owner_keys,
+                    &identity.public_key,
+                    channel.id,
+                    None,
+                )
+            },
         )
         .await
         {
-            Ok(()) => eprintln!("auto-joined agent {} to channel {}", agent.id, channel.id),
-            Err(error) if auto_join_already_member(&error) => {}
-            Err(error) => eprintln!(
-                "auto-join failed for agent {} channel {}: {error}",
-                agent.id, channel.id
-            ),
+            Ok(true) => eprintln!("auto-joined agent {} to channel {}", agent.id, channel.id),
+            Ok(false) => {}
+            Err(error) => {
+                return Err(format!(
+                    "auto-join failed for agent {} channel {}: {error}",
+                    agent.id, channel.id
+                ));
+            }
         }
     }
+    Ok(())
+}
+
+async fn reconcile_auto_join_member<Q, QF, J, JF>(
+    membership_query: Q,
+    join_publisher: J,
+) -> Result<bool, String>
+where
+    Q: FnOnce() -> QF,
+    QF: Future<Output = Result<bool, String>>,
+    J: FnOnce() -> JF,
+    JF: Future<Output = Result<(), String>>,
+{
+    if membership_query().await? {
+        return Ok(false);
+    }
+    join_publisher().await?;
+    Ok(true)
 }
 
 fn auto_join_channel_is_new(channel_created_at: u64, enabled_at: i64) -> bool {
@@ -1243,14 +1288,14 @@ fn auto_join_owner_keys(
     Ok(keys)
 }
 
-fn auto_join_already_member(message: &str) -> bool {
-    let value = message.to_ascii_lowercase();
-    value.contains("already") && value.contains("member")
-}
-
 #[cfg(test)]
 mod auto_join_tests {
-    use super::auto_join_channel_is_new;
+    use super::{auto_join_channel_is_new, reconcile_auto_join_member};
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Mutex},
+    };
+    use uuid::Uuid;
 
     #[test]
     fn new_mode_requires_creation_strictly_after_enablement() {
@@ -1262,6 +1307,50 @@ mod auto_join_tests {
     #[test]
     fn new_mode_rejects_an_invalid_negative_boundary() {
         assert!(!auto_join_channel_is_new(1, -1));
+    }
+
+    #[tokio::test]
+    async fn repeated_enable_adds_absent_agent_once_across_two_channels() {
+        let channels = [Uuid::now_v7(), Uuid::now_v7()];
+        let snapshots = Arc::new(Mutex::new(HashSet::new()));
+        let add_events = Arc::new(Mutex::new(Vec::new()));
+
+        for _enable in 0..2 {
+            for channel in channels {
+                let query_snapshots = Arc::clone(&snapshots);
+                let publish_snapshots = Arc::clone(&snapshots);
+                let publish_events = Arc::clone(&add_events);
+                assert!(reconcile_auto_join_member(
+                    move || async move {
+                        Ok(query_snapshots.lock().unwrap().contains(&channel))
+                    },
+                    move || async move {
+                        publish_events.lock().unwrap().push(channel);
+                        publish_snapshots.lock().unwrap().insert(channel);
+                        Ok(())
+                    },
+                )
+                .await
+                .unwrap() == (_enable == 0));
+            }
+        }
+
+        assert_eq!(*add_events.lock().unwrap(), channels);
+        assert_eq!(snapshots.lock().unwrap().len(), 2);
+
+        let attempted_publish = Arc::new(Mutex::new(0));
+        let publish_counter = Arc::clone(&attempted_publish);
+        let error = reconcile_auto_join_member(
+            || async { Err("snapshot unavailable".into()) },
+            move || async move {
+                *publish_counter.lock().unwrap() += 1;
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "snapshot unavailable");
+        assert_eq!(*attempted_publish.lock().unwrap(), 0);
     }
 }
 

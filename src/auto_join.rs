@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 const CREATE_GROUP_KIND: u16 = 9007;
 const MEMBER_ADDED_NOTIFICATION_KIND: u16 = 44_100;
+const CHANNEL_MEMBERS_KIND: u16 = 39_002;
 
 fn auto_join_role(role: Option<MemberRole>) -> MemberRole {
     role.unwrap_or(MemberRole::Bot)
@@ -85,6 +86,93 @@ pub fn channel_metadata_subscription(subscription_id: &str, channel_id: Uuid) ->
         "#h": [channel_id.to_string()],
         "limit": 1,
     }])
+}
+
+pub fn channel_members_subscription(subscription_id: &str, channel_id: Uuid) -> Value {
+    json!(["REQ", subscription_id, {
+        "kinds": [CHANNEL_MEMBERS_KIND],
+        "#d": [channel_id.to_string()],
+        "limit": 1,
+    }])
+}
+
+pub fn channel_membership_contains(
+    event: &nostr::Event,
+    channel_id: Uuid,
+    member_pubkey: &str,
+) -> bool {
+    if !channel_membership_snapshot_matches(event, channel_id) {
+        return false;
+    }
+    let mut member = false;
+    for tag in event.tags.iter() {
+        let values = tag.as_slice();
+        if values.first().map(String::as_str) == Some("p") {
+            member |= values
+                .get(1)
+                .is_some_and(|value| value.eq_ignore_ascii_case(member_pubkey));
+        }
+    }
+    member
+}
+
+fn channel_membership_snapshot_matches(event: &nostr::Event, channel_id: Uuid) -> bool {
+    if event.kind != Kind::Custom(CHANNEL_MEMBERS_KIND) {
+        return false;
+    }
+    let channel_id = channel_id.to_string();
+    event.tags.iter().any(|tag| {
+        let values = tag.as_slice();
+        values.first().map(String::as_str) == Some("d")
+            && values.get(1).is_some_and(|value| value == &channel_id)
+    })
+}
+
+pub async fn fetch_channel_membership(
+    relay_url: &Url,
+    keys: &Keys,
+    channel_id: Uuid,
+    member_pubkey: &str,
+) -> Result<bool, String> {
+    let mut connection = NostrWsConnection::connect_authenticated(relay_url.as_str(), keys, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    let subscription_id = format!("server-auto-join-members-{channel_id}");
+    let request = channel_members_subscription(&subscription_id, channel_id);
+    connection
+        .send_raw(&request)
+        .await
+        .map_err(|error| error.to_string())?;
+    loop {
+        match connection
+            .next_event(Duration::from_secs(30))
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            RelayMessage::Event {
+                subscription_id: event_subscription,
+                event,
+            } if event_subscription == subscription_id => {
+                if !channel_membership_snapshot_matches(&event, channel_id) {
+                    continue;
+                }
+                let present = channel_membership_contains(&event, channel_id, member_pubkey);
+                let _ = connection.disconnect().await;
+                return Ok(present);
+            }
+            RelayMessage::Eose {
+                subscription_id: event_subscription,
+            } if event_subscription == subscription_id => {
+                let _ = connection.disconnect().await;
+                return Err("membership snapshot not found".into());
+            }
+            RelayMessage::Closed {
+                subscription_id: event_subscription,
+                message,
+            } if event_subscription == subscription_id => return Err(message),
+            _ => {}
+        }
+    }
 }
 
 pub async fn fetch_open_channel(
@@ -282,6 +370,32 @@ mod tests {
         assert_eq!(value[1], "autojoin");
         assert_eq!(value[2]["kinds"][0], MEMBER_ADDED_NOTIFICATION_KIND);
         assert_eq!(value[2]["#p"][0], owner);
+    }
+
+    #[test]
+    fn member_snapshot_filter_and_parser_are_channel_scoped() {
+        let channel = Uuid::now_v7();
+        let other_channel = Uuid::now_v7();
+        let member = Keys::generate().public_key().to_hex();
+        let request = channel_members_subscription("members", channel);
+        assert_eq!(request[2]["kinds"][0], CHANNEL_MEMBERS_KIND);
+        assert_eq!(request[2]["#d"][0], channel.to_string());
+        assert_eq!(request[2]["limit"], 1);
+
+        let event = EventBuilder::new(Kind::Custom(CHANNEL_MEMBERS_KIND), "")
+            .tags([
+                Tag::parse(["d", &channel.to_string()]).unwrap(),
+                Tag::parse(["p", member.as_str(), "admin"]).unwrap(),
+            ])
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        assert!(channel_membership_contains(&event, channel, &member));
+        assert!(!channel_membership_contains(&event, other_channel, &member));
+        assert!(!channel_membership_contains(
+            &event,
+            channel,
+            &Keys::generate().public_key().to_hex()
+        ));
     }
 
     #[test]
