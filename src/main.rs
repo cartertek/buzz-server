@@ -1,5 +1,6 @@
 //! Minimal Buzz Server development daemon.
 
+use std::future::Future;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs::{self, OpenOptions},
@@ -1212,40 +1213,55 @@ async fn reconcile_auto_join_channel(
                 continue;
             }
         };
-        let is_member = buzz_server::auto_join::fetch_channel_membership(
-            &community.relay_url,
-            owner_keys,
-            channel.id,
-            &identity.public_key,
-        )
-        .await
-        .map_err(|error| {
-            format!(
-                "could not query membership for agent {} in channel {}: {error}",
-                agent.id, channel.id
-            )
-        })?;
-        if is_member {
-            continue;
-        }
-        match buzz_server::auto_join::publish_join(
-            &community.relay_url,
-            owner_keys,
-            &identity.public_key,
-            channel.id,
-            None,
+        match reconcile_auto_join_member(
+            || {
+                buzz_server::auto_join::fetch_channel_membership(
+                    &community.relay_url,
+                    owner_keys,
+                    channel.id,
+                    &identity.public_key,
+                )
+            },
+            || {
+                buzz_server::auto_join::publish_join(
+                    &community.relay_url,
+                    owner_keys,
+                    &identity.public_key,
+                    channel.id,
+                    None,
+                )
+            },
         )
         .await
         {
-            Ok(()) => eprintln!("auto-joined agent {} to channel {}", agent.id, channel.id),
-            Err(error) if auto_join_already_member(&error) => {}
-            Err(error) => eprintln!(
-                "auto-join failed for agent {} channel {}: {error}",
-                agent.id, channel.id
-            ),
+            Ok(true) => eprintln!("auto-joined agent {} to channel {}", agent.id, channel.id),
+            Ok(false) => {}
+            Err(error) => {
+                return Err(format!(
+                    "auto-join failed for agent {} channel {}: {error}",
+                    agent.id, channel.id
+                ));
+            }
         }
     }
     Ok(())
+}
+
+async fn reconcile_auto_join_member<Q, QF, J, JF>(
+    membership_query: Q,
+    join_publisher: J,
+) -> Result<bool, String>
+where
+    Q: FnOnce() -> QF,
+    QF: Future<Output = Result<bool, String>>,
+    J: FnOnce() -> JF,
+    JF: Future<Output = Result<(), String>>,
+{
+    if membership_query().await? {
+        return Ok(false);
+    }
+    join_publisher().await?;
+    Ok(true)
 }
 
 fn auto_join_channel_is_new(channel_created_at: u64, enabled_at: i64) -> bool {
@@ -1272,17 +1288,13 @@ fn auto_join_owner_keys(
     Ok(keys)
 }
 
-fn auto_join_already_member(message: &str) -> bool {
-    let value = message.to_ascii_lowercase();
-    value.contains("already") && value.contains("member")
-}
-
 #[cfg(test)]
 mod auto_join_tests {
     use super::auto_join_channel_is_new;
-    use buzz_server::auto_join;
-    use nostr::{EventBuilder, Keys, Kind, Tag};
-    use std::collections::HashMap;
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Mutex},
+    };
     use uuid::Uuid;
 
     #[test]
@@ -1297,36 +1309,48 @@ mod auto_join_tests {
         assert!(!auto_join_channel_is_new(1, -1));
     }
 
-    #[test]
-    fn repeated_enable_adds_absent_agent_once_across_two_channels() {
-        let agent = Keys::generate().public_key().to_hex();
+    #[tokio::test]
+    async fn repeated_enable_adds_absent_agent_once_across_two_channels() {
         let channels = [Uuid::now_v7(), Uuid::now_v7()];
-        let mut snapshots = HashMap::new();
-        let mut add_events = Vec::new();
+        let snapshots = Arc::new(Mutex::new(HashSet::new()));
+        let add_events = Arc::new(Mutex::new(Vec::new()));
 
         for _enable in 0..2 {
             for channel in channels {
-                let already_member = snapshots.get(&channel).is_some_and(|event| {
-                    auto_join::channel_membership_contains(event, channel, &agent)
-                });
-                if already_member {
-                    continue;
-                }
-                add_events.push(channel);
-                let channel_text = channel.to_string();
-                let snapshot = EventBuilder::new(Kind::Custom(39_002), "")
-                    .tags([
-                        Tag::parse(["d", channel_text.as_str()]).unwrap(),
-                        Tag::parse(["p", agent.as_str(), "bot"]).unwrap(),
-                    ])
-                    .sign_with_keys(&Keys::generate())
-                    .unwrap();
-                snapshots.insert(channel, snapshot);
+                let query_snapshots = Arc::clone(&snapshots);
+                let publish_snapshots = Arc::clone(&snapshots);
+                let publish_events = Arc::clone(&add_events);
+                assert!(reconcile_auto_join_member(
+                    move || async move {
+                        Ok(query_snapshots.lock().unwrap().contains(&channel))
+                    },
+                    move || async move {
+                        publish_events.lock().unwrap().push(channel);
+                        publish_snapshots.lock().unwrap().insert(channel);
+                        Ok(())
+                    },
+                )
+                .await
+                .unwrap() == (_enable == 0));
             }
         }
 
-        assert_eq!(add_events, channels);
-        assert_eq!(snapshots.len(), 2);
+        assert_eq!(*add_events.lock().unwrap(), channels);
+        assert_eq!(snapshots.lock().unwrap().len(), 2);
+
+        let attempted_publish = Arc::new(Mutex::new(0));
+        let publish_counter = Arc::clone(&attempted_publish);
+        let error = reconcile_auto_join_member(
+            || async { Err("snapshot unavailable".into()) },
+            move || async move {
+                *publish_counter.lock().unwrap() += 1;
+                Ok(())
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error, "snapshot unavailable");
+        assert_eq!(*attempted_publish.lock().unwrap(), 0);
     }
 }
 
