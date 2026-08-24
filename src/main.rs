@@ -1089,8 +1089,21 @@ async fn run_community_auto_join(
                     .await
                     {
                         Ok(Some(channel)) => {
-                            reconcile_auto_join_channel(&context, &community, &owner_keys, channel)
-                                .await;
+                            if let Err(error) = reconcile_auto_join_channel(
+                                &context,
+                                &community,
+                                &owner_keys,
+                                channel,
+                            )
+                            .await
+                            {
+                                eprintln!(
+                                    "auto-join reconciliation failed for {}: {error}",
+                                    community.id
+                                );
+                                let _ = connection.disconnect().await;
+                                break;
+                            }
                         }
                         Ok(None) => {}
                         Err(error) => eprintln!(
@@ -1146,15 +1159,14 @@ async fn reconcile_auto_join_channel(
     community: &buzz_server::CommunityConfig,
     owner_keys: &Keys,
     channel: buzz_server::auto_join::OpenChannel,
-) {
+) -> Result<(), String> {
     let agents = match context.store.list_agents(Some(community.id)) {
         Ok(agents) => agents,
         Err(error) => {
-            eprintln!(
-                "auto-join could not list agents for {}: {error}",
+            return Err(format!(
+                "could not list agents for {}: {error}",
                 community.id
-            );
-            return;
+            ));
         }
     };
     for agent in agents {
@@ -1200,6 +1212,22 @@ async fn reconcile_auto_join_channel(
                 continue;
             }
         };
+        let is_member = buzz_server::auto_join::fetch_channel_membership(
+            &community.relay_url,
+            owner_keys,
+            channel.id,
+            &identity.public_key,
+        )
+        .await
+        .map_err(|error| {
+            format!(
+                "could not query membership for agent {} in channel {}: {error}",
+                agent.id, channel.id
+            )
+        })?;
+        if is_member {
+            continue;
+        }
         match buzz_server::auto_join::publish_join(
             &community.relay_url,
             owner_keys,
@@ -1217,6 +1245,7 @@ async fn reconcile_auto_join_channel(
             ),
         }
     }
+    Ok(())
 }
 
 fn auto_join_channel_is_new(channel_created_at: u64, enabled_at: i64) -> bool {
@@ -1251,6 +1280,10 @@ fn auto_join_already_member(message: &str) -> bool {
 #[cfg(test)]
 mod auto_join_tests {
     use super::auto_join_channel_is_new;
+    use buzz_server::auto_join;
+    use nostr::{EventBuilder, Keys, Kind, Tag};
+    use std::collections::HashMap;
+    use uuid::Uuid;
 
     #[test]
     fn new_mode_requires_creation_strictly_after_enablement() {
@@ -1262,6 +1295,37 @@ mod auto_join_tests {
     #[test]
     fn new_mode_rejects_an_invalid_negative_boundary() {
         assert!(!auto_join_channel_is_new(1, -1));
+    }
+
+    #[test]
+    fn repeated_enable_adds_absent_agent_once_across_two_channels() {
+        let agent = Keys::generate().public_key().to_hex();
+        let channels = [Uuid::now_v7(), Uuid::now_v7()];
+        let mut snapshots = HashMap::new();
+        let mut add_events = Vec::new();
+
+        for _enable in 0..2 {
+            for channel in channels {
+                let already_member = snapshots.get(&channel).is_some_and(|event| {
+                    auto_join::channel_membership_contains(event, channel, &agent)
+                });
+                if already_member {
+                    continue;
+                }
+                add_events.push(channel);
+                let snapshot = EventBuilder::new(Kind::Custom(39_002), "")
+                    .tags([
+                        Tag::parse(["d", channel.to_string()]).unwrap(),
+                        Tag::parse(["p", agent.as_str(), "bot"]).unwrap(),
+                    ])
+                    .sign_with_keys(&Keys::generate())
+                    .unwrap();
+                snapshots.insert(channel, snapshot);
+            }
+        }
+
+        assert_eq!(add_events, channels);
+        assert_eq!(snapshots.len(), 2);
     }
 }
 
