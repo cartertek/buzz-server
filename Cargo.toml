@@ -9,9 +9,9 @@ publish = false
 
 [dependencies]
 tempfile = "3.23"
-buzz-core = { git = "https://github.com/block/buzz.git", rev = "39f8b46935736334cdd7045a4e4b5d7eb1a33888" }
-buzz-sdk = { git = "https://github.com/block/buzz.git", rev = "39f8b46935736334cdd7045a4e4b5d7eb1a33888", version = "0.1.0" }
-buzz-ws-client = { git = "https://github.com/block/buzz.git", rev = "39f8b46935736334cdd7045a4e4b5d7eb1a33888" }
+buzz-core = { git = "https://github.com/block/buzz.git", rev = "95154bee4034ca7a40b33095c2ddbde8c9aa1614" }
+buzz-sdk = { git = "https://github.com/block/buzz.git", rev = "95154bee4034ca7a40b33095c2ddbde8c9aa1614", version = "0.1.0" }
+buzz-ws-client = { git = "https://github.com/block/buzz.git", rev = "95154bee4034ca7a40b33095c2ddbde8c9aa1614" }
 axum = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 aes-gcm = "0.10"
