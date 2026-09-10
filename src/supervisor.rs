@@ -686,6 +686,9 @@ fn sanitized_child_diagnostic(line: &str) -> Option<String> {
     ) {
         return Some(line.to_owned());
     }
+    if let Some(diagnostic) = sanitized_structured_task_diagnostic(line) {
+        return Some(diagnostic);
+    }
     for prefix in ["[CHILD ADAPTER ERROR code=", "[CHILD PROCESS EXIT code="] {
         if line
             .strip_prefix(prefix)
@@ -706,6 +709,9 @@ fn sanitized_child_diagnostic(line: &str) -> Option<String> {
         }
         return Some(diagnostic);
     }
+    if let Some(diagnostic) = classified_task_diagnostic(line) {
+        return Some(diagnostic);
+    }
     if let Some(code) = numeric_value_after(line, "Agent reported error (code ") {
         let mut diagnostic = format!("[CHILD ADAPTER ERROR code={code}]");
         if let Some(exit_code) = numeric_value_after(line, "process has exited with code ") {
@@ -718,6 +724,210 @@ fn sanitized_child_diagnostic(line: &str) -> Option<String> {
     }
     if line.starts_with("Error: failed to initialize sqlite state runtime") {
         return Some("[CHILD ERROR class=sqlite_state_initialization_failed]".to_owned());
+    }
+    None
+}
+
+fn sanitized_structured_task_diagnostic(line: &str) -> Option<String> {
+    let fields = line
+        .strip_prefix("[CHILD TASK ERROR ")?
+        .strip_suffix(']')?
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    if fields.is_empty() {
+        return None;
+    }
+
+    let mut class = None;
+    let mut code = None;
+    let mut exit_code = None;
+    let mut action = None;
+    let mut phase = None;
+    let mut rule = None;
+    let mut retry_at = None;
+    let mut retry_after_seconds = None;
+    for field in fields {
+        let (key, value) = field.split_once('=')?;
+        match key {
+            "class" if class.is_none() && valid_task_class(value) => class = Some(value),
+            "code" if code.is_none() && valid_error_code(value) => code = Some(value),
+            "exit_code" if exit_code.is_none() && valid_error_code(value) => {
+                exit_code = Some(value)
+            }
+            "action" if action.is_none() && valid_task_action(value) => action = Some(value),
+            "phase" if phase.is_none() && valid_task_phase(value) => phase = Some(value),
+            "rule" if rule.is_none() && valid_task_rule(value) => rule = Some(value),
+            "retry_at" if retry_at.is_none() && valid_retry_at(value) => retry_at = Some(value),
+            "retry_after_seconds"
+                if retry_after_seconds.is_none() && valid_retry_after_seconds(value) =>
+            {
+                retry_after_seconds = Some(value)
+            }
+            _ => return None,
+        }
+    }
+    let (Some(class), Some(action), Some(phase), Some(rule)) = (class, action, phase, rule) else {
+        return None;
+    };
+    let mut diagnostic = format!("[CHILD TASK ERROR class={class}");
+    if let Some(code) = code {
+        diagnostic.push_str(&format!(" code={code}"));
+    }
+    if let Some(exit_code) = exit_code {
+        diagnostic.push_str(&format!(" exit_code={exit_code}"));
+    }
+    diagnostic.push_str(&format!(" action={action} phase={phase} rule={rule}"));
+    if let Some(retry_at) = retry_at {
+        diagnostic.push_str(&format!(" retry_at={retry_at}"));
+    }
+    if let Some(seconds) = retry_after_seconds {
+        diagnostic.push_str(&format!(" retry_after_seconds={seconds}"));
+    }
+    diagnostic.push(']');
+    Some(diagnostic)
+}
+
+fn classified_task_diagnostic(line: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    let adapter_line = line.contains("Agent reported error (code ")
+        || line.starts_with("agent task failed:")
+        || line.starts_with("agent turn failed:")
+        || line.starts_with("agent request failed:");
+    if !adapter_line {
+        return None;
+    }
+
+    let (class, action, phase, rule) = if contains_any(
+        &lower,
+        &[
+            "unauthorized",
+            "authentication failed",
+            "refresh token",
+            "reauthenticate",
+        ],
+    ) {
+        (
+            "unauthorized",
+            "reauthenticate",
+            "task",
+            "provider_unauthorized",
+        )
+    } else if contains_any(
+        &lower,
+        &[
+            "usage limit",
+            "usage-limit",
+            "rate limit",
+            "quota",
+            "too many requests",
+        ],
+    ) {
+        ("usage_limit", "retry", "task", "provider_usage_limit")
+    } else if contains_any(
+        &lower,
+        &[
+            "no codex session",
+            "session has not been initialized",
+            "failed to create session",
+            "session creation failed",
+            "no active session",
+            "pre-session",
+            "presession",
+            "before turn",
+            "pre-turn",
+            "preturn",
+        ],
+    ) {
+        ("no_session", "retry", "pre_session", "provider_no_session")
+    } else {
+        return None;
+    };
+
+    let code = numeric_value_after(line, "Agent reported error (code ");
+    let mut diagnostic = format!("[CHILD TASK ERROR class={class}");
+    if let Some(code) = code {
+        diagnostic.push_str(&format!(" code={code}"));
+    }
+    if let Some(exit_code) = numeric_value_after(line, "process has exited with code ") {
+        diagnostic.push_str(&format!(" exit_code={exit_code}"));
+    }
+    diagnostic.push_str(&format!(" action={action} phase={phase} rule={rule}"));
+    if let Some(retry_at) = sanitized_retry_at(line) {
+        diagnostic.push_str(&format!(" retry_at={retry_at}"));
+    }
+    if let Some(seconds) = sanitized_retry_after_seconds(line) {
+        diagnostic.push_str(&format!(" retry_after_seconds={seconds}"));
+    }
+    diagnostic.push(']');
+    Some(diagnostic)
+}
+
+fn contains_any(input: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| input.contains(needle))
+}
+
+fn valid_task_class(value: &str) -> bool {
+    matches!(value, "unauthorized" | "usage_limit" | "no_session")
+}
+
+fn valid_task_action(value: &str) -> bool {
+    matches!(value, "reauthenticate" | "retry" | "reauthorize")
+}
+
+fn valid_task_phase(value: &str) -> bool {
+    matches!(value, "task" | "pre_session" | "pre_turn")
+}
+
+fn valid_task_rule(value: &str) -> bool {
+    matches!(
+        value,
+        "provider_unauthorized" | "provider_usage_limit" | "provider_no_session"
+    )
+}
+
+fn valid_retry_at(value: &str) -> bool {
+    value.len() == 20
+        && value.ends_with('Z')
+        && value.bytes().enumerate().all(|(index, byte)| {
+            matches!(index, 4 | 7) && byte == b'-'
+                || matches!(index, 10) && byte == b'T'
+                || matches!(index, 13 | 16) && byte == b':'
+                || matches!(index, 19) && byte == b'Z'
+                || !matches!(index, 4 | 7 | 10 | 13 | 16 | 19) && byte.is_ascii_digit()
+        })
+}
+
+fn valid_retry_after_seconds(value: &str) -> bool {
+    value.parse::<u32>().is_ok_and(|seconds| seconds <= 604_800)
+}
+
+fn sanitized_retry_at(line: &str) -> Option<&str> {
+    for marker in ["retry_at=", "retry at ", "retry after "] {
+        let Some(value) = line.split_once(marker).map(|(_, value)| value) else {
+            continue;
+        };
+        let Some(candidate) = value.get(..20) else {
+            continue;
+        };
+        if valid_retry_at(candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn sanitized_retry_after_seconds(line: &str) -> Option<&str> {
+    for marker in ["retry_after_seconds=", "retry-after-seconds="] {
+        let Some(value) = line.split_once(marker).map(|(_, value)| value) else {
+            continue;
+        };
+        let end = value
+            .find(|character: char| !character.is_ascii_digit())
+            .unwrap_or(value.len());
+        let candidate = &value[..end];
+        if valid_retry_after_seconds(candidate) {
+            return Some(candidate);
+        }
     }
     None
 }
@@ -1113,6 +1323,89 @@ mod tests {
         assert_eq!(redacted.matches("[REDACTED CHILD OUTPUT]").count(), 2);
         assert!(!redacted.contains("secret"));
         assert!(!redacted.contains("/secret/home"));
+    }
+
+    #[test]
+    fn classifies_provider_task_failures_without_retaining_child_text() {
+        let input = concat!(
+            "Agent reported error (code -32603): Unauthorized: refresh token revoked; token=secret\n",
+            "Agent reported error (code 429): usage limit exceeded; retry after 2026-09-10T01:02:03Z account=user@example.com\n",
+            "agent task failed: no Codex session exists; credential_payload=secret\n",
+        );
+
+        let redacted = redact_log(input);
+
+        assert!(redacted.contains(
+            "[CHILD TASK ERROR class=unauthorized code=-32603 action=reauthenticate phase=task rule=provider_unauthorized]"
+        ));
+        assert!(redacted.contains(
+            "[CHILD TASK ERROR class=usage_limit code=429 action=retry phase=task rule=provider_usage_limit retry_at=2026-09-10T01:02:03Z]"
+        ));
+        assert!(redacted.contains(
+            "[CHILD TASK ERROR class=no_session action=retry phase=pre_session rule=provider_no_session]"
+        ));
+        assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("user@example.com"));
+        assert_eq!(redact_log(&redacted), redacted);
+    }
+
+    #[test]
+    fn classified_diagnostic_survives_supported_log_persistence() {
+        let store = crate::SqliteStore::open_in_memory().unwrap();
+        let community = crate::CommunityConfig::new(
+            "Engineering",
+            url::Url::parse("wss://relay.example.test").unwrap(),
+        )
+        .unwrap();
+        store.put_community(&community, 1).unwrap();
+        let agent = crate::AgentSpec {
+            id: crate::AgentId::new(),
+            community_config_id: community.id,
+            display_name: "Builder".into(),
+            system_prompt: "Build safely.".into(),
+            runtime: crate::RuntimeSpec {
+                runtime_id: "codex-acp".parse().unwrap(),
+                environment: BTreeMap::new(),
+            },
+            desired_state: crate::DesiredAgentState::Enabled,
+        };
+        store.put_agent(&agent, 1).unwrap();
+        let message =
+            redact_log("Agent reported error (code -32603): unauthorized refresh token=secret\n");
+        store
+            .append_redacted_log(
+                agent.id,
+                &crate::api::RedactedLogEntry {
+                    cursor: "stderr:1".into(),
+                    occurred_at: 2,
+                    stream: "stderr".into(),
+                    redacted_message: message.clone(),
+                },
+            )
+            .unwrap();
+
+        let entries = store.agent_logs(agent.id, None, 10).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].redacted_message, message);
+        assert!(entries[0]
+            .redacted_message
+            .contains("class=unauthorized code=-32603"));
+        assert!(!entries[0].redacted_message.contains("secret"));
+    }
+
+    #[test]
+    fn rejects_unsafe_task_classification_and_retry_metadata() {
+        let input = concat!(
+            "Provider said unauthorized: token=secret\n",
+            "Agent reported error (code 429): usage limit; retry_at=tomorrow account=secret\n",
+            "[CHILD TASK ERROR class=unauthorized code=-32603 action=reauthenticate phase=task rule=provider_unauthorized secret=leak]\n",
+        );
+
+        let redacted = redact_log(input);
+
+        assert_eq!(redacted.matches("[REDACTED CHILD OUTPUT]").count(), 3);
+        assert!(!redacted.contains("secret"));
+        assert!(!redacted.contains("tomorrow"));
     }
 
     #[test]
