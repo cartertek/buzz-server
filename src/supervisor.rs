@@ -1145,10 +1145,9 @@ fn append_sanitized_log(path: &Path, max_bytes: u64, sanitized: &str) -> io::Res
     let mut file = options.open(path)?;
     let sanitized = sanitized.as_bytes();
     let existing_len = file.metadata()?.len();
-    let mut rotated_provenance = None;
     if existing_len.saturating_add(sanitized.len() as u64) > max_bytes {
         drop(file);
-        rotated_provenance = fs::read(provenance_path(path))
+        let rotated_provenance = fs::read(provenance_path(path))
             .ok()
             .and_then(|payload| serde_json::from_slice::<LogProvenance>(&payload).ok());
         let mut segment = 0_u64;
