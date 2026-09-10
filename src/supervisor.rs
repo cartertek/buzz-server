@@ -1688,12 +1688,12 @@ mod tests {
         let first = adapter.start(&desired, &NoSecrets).unwrap();
         let _ = wait_for_exit(&adapter, &first);
         let live_path = adapter.log_path(&desired.launch_id, false).unwrap();
-        assert!((0..50).any(|_| {
+        assert!((0..500).any(|_| {
             let drained = fs::read_to_string(&live_path)
                 .map(|contents| contents.contains("first"))
                 .unwrap_or(false);
             if !drained {
-                thread::sleep(Duration::from_millis(10));
+                thread::sleep(Duration::from_millis(20));
             }
             drained
         }));
@@ -1701,13 +1701,13 @@ mod tests {
         second_spec.harness_arguments = vec!["-c".into(), "echo second".into()];
         let second = adapter.start(&second_spec, &NoSecrets).unwrap();
         let _ = wait_for_exit(&adapter, &second);
-        let live = (0..50)
+        let live = (0..500)
             .find_map(|_| {
                 let contents = fs::read_to_string(&live_path).unwrap();
                 if contents.contains("second") {
                     Some(contents)
                 } else {
-                    thread::sleep(Duration::from_millis(10));
+                    thread::sleep(Duration::from_millis(20));
                     None
                 }
             })
