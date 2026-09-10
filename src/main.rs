@@ -2184,7 +2184,7 @@ fn reconcile_dynamic_lifecycle_operation(
     stamp_receipt_lifecycle(
         &receipts,
         agent_id,
-        "reconcile",
+        "cli",
         outcome.as_ref().ok().map(|value| format!("{value:?}")),
     )?;
     let (mut status, mut error_code) = match outcome {
