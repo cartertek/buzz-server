@@ -1687,12 +1687,20 @@ mod tests {
         let desired = launch(directory.path(), "echo first");
         let first = adapter.start(&desired, &NoSecrets).unwrap();
         let _ = wait_for_exit(&adapter, &first);
-        thread::sleep(Duration::from_millis(50));
+        let live_path = adapter.log_path(&desired.launch_id, false).unwrap();
+        assert!((0..50).any(|_| {
+            let drained = fs::read_to_string(&live_path)
+                .map(|contents| contents.contains("first"))
+                .unwrap_or(false);
+            if !drained {
+                thread::sleep(Duration::from_millis(10));
+            }
+            drained
+        }));
         let mut second_spec = desired.clone();
         second_spec.harness_arguments = vec!["-c".into(), "echo second".into()];
         let second = adapter.start(&second_spec, &NoSecrets).unwrap();
         let _ = wait_for_exit(&adapter, &second);
-        let live_path = adapter.log_path(&desired.launch_id, false).unwrap();
         let live = (0..50)
             .find_map(|_| {
                 let contents = fs::read_to_string(&live_path).unwrap();
