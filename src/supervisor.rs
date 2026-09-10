@@ -1444,9 +1444,13 @@ mod tests {
 
         let redacted = redact_log(input);
 
-        assert_eq!(redacted.matches("[REDACTED CHILD OUTPUT]").count(), 3);
+        assert!(redacted.contains(
+            "[CHILD TASK ERROR class=usage_limit code=429 action=retry phase=task rule=provider_usage_limit]"
+        ));
+        assert_eq!(redacted.matches("[REDACTED CHILD OUTPUT]").count(), 2);
         assert!(!redacted.contains("secret"));
         assert!(!redacted.contains("tomorrow"));
+        assert!(!redacted.contains("account"));
     }
 
     #[test]
