@@ -22,9 +22,10 @@ use buzz_server::{
         AuthenticatedPrincipal, Authority, Nip98AuthorityPolicy, Principal, UnixAuthorityPolicy,
     },
     custody::{AgentIdentityCustody, FilesystemAgentIdentityCustody},
-    launch::{ExecutableIdentity, HealthPolicy, RestartPolicy, SecretRef},
+    launch::{ExecutableIdentity, HealthPolicy, LifecycleStamp, RestartPolicy, SecretRef},
     reconcile::{ProcessReceiptRepository, Reconciler},
     signer::DisposableSigner,
+    storage::{HealthHistoryEntry, ReconciliationJournalEntry},
     supervisor::{
         LocalLogPolicy, LocalProcessAdapter, ProcessSupervisor, SecretResolver, SupervisorError,
     },
@@ -699,13 +700,16 @@ impl SecretResolver for EnvironmentSecrets {
 
 struct ReceiptFile {
     path: PathBuf,
+    history_path: PathBuf,
     lock: Mutex<()>,
 }
 
 impl ReceiptFile {
     fn new(path: PathBuf) -> Self {
+        let history_path = path.with_file_name("process-receipt-history.jsonl");
         Self {
             path,
+            history_path,
             lock: Mutex::new(()),
         }
     }
@@ -744,6 +748,28 @@ impl ProcessReceiptRepository for ReceiptFile {
         file.write_all(&serde_json::to_vec(receipt)?)
             .and_then(|()| file.sync_all())
             .map_err(|error| StorageError::InvalidData(error.to_string()))?;
+        let revision = serde_json::json!({
+            "recorded_at_unix_ms": unix_millis(),
+            "receipt": receipt,
+        });
+        let mut history = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.history_path)
+            .map_err(|error| StorageError::InvalidData(error.to_string()))?;
+        serde_json::to_writer(&mut history, &revision)?;
+        history
+            .write_all(b"\n")
+            .and_then(|()| history.sync_all())
+            .map_err(|error| StorageError::InvalidData(error.to_string()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o640))
+                .map_err(|error| StorageError::InvalidData(error.to_string()))?;
+            fs::set_permissions(&self.history_path, fs::Permissions::from_mode(0o640))
+                .map_err(|error| StorageError::InvalidData(error.to_string()))?;
+        }
         fs::rename(temporary, &self.path)
             .and_then(|()| fs::File::open(parent)?.sync_all())
             .map_err(|error| StorageError::InvalidData(error.to_string()))
@@ -751,12 +777,23 @@ impl ProcessReceiptRepository for ReceiptFile {
 
     fn delete_receipt(&self, _agent_id: buzz_server::AgentId) -> Result<(), StorageError> {
         let _guard = self.lock.lock().map_err(|_| StorageError::LockPoisoned)?;
-        match fs::remove_file(&self.path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(StorageError::InvalidData(error.to_string())),
+        for path in [&self.path, &self.history_path] {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(StorageError::InvalidData(error.to_string())),
+            }
         }
+        Ok(())
     }
+}
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_millis().try_into().unwrap_or(u64::MAX)
+        })
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -1663,6 +1700,27 @@ fn reconcile_operation_contained(
     context: &ReconcileContext,
     operation_id: buzz_server::OperationId,
 ) {
+    let started_at = unix_seconds_i64();
+    let _ = context
+        .store
+        .append_reconciliation_journal(&ReconciliationJournalEntry {
+            occurred_at: started_at,
+            actor: "operation".into(),
+            operation_id: Some(operation_id),
+            correlation_id: None,
+            agent_id: None,
+            launch_id: None,
+            stage: "worker_received".into(),
+            desired_state: None,
+            observed_state: None,
+            outcome: "started".into(),
+            reason: None,
+            pid: None,
+            process_start_ticks: None,
+            command_path: None,
+            exit_code: None,
+            follow_up: Some("reconcile_operation".into()),
+        });
     if let Err(error) = reconcile_lifecycle_operation(context, operation_id) {
         eprintln!("lifecycle operation {operation_id} failed: {error}");
         let terminal_result = (|| -> Result<(), buzz_server::api::ApplicationError> {
@@ -1710,6 +1768,26 @@ fn reconcile_startup_agent(
         created_at: unix_seconds_i64(),
         updated_at: unix_seconds_i64(),
     };
+    context
+        .store
+        .append_reconciliation_journal(&ReconciliationJournalEntry {
+            occurred_at: unix_seconds_i64(),
+            actor: "startup".into(),
+            operation_id: Some(startup.id),
+            correlation_id: Some(startup.correlation_id.clone()),
+            agent_id: Some(agent_id),
+            launch_id: Some(format!("agent-{agent_id}")),
+            stage: "startup_reconcile".into(),
+            desired_state: Some(format!("{:?}", agent.desired_state)),
+            observed_state: None,
+            outcome: "started".into(),
+            reason: None,
+            pid: None,
+            process_start_ticks: None,
+            command_path: None,
+            exit_code: None,
+            follow_up: Some("reconcile_desired".into()),
+        })?;
     reconcile_dynamic_lifecycle_operation(context, &startup, false)
 }
 
@@ -2181,6 +2259,63 @@ fn reconcile_dynamic_lifecycle_operation(
     );
     let stored_operation = store_operation(operation);
     let outcome = reconciler.reconcile(agent_id, &stored_operation, Some(&dynamic_launch));
+    let receipt = receipts.get_receipt(agent_id)?;
+    let (outcome_name, reason) = match &outcome {
+        Ok(buzz_server::reconcile::ReconcileOutcome::Deferred) => ("deferred", None),
+        Ok(buzz_server::reconcile::ReconcileOutcome::Unchanged) => ("unchanged", None),
+        Ok(buzz_server::reconcile::ReconcileOutcome::Adopted) => ("adopted", None),
+        Ok(buzz_server::reconcile::ReconcileOutcome::Started) => ("started", None),
+        Ok(buzz_server::reconcile::ReconcileOutcome::Stopped) => ("stopped", None),
+        Ok(buzz_server::reconcile::ReconcileOutcome::FailedPreflight) => {
+            ("failed_preflight", Some("preflight_failed"))
+        }
+        Ok(buzz_server::reconcile::ReconcileOutcome::NoPresence) => {
+            ("no_presence", Some("spawn_failed"))
+        }
+        Err(_) => ("error", Some("reconciliation_failed")),
+    };
+    context
+        .store
+        .append_reconciliation_journal(&ReconciliationJournalEntry {
+            occurred_at: unix_seconds_i64(),
+            actor: if finish_operation {
+                "operation"
+            } else {
+                "startup"
+            }
+            .into(),
+            operation_id: Some(operation.id),
+            correlation_id: Some(operation.correlation_id.clone()),
+            agent_id: Some(agent_id),
+            launch_id: Some(dynamic_launch.launch_id.clone()),
+            stage: "reconcile_desired".into(),
+            desired_state: Some(format!("{:?}", agent.desired_state)),
+            observed_state: receipt
+                .as_ref()
+                .map(|value| format!("{:?}", value.observed_state)),
+            outcome: outcome_name.into(),
+            reason: reason.map(str::to_owned),
+            pid: receipt.as_ref().map(|value| value.pid),
+            process_start_ticks: receipt.as_ref().and_then(|value| value.process_start_ticks),
+            command_path: receipt
+                .as_ref()
+                .and_then(|value| value.command_path.clone()),
+            exit_code: receipt.as_ref().and_then(|value| value.exit_code),
+            follow_up: Some(
+                if finish_operation {
+                    "complete_operation"
+                } else {
+                    "startup_result"
+                }
+                .into(),
+            ),
+        })?;
+    stamp_receipt_lifecycle(
+        &receipts,
+        agent_id,
+        "cli",
+        outcome.as_ref().ok().map(|value| format!("{value:?}")),
+    )?;
     let (mut status, mut error_code) = match outcome {
         Ok(
             buzz_server::reconcile::ReconcileOutcome::FailedPreflight
@@ -2268,13 +2403,24 @@ fn purge_agent_paths(
             Err(error) => return Err(error),
         }
     }
-    for suffix in ["stdout.log", "stderr.log"] {
-        let path = log_directory.join(format!("{launch_id}.{suffix}"));
-        match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+    let prefix = format!("{launch_id}.");
+    match fs::read_dir(log_directory) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with(&prefix) {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        fs::remove_dir_all(path)?;
+                    } else {
+                        fs::remove_file(path)?;
+                    }
+                }
+            }
         }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
     Ok(())
 }
@@ -2369,7 +2515,26 @@ fn observe_dynamic_agents(context: &ReconcileContext) -> Result<(), DaemonError>
         let receipts = ReceiptFile::new(layout.receipt);
         if let Some(receipt) = receipts.get_receipt(agent.id)? {
             let observed = context.supervisor.inspect(&receipt)?;
+            let mut observed = observed;
+            observed.lifecycle = Some(LifecycleStamp {
+                actor: "health_check".into(),
+                decision: "observed".into(),
+                occurred_at_unix_ms: unix_millis_u64(),
+                before: receipt.observed_state,
+                after: observed.observed_state,
+            });
             receipts.put_receipt(&observed)?;
+            context.store.append_health_history(&HealthHistoryEntry {
+                occurred_at: unix_seconds_i64(),
+                agent_id: agent.id,
+                launch_id: observed.launch_id.clone(),
+                workspace: observed.desired.workspace_path.clone(),
+                supervisor_pid: observed.pid,
+                process_start_ticks: observed.process_start_ticks,
+                command_path: observed.command_path.clone(),
+                observed_state: format!("{:?}", observed.observed_state),
+                exit_code: observed.exit_code,
+            })?;
             sync_supervisor_logs(
                 context.store.as_ref(),
                 &context.supervisor,
@@ -2379,6 +2544,33 @@ fn observe_dynamic_agents(context: &ReconcileContext) -> Result<(), DaemonError>
         }
     }
     Ok(())
+}
+
+fn stamp_receipt_lifecycle(
+    receipts: &ReceiptFile,
+    agent_id: buzz_server::AgentId,
+    actor: &str,
+    decision: Option<String>,
+) -> Result<(), DaemonError> {
+    let Some(mut receipt) = receipts.get_receipt(agent_id)? else {
+        return Ok(());
+    };
+    let before = receipt.observed_state;
+    receipt.lifecycle = Some(LifecycleStamp {
+        actor: actor.into(),
+        decision: decision.unwrap_or_else(|| "failed".into()),
+        occurred_at_unix_ms: unix_millis_u64(),
+        before,
+        after: receipt.observed_state,
+    });
+    receipts.put_receipt(&receipt)?;
+    Ok(())
+}
+
+fn unix_millis_u64() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as u64)
 }
 
 fn store_operation(resource: &buzz_server::api::OperationResource) -> DurableOperation {
@@ -2532,6 +2724,81 @@ enum DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct NoTestSecrets;
+
+    impl SecretResolver for NoTestSecrets {
+        fn resolve(&self, _reference: &SecretRef) -> Result<String, SupervisorError> {
+            Err(SupervisorError::SecretResolution)
+        }
+    }
+
+    #[test]
+    fn reconciliation_lifecycle_is_retrievable_from_parent_receipt_revision() {
+        let directory = tempfile::tempdir().unwrap();
+        let agent_id = buzz_server::AgentId::new();
+        let desired = LaunchSpec {
+            launch_id: "receipt-revision-launch".into(),
+            agent_id,
+            role: buzz_server::launch::LocalProcessRole::AcpBridge,
+            harness: ExecutableIdentity {
+                path: "/bin/sh".into(),
+                package_id: "system:sh".into(),
+                version: "1".into(),
+                sha256: None,
+            },
+            harness_arguments: vec!["-c".into(), "exit 0".into()],
+            runtime: buzz_server::launch::ResolvedRuntime {
+                runtime_id: buzz_server::RuntimeId::parse("test-runtime").unwrap(),
+                executable: ExecutableIdentity {
+                    path: "/bin/true".into(),
+                    package_id: "system:true".into(),
+                    version: "1".into(),
+                    sha256: None,
+                },
+                arguments: Vec::new(),
+                preflight: None,
+            },
+            environment: BTreeMap::new(),
+            secret_environment: BTreeMap::new(),
+            working_directory: directory.path().display().to_string(),
+            workspace_path: directory.path().display().to_string(),
+            runtime_path: directory.path().display().to_string(),
+            process_group_id: "receipt-revision-group".into(),
+            restart: RestartPolicy {
+                mode: buzz_server::launch::RestartMode::OnFailure,
+                max_attempts: 1,
+                initial_backoff_ms: 1,
+                max_backoff_ms: 1,
+                stable_after_ms: 1,
+            },
+            health: HealthPolicy::Process {
+                startup_grace_ms: 1,
+            },
+        };
+        let adapter = LocalProcessAdapter::new(
+            LocalLogPolicy {
+                directory: directory.path().join("logs"),
+                max_file_bytes: 4096,
+                max_read_bytes: 4096,
+            },
+            Duration::from_secs(2),
+            None,
+            None,
+        )
+        .unwrap();
+        let receipt = adapter.start(&desired, &NoTestSecrets).unwrap();
+        let receipts = ReceiptFile::new(directory.path().join("process-receipt.json"));
+        receipts.put_receipt(&receipt).unwrap();
+        stamp_receipt_lifecycle(&receipts, agent_id, "reconcile", Some("retry".into())).unwrap();
+        let restored = receipts.get_receipt(agent_id).unwrap().unwrap();
+        let lifecycle = restored.lifecycle.unwrap();
+        assert_eq!(lifecycle.actor, "reconcile");
+        assert_eq!(lifecycle.decision, "retry");
+        assert!(fs::read_to_string(receipts.history_path)
+            .unwrap()
+            .contains("\"decision\":\"retry\""));
+    }
 
     #[test]
     fn example_config_is_strict_and_valid() {
