@@ -204,7 +204,7 @@ impl<F: RelayTransportFactory, C: RelayClock> CommunityRelayAdapter<F, C> {
                         }
                     }
                         message = transport.next() => {
-                            if matches!(message, Ok(RelayMessage::Eose { .. })) {
+                            if matches!(&message, Ok(RelayMessage::Eose { .. })) {
                                 observer.transport_state(RelayAdapterState::ReplayComplete);
                             }
                             match message {

@@ -762,6 +762,14 @@ impl ProcessReceiptRepository for ReceiptFile {
             .write_all(b"\n")
             .and_then(|()| history.sync_all())
             .map_err(|error| StorageError::InvalidData(error.to_string()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&temporary, fs::Permissions::from_mode(0o640))
+                .map_err(|error| StorageError::InvalidData(error.to_string()))?;
+            fs::set_permissions(&self.history_path, fs::Permissions::from_mode(0o640))
+                .map_err(|error| StorageError::InvalidData(error.to_string()))?;
+        }
         fs::rename(temporary, &self.path)
             .and_then(|()| fs::File::open(parent)?.sync_all())
             .map_err(|error| StorageError::InvalidData(error.to_string()))
