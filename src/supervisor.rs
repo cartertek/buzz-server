@@ -1684,13 +1684,13 @@ mod tests {
     fn sequential_starts_rotate_the_stable_live_log() {
         let directory = tempfile::tempdir().unwrap();
         let adapter = adapter(directory.path(), 4096);
-        let desired = launch(directory.path(), "echo first");
+        let desired = launch(directory.path(), "echo '[CHILD INITIALIZATION ERROR]'");
         let first = adapter.start(&desired, &NoSecrets).unwrap();
         let _ = wait_for_exit(&adapter, &first);
         let live_path = adapter.log_path(&desired.launch_id, false).unwrap();
         assert!((0..500).any(|_| {
             let drained = fs::read_to_string(&live_path)
-                .map(|contents| contents.contains("first"))
+                .map(|contents| contents.contains("[CHILD INITIALIZATION ERROR]"))
                 .unwrap_or(false);
             if !drained {
                 thread::sleep(Duration::from_millis(20));
@@ -1698,13 +1698,16 @@ mod tests {
             drained
         }));
         let mut second_spec = desired.clone();
-        second_spec.harness_arguments = vec!["-c".into(), "echo second".into()];
+        second_spec.harness_arguments = vec![
+            "-c".into(),
+            "echo '[CHILD ERROR class=sqlite_state_initialization_failed]'".into(),
+        ];
         let second = adapter.start(&second_spec, &NoSecrets).unwrap();
         let _ = wait_for_exit(&adapter, &second);
         let live = (0..500)
             .find_map(|_| {
                 let contents = fs::read_to_string(&live_path).unwrap();
-                if contents.contains("second") {
+                if contents.contains("[CHILD ERROR class=sqlite_state_initialization_failed]") {
                     Some(contents)
                 } else {
                     thread::sleep(Duration::from_millis(20));
@@ -1712,8 +1715,8 @@ mod tests {
                 }
             })
             .expect("second launch log is drained");
-        assert!(live.contains("second"));
-        assert!(!live.contains("first"));
+        assert!(live.contains("[CHILD ERROR class=sqlite_state_initialization_failed]"));
+        assert!(!live.contains("[CHILD INITIALIZATION ERROR]"));
         let rotated = fs::read_dir(directory.path().join("logs"))
             .unwrap()
             .filter_map(Result::ok)
