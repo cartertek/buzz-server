@@ -35,12 +35,12 @@ files and workspaces; export SQLite rows before purge when longer retention is
 required. Supervisor stdout/stderr remains bounded by the existing log policy and
 is separately redacted before insertion into `agent_logs`.
 
-With the merged classified-diagnostic contract, parent-supported `agent_logs`
-entries may carry the sanitizer's allowlisted `class`, `code`, `phase`, `rule`,
-`action`, and `exit_code` fields. Launch-bounded provenance,
-`APP_SERVER_LOGS` configuration/writability, wait/signal/duration, and all
-child-runtime/session/reply fields remain outside this branch until that contract
-is available. The exact child boundary searched is the supervisor launch path in
+With the merged classified-diagnostic and launch-provenance contracts,
+parent-supported `agent_logs` and per-launch sidecars carry the sanitizer's
+allowlisted `class`, `code`, `phase`, `rule`, `action`, and `exit_code` fields,
+launch ID/generation, byte counters, rotation boundaries, and
+`APP_SERVER_LOGS` Configured versus Unwritable status. Wait/signal/duration are
+recorded when the parent observes them. The exact child boundary searched is the supervisor launch path in
 `src/supervisor.rs` (`Command::spawn`, piped stdout/stderr drains, sanitized log
 reader, and `ProcessReceipt`) plus the parent reconciliation path in
 `src/main.rs`; no per-event receive/dispatch/dedup/queue record, ACP envelope,
@@ -48,11 +48,15 @@ Codex session ID, or outbound reply event ID crosses those pipes, environment
 variables, receipt fields, SQLite journal columns, or supported logs. These
 fields are therefore unavailable rather than inferred.
 
-Credential-free relay transport states are append-only JSONL records when a
-`RelayStateJournal` observer is used: `Connecting`, `Connected`, `Authenticated`,
-subscription sent, replay complete, close, disconnect, and backoff. Retrieve
-them through the journal's supported record reader; transport error text and
-relay payloads are intentionally not persisted.
+The daemon's current production relay caller is `run_community_auto_join` in
+`src/main.rs`, which uses `NostrWsConnection` directly and does not invoke
+`CommunityRelayAdapter` or `RelayStateJournal`. Consequently production
+community-readiness transport history is an explicit residual on this branch;
+no operator file is claimed for that path. The adapter-level
+`RelayStateJournal` remains available for a future caller and records
+credential-free `Connecting`, `Connected`, `Authenticated`, subscription sent,
+replay complete, close, disconnect, and backoff states through its `records()`
+reader. Transport error text and relay payloads are intentionally not persisted.
 
 ## Community identity custody
 

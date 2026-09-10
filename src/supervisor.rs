@@ -1648,6 +1648,79 @@ mod tests {
     }
 
     #[test]
+    fn reconstructs_pre_session_failure_and_immediate_exit_from_supported_surfaces() {
+        let directory = tempfile::tempdir().unwrap();
+        let adapter = adapter(directory.path(), 4096);
+        let script = "printf '%s\\n' '[CHILD TASK ERROR class=no_session action=retry phase=pre_session rule=provider_no_session]'; exit 17";
+        let first = adapter
+            .start(&launch(directory.path(), script), &NoSecrets)
+            .unwrap();
+        let first_observed = wait_for_exit(&adapter, &first);
+        assert_eq!(first_observed.launch_id, "safe-test-launch");
+        assert!(first_observed.generation.is_some());
+        assert_eq!(first_observed.exit_code, Some(17));
+        assert!(first_observed.wait_outcome.is_some());
+        assert!(first_observed.duration_ms.is_some());
+        assert_eq!(
+            first_observed.app_server_logs,
+            AppServerLogsStatus::Configured
+        );
+
+        let first_log = directory.path().join("logs/safe-test-launch.stdout.log");
+        let mut first_text = String::new();
+        for _ in 0..50 {
+            first_text = fs::read_to_string(&first_log).unwrap_or_default();
+            if first_text.contains("class=no_session") {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(first_text.contains("class=no_session"));
+        assert!(first_text.contains("phase=pre_session"));
+        assert!(first_text.contains("rule=provider_no_session"));
+
+        let second = adapter
+            .start(&launch(directory.path(), script), &NoSecrets)
+            .unwrap();
+        let second_observed = wait_for_exit(&adapter, &second);
+        assert_ne!(first_observed.generation, second_observed.generation);
+        assert_eq!(
+            second_observed.app_server_logs,
+            AppServerLogsStatus::Configured
+        );
+        let rotated = fs::read_dir(directory.path().join("logs"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("safe-test-launch.stdout.log."))
+            })
+            .expect("prior launch log was not rotated");
+        assert!(fs::read_to_string(rotated)
+            .unwrap()
+            .contains("class=no_session"));
+
+        let mut unwritable = BTreeMap::new();
+        let marker = directory.path().join("not-a-directory");
+        fs::write(&marker, b"file").unwrap();
+        unwritable.insert(
+            "APP_SERVER_LOGS".into(),
+            marker.join("child").display().to_string(),
+        );
+        assert_eq!(
+            configure_app_server_logs(
+                &mut unwritable,
+                directory.path(),
+                "safe-test-launch",
+                "unwritable"
+            ),
+            AppServerLogsStatus::Unwritable
+        );
+    }
+
+    #[test]
     fn rejects_unsafe_task_classification_and_retry_metadata() {
         let input = concat!(
             "Provider said unauthorized: token=secret\n",
