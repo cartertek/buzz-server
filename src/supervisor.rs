@@ -1141,7 +1141,13 @@ where
                 } else if pending.len() < MAX_DIAGNOSTIC_LINE_BYTES {
                     pending.push(*byte);
                 } else {
-                    if append_sanitized_log(&path, max_bytes, "[REDACTED CHILD OUTPUT]\n").is_err()
+                    if append_sanitized_log_with_dropped(
+                        &path,
+                        max_bytes,
+                        "[REDACTED CHILD OUTPUT]\n",
+                        (pending.len() + 1) as u64,
+                    )
+                    .is_err()
                     {
                         return;
                     }
@@ -1154,6 +1160,15 @@ where
 }
 
 fn append_sanitized_log(path: &Path, max_bytes: u64, sanitized: &str) -> io::Result<()> {
+    append_sanitized_log_with_dropped(path, max_bytes, sanitized, 0)
+}
+
+fn append_sanitized_log_with_dropped(
+    path: &Path,
+    max_bytes: u64,
+    sanitized: &str,
+    dropped: u64,
+) -> io::Result<()> {
     let mut options = OpenOptions::new();
     options.create(true).append(true).read(true);
     #[cfg(unix)]
@@ -1205,6 +1220,15 @@ fn append_sanitized_log(path: &Path, max_bytes: u64, sanitized: &str) -> io::Res
         keep as u64,
         sanitized.len().saturating_sub(keep) as u64,
     );
+    if dropped > 0 {
+        let metadata = provenance_path(path);
+        if let Ok(bytes) = fs::read(&metadata) {
+            if let Ok(mut provenance) = serde_json::from_slice::<LogProvenance>(&bytes) {
+                provenance.dropped_bytes = provenance.dropped_bytes.saturating_add(dropped);
+                write_provenance(path, &provenance);
+            }
+        }
+    }
     Ok(())
 }
 
