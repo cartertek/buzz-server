@@ -735,7 +735,7 @@ fn configure_app_server_logs(
         environment.insert("APP_SERVER_LOGS".into(), path.display().to_string());
         AppServerLogsStatus::Configured
     } else {
-        AppServerLogsStatus::Unset
+        AppServerLogsStatus::Unwritable
     }
 }
 
@@ -768,9 +768,27 @@ fn write_log_provenance(
         dropped_bytes: 0,
         redaction: "capture",
     };
-    if let Ok(payload) = serde_json::to_vec(&provenance) {
+    write_provenance(path, &provenance);
+}
+
+fn write_provenance(path: &Path, provenance: &LogProvenance) {
+    if let Ok(payload) = serde_json::to_vec(provenance) {
         let _ = fs::write(provenance_path(path), payload);
     }
+}
+
+fn update_log_provenance(path: &Path, captured: u64, stored: u64, truncated: u64) {
+    let metadata = provenance_path(path);
+    let Ok(bytes) = fs::read(&metadata) else {
+        return;
+    };
+    let Ok(mut provenance) = serde_json::from_slice::<LogProvenance>(&bytes) else {
+        return;
+    };
+    provenance.captured_bytes = provenance.captured_bytes.saturating_add(captured);
+    provenance.stored_bytes = provenance.stored_bytes.saturating_add(stored);
+    provenance.truncated_bytes = provenance.truncated_bytes.saturating_add(truncated);
+    write_provenance(path, &provenance);
 }
 
 fn exit_description(status: ExitStatus) -> String {
@@ -1180,7 +1198,14 @@ fn append_sanitized_log(path: &Path, max_bytes: u64, sanitized: &str) -> io::Res
         file = options.open(path)?;
     }
     let keep = usize::try_from(max_bytes.min(sanitized.len() as u64)).unwrap_or(sanitized.len());
-    file.write_all(&sanitized[sanitized.len() - keep..])
+    file.write_all(&sanitized[sanitized.len() - keep..])?;
+    update_log_provenance(
+        path,
+        sanitized.len() as u64,
+        keep as u64,
+        sanitized.len().saturating_sub(keep) as u64,
+    );
+    Ok(())
 }
 
 #[cfg(all(test, unix))]

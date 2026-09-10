@@ -10,6 +10,7 @@ use tokio::sync::watch;
 use crate::community_session::{
     CommunityReadiness, CommunitySession, CommunitySessionError, PRESENCE_EXPIRY_SECONDS,
 };
+use crate::{storage::ReconciliationJournalEntry, AgentId, SqliteStore};
 
 pub type RelayFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -110,6 +111,78 @@ pub enum RelayAdapterState {
     Closed,
     Disconnected,
     Backoff,
+}
+
+impl RelayAdapterState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Connecting => "connecting",
+            Self::Connected => "connected",
+            Self::Authenticated => "authenticated",
+            Self::PresenceSubscriptionSent => "presence_subscription_sent",
+            Self::ReplayComplete => "replay_complete",
+            Self::Closed => "closed",
+            Self::Disconnected => "disconnected",
+            Self::Backoff => "backoff",
+        }
+    }
+}
+
+/// Production observer that persists transport states to the operator journal.
+pub struct SqliteRelayObserver<'a> {
+    pub store: &'a SqliteStore,
+    pub agent_id: Option<AgentId>,
+    pub launch_id: Option<String>,
+}
+
+impl RelayAdapterObserver for SqliteRelayObserver<'_> {
+    fn readiness_changed(&mut self, _readiness: CommunityReadiness) {}
+
+    fn transport_error(&mut self, message: &str) {
+        let _ = self
+            .store
+            .append_reconciliation_journal(&ReconciliationJournalEntry {
+                occurred_at: crate::storage::unix_seconds(),
+                actor: "relay_adapter".into(),
+                operation_id: None,
+                correlation_id: None,
+                agent_id: self.agent_id,
+                launch_id: self.launch_id.clone(),
+                stage: "relay_transport".into(),
+                desired_state: None,
+                observed_state: None,
+                outcome: "error".into(),
+                reason: Some(message.to_owned()),
+                pid: None,
+                process_start_ticks: None,
+                command_path: None,
+                exit_code: None,
+                follow_up: None,
+            });
+    }
+
+    fn transport_state(&mut self, state: RelayAdapterState) {
+        let _ = self
+            .store
+            .append_reconciliation_journal(&ReconciliationJournalEntry {
+                occurred_at: crate::storage::unix_seconds(),
+                actor: "relay_adapter".into(),
+                operation_id: None,
+                correlation_id: None,
+                agent_id: self.agent_id,
+                launch_id: self.launch_id.clone(),
+                stage: "relay_transport".into(),
+                desired_state: None,
+                observed_state: Some(state.as_str().into()),
+                outcome: state.as_str().into(),
+                reason: None,
+                pid: None,
+                process_start_ticks: None,
+                command_path: None,
+                exit_code: None,
+                follow_up: None,
+            });
+    }
 }
 
 pub trait RelayClock: Send + Sync {
@@ -295,6 +368,24 @@ mod tests {
     use nostr::EventBuilder;
     use std::collections::VecDeque;
     use url::Url;
+
+    #[test]
+    fn transport_states_are_retrievable_from_operator_journal() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mut observer = SqliteRelayObserver {
+            store: &store,
+            agent_id: None,
+            launch_id: Some("launch-1".into()),
+        };
+        observer.transport_state(RelayAdapterState::Connecting);
+        observer.transport_state(RelayAdapterState::Authenticated);
+        observer.transport_state(RelayAdapterState::Backoff);
+        observer.transport_error("forced pre-session failure");
+        assert_eq!(
+            store.relay_transport_states(None).unwrap(),
+            vec!["connecting", "authenticated", "backoff", "error"]
+        );
+    }
 
     struct FixedClock(u64);
     impl RelayClock for FixedClock {

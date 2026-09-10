@@ -267,7 +267,29 @@ pub struct SqliteStore {
     connection: Mutex<Connection>,
 }
 
+pub(crate) fn unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_secs().try_into().unwrap_or(i64::MAX)
+        })
+}
+
 impl SqliteStore {
+    pub fn relay_transport_states(
+        &self,
+        agent_id: Option<AgentId>,
+    ) -> Result<Vec<String>, StorageError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT outcome FROM reconciliation_journal WHERE stage = 'relay_transport' AND (?1 IS NULL OR agent_id = ?1) ORDER BY sequence",
+        )?;
+        let rows =
+            statement.query_map(params![agent_id.map(|id| id.to_string())], |row| row.get(0))?;
+        rows.collect::<Result<Vec<String>, _>>()
+            .map_err(StorageError::from)
+    }
+
     pub fn append_reconciliation_journal(
         &self,
         entry: &ReconciliationJournalEntry,

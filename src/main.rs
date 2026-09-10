@@ -777,11 +777,14 @@ impl ProcessReceiptRepository for ReceiptFile {
 
     fn delete_receipt(&self, _agent_id: buzz_server::AgentId) -> Result<(), StorageError> {
         let _guard = self.lock.lock().map_err(|_| StorageError::LockPoisoned)?;
-        match fs::remove_file(&self.path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(StorageError::InvalidData(error.to_string())),
+        for path in [&self.path, &self.history_path] {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(StorageError::InvalidData(error.to_string())),
+            }
         }
+        Ok(())
     }
 }
 

@@ -37,10 +37,17 @@ is separately redacted before insertion into `agent_logs`.
 
 With the merged classified-diagnostic contract, parent-supported `agent_logs`
 entries may carry the sanitizer's allowlisted `class`, `code`, `phase`, `rule`,
-`action`, and `exit_code` fields. PR2 launch-bounded provenance,
-`APP_SERVER_LOGS` configuration/writability, wait/signal/duration, and all
-child-runtime/session/reply fields remain outside this branch until that contract
-is available.
+`action`, and `exit_code` fields. Launch-bounded provenance,
+`APP_SERVER_LOGS` configuration/writability, wait/signal/duration, and lifecycle
+action are available from the receipt, journal, health history, and bounded logs.
+
+The child-runtime boundary is explicit. A repository-wide search of
+`src/supervisor.rs`, `src/relay_adapter.rs`, `src/main.rs`, `src/storage.rs`, the
+receipt serializers, and the `agent_logs`/`reconciliation_journal` schema found
+no Buzz Server pipe, environment variable, receipt field, or persisted journal
+column carrying per-event receive/dispatch/dedup data, ACP envelopes, a Codex
+session ID, or an outbound reply event ID. Those values belong to `buzz-acp` and
+are not inferred or fabricated by Server diagnostics.
 
 ## Community identity custody
 
