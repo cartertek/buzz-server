@@ -554,40 +554,6 @@ mod tests {
             .any(|record| record.state == RelayAdapterState::Backoff));
     }
 
-    #[tokio::test]
-    async fn adapter_run_persists_transport_states_for_supported_retrieval() {
-        let keys = Keys::generate();
-        let mut session = session(&keys);
-        let directory = tempfile::tempdir().unwrap();
-        let journal_path = directory.path().join("relay-state.jsonl");
-        let mut journal = RelayStateJournal::new(&journal_path);
-        let adapter = CommunityRelayAdapter {
-            factory: NeverFactory,
-            clock: FixedClock(1_000),
-            config: RelayAdapterConfig {
-                tick_interval: Duration::from_millis(1),
-                initial_backoff: Duration::from_millis(1),
-                max_backoff: Duration::from_millis(1),
-            },
-        };
-        let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let task =
-            tokio::spawn(async move { adapter.run(&mut session, &mut journal, shutdown_rx).await });
-        tokio::time::sleep(Duration::from_millis(5)).await;
-        shutdown_tx.send(true).unwrap();
-        task.await.unwrap().unwrap();
-        let records = RelayStateJournal::new(journal_path).records().unwrap();
-        assert!(records
-            .iter()
-            .any(|record| record.state == RelayAdapterState::Connecting));
-        assert!(records
-            .iter()
-            .any(|record| record.state == RelayAdapterState::Disconnected));
-        assert!(records
-            .iter()
-            .any(|record| record.state == RelayAdapterState::Backoff));
-    }
-
     #[test]
     fn reconnect_backoff_is_bounded() {
         assert_eq!(

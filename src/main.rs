@@ -2725,6 +2725,81 @@ enum DaemonError {
 mod tests {
     use super::*;
 
+    struct NoTestSecrets;
+
+    impl SecretResolver for NoTestSecrets {
+        fn resolve(&self, _reference: &SecretRef) -> Result<String, SupervisorError> {
+            Err(SupervisorError::SecretResolution)
+        }
+    }
+
+    #[test]
+    fn reconciliation_lifecycle_is_retrievable_from_parent_receipt_revision() {
+        let directory = tempfile::tempdir().unwrap();
+        let agent_id = buzz_server::AgentId::new();
+        let desired = LaunchSpec {
+            launch_id: "receipt-revision-launch".into(),
+            agent_id,
+            role: buzz_server::launch::LocalProcessRole::AcpBridge,
+            harness: ExecutableIdentity {
+                path: "/bin/sh".into(),
+                package_id: "system:sh".into(),
+                version: "1".into(),
+                sha256: None,
+            },
+            harness_arguments: vec!["-c".into(), "exit 0".into()],
+            runtime: buzz_server::launch::ResolvedRuntime {
+                runtime_id: buzz_server::RuntimeId::parse("test-runtime").unwrap(),
+                executable: ExecutableIdentity {
+                    path: "/bin/true".into(),
+                    package_id: "system:true".into(),
+                    version: "1".into(),
+                    sha256: None,
+                },
+                arguments: Vec::new(),
+                preflight: None,
+            },
+            environment: BTreeMap::new(),
+            secret_environment: BTreeMap::new(),
+            working_directory: directory.path().display().to_string(),
+            workspace_path: directory.path().display().to_string(),
+            runtime_path: directory.path().display().to_string(),
+            process_group_id: "receipt-revision-group".into(),
+            restart: RestartPolicy {
+                mode: buzz_server::launch::RestartMode::OnFailure,
+                max_attempts: 1,
+                initial_backoff_ms: 1,
+                max_backoff_ms: 1,
+                stable_after_ms: 1,
+            },
+            health: HealthPolicy::Process {
+                startup_grace_ms: 1,
+            },
+        };
+        let adapter = LocalProcessAdapter::new(
+            LocalLogPolicy {
+                directory: directory.path().join("logs"),
+                max_file_bytes: 4096,
+                max_read_bytes: 4096,
+            },
+            Duration::from_secs(2),
+            None,
+            None,
+        )
+        .unwrap();
+        let receipt = adapter.start(&desired, &NoTestSecrets).unwrap();
+        let receipts = ReceiptFile::new(directory.path().join("process-receipt.json"));
+        receipts.put_receipt(&receipt).unwrap();
+        stamp_receipt_lifecycle(&receipts, agent_id, "reconcile", Some("retry".into())).unwrap();
+        let restored = receipts.get_receipt(agent_id).unwrap().unwrap();
+        let lifecycle = restored.lifecycle.unwrap();
+        assert_eq!(lifecycle.actor, "reconcile");
+        assert_eq!(lifecycle.decision, "retry");
+        assert!(fs::read_to_string(receipts.history_path)
+            .unwrap()
+            .contains("\"decision\":\"retry\""));
+    }
+
     #[test]
     fn example_config_is_strict_and_valid() {
         let source = include_str!("../config/buzz-server.dev.example.json");

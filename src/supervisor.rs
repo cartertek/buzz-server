@@ -1651,7 +1651,7 @@ mod tests {
     fn reconstructs_pre_session_failure_and_immediate_exit_from_supported_surfaces() {
         let directory = tempfile::tempdir().unwrap();
         let adapter = adapter(directory.path(), 4096);
-        let script = "printf '%s\\n' '[CHILD TASK ERROR class=no_session action=retry phase=pre_session rule=provider_no_session]'; exit 17";
+        let script = "printf '%s\\n' '[CHILD TASK ERROR class=no_session code=-32603 action=retry phase=pre_session rule=provider_no_session]'; exit 17";
         let first = adapter
             .start(&launch(directory.path(), script), &NoSecrets)
             .unwrap();
@@ -1676,6 +1676,8 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(first_text.contains("class=no_session"));
+        assert!(first_text.contains("code=-32603"));
+        assert!(first_text.contains("action=retry"));
         assert!(first_text.contains("phase=pre_session"));
         assert!(first_text.contains("rule=provider_no_session"));
 
@@ -1702,22 +1704,45 @@ mod tests {
             .unwrap()
             .contains("class=no_session"));
 
-        let mut unwritable = BTreeMap::new();
         let marker = directory.path().join("not-a-directory");
         fs::write(&marker, b"file").unwrap();
-        unwritable.insert(
+        let mut unwritable_launch = launch(directory.path(), "true");
+        unwritable_launch.launch_id = "unwritable-launch".into();
+        unwritable_launch.process_group_id = "unwritable-group".into();
+        unwritable_launch.environment.insert(
             "APP_SERVER_LOGS".into(),
             marker.join("child").display().to_string(),
         );
+        let unwritable_receipt = adapter
+            .start(&unwritable_launch, &NoSecrets)
+            .expect("parent start returns a receipt even when APP_SERVER_LOGS is unwritable");
         assert_eq!(
-            configure_app_server_logs(
-                &mut unwritable,
-                directory.path(),
-                "safe-test-launch",
-                "unwritable"
-            ),
+            unwritable_receipt.app_server_logs,
             AppServerLogsStatus::Unwritable
         );
+
+        let provenance = fs::read_dir(directory.path().join("logs"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("safe-test-launch.stdout.log.")
+                            && name.ends_with(".meta.json")
+                    })
+            })
+            .expect("prior launch provenance survived rotation");
+        let provenance: LogProvenance =
+            serde_json::from_slice(&fs::read(provenance).unwrap()).unwrap();
+        assert_eq!(provenance.launch_id, "safe-test-launch");
+        assert_eq!(
+            Some(provenance.generation.as_str()),
+            first.generation.as_deref()
+        );
+        assert!(provenance.captured_bytes > 0);
+        assert!(provenance.stored_bytes > 0);
     }
 
     #[test]
