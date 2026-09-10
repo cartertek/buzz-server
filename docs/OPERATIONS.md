@@ -35,8 +35,6 @@ files and workspaces; export SQLite rows before purge when longer retention is
 required. Supervisor stdout/stderr remains bounded by the existing log policy and
 is separately redacted before insertion into `agent_logs`.
 
-<<<<<<< ours
-=======
 With the merged classified-diagnostic contract, parent-supported `agent_logs`
 entries may carry the sanitizer's allowlisted `class`, `code`, `phase`, `rule`,
 `action`, and `exit_code` fields. PR2 launch-bounded provenance,
@@ -44,7 +42,6 @@ entries may carry the sanitizer's allowlisted `class`, `code`, `phase`, `rule`,
 child-runtime/session/reply fields remain outside this branch until that contract
 is available.
 
->>>>>>> theirs
 ## Community identity custody
 
 Clean installs do not create or require a global Buzz owner identity. Each `buzz-server communities join` operation accepts the identity for that community through a hidden terminal prompt or `--secret-file FILE`. The root CLI derives the pubkey and stores the private key per pubkey. When `identity_custody.kms_key_id` is configured, the persisted form is a KMS envelope. Otherwise Buzz Server follows Buzz Desktop: it prefers the OS keyring and falls back to an owner-only local file when no keyring backend is available. The daemon reads only root-only ephemeral materializations under `/run/buzz-server/community-identities`. Only the pubkey crosses the lifecycle API. Multiple communities using the same pubkey share one custodied secret, and deleting the last reference removes its custody artifacts.
