@@ -1726,9 +1726,12 @@ mod tests {
                     .unwrap()
                     .to_string_lossy()
                     .contains(".stdout.log.")
+                    && !path.to_string_lossy().ends_with(".meta.json")
             })
             .expect("first launch log is rotated");
-        assert!(fs::read_to_string(rotated).unwrap().contains("first"));
+        assert!(fs::read_to_string(rotated)
+            .unwrap()
+            .contains("[CHILD INITIALIZATION ERROR]"));
         assert_ne!(first.generation, second.generation);
     }
 }
