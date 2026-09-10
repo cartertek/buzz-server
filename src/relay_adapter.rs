@@ -97,6 +97,19 @@ impl Default for RelayAdapterConfig {
 pub trait RelayAdapterObserver {
     fn readiness_changed(&mut self, readiness: CommunityReadiness);
     fn transport_error(&mut self, message: &str);
+    fn transport_state(&mut self, _state: RelayAdapterState) {}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RelayAdapterState {
+    Connecting,
+    Connected,
+    Authenticated,
+    PresenceSubscriptionSent,
+    ReplayComplete,
+    Closed,
+    Disconnected,
+    Backoff,
 }
 
 pub trait RelayClock: Send + Sync {
@@ -134,6 +147,7 @@ impl<F: RelayTransportFactory, C: RelayClock> CommunityRelayAdapter<F, C> {
         }
         let mut backoff = self.config.initial_backoff;
         while !*shutdown.borrow() {
+            observer.transport_state(RelayAdapterState::Connecting);
             let connection = tokio::select! {
                 connection = self.factory.connect(session.key.relay_url.as_str()) => connection,
                 changed = shutdown.changed() => {
@@ -148,7 +162,9 @@ impl<F: RelayTransportFactory, C: RelayClock> CommunityRelayAdapter<F, C> {
                 Ok(transport) => transport,
                 Err(error) => {
                     session.disconnected();
+                    observer.transport_state(RelayAdapterState::Disconnected);
                     observer.transport_error(&error);
+                    observer.transport_state(RelayAdapterState::Backoff);
                     if wait_or_shutdown(backoff, &mut shutdown).await {
                         return Ok(());
                     }
@@ -156,19 +172,24 @@ impl<F: RelayTransportFactory, C: RelayClock> CommunityRelayAdapter<F, C> {
                     continue;
                 }
             };
+            observer.transport_state(RelayAdapterState::Connected);
             session.connected();
             session.authenticated()?;
+            observer.transport_state(RelayAdapterState::Authenticated);
             let request = presence_subscription(session, self.clock.now_seconds());
             if let Err(error) = transport.send(&request).await {
                 observer.transport_error(&error);
                 session.disconnected();
+                observer.transport_state(RelayAdapterState::Disconnected);
                 let _ = transport.close().await;
+                observer.transport_state(RelayAdapterState::Backoff);
                 if wait_or_shutdown(backoff, &mut shutdown).await {
                     return Ok(());
                 }
                 backoff = doubled_capped(backoff, self.config.max_backoff);
                 continue;
             }
+            observer.transport_state(RelayAdapterState::PresenceSubscriptionSent);
             backoff = self.config.initial_backoff;
 
             loop {
@@ -178,16 +199,22 @@ impl<F: RelayTransportFactory, C: RelayClock> CommunityRelayAdapter<F, C> {
                         if changed.is_err() || *shutdown.borrow() {
                             let _ = transport.close().await;
                             session.disconnected();
+                            observer.transport_state(RelayAdapterState::Closed);
                             return Ok(());
                         }
                     }
-                    message = transport.next() => {
-                        match message {
+                        message = transport.next() => {
+                            if matches!(message, Ok(RelayMessage::Eose { .. })) {
+                                observer.transport_state(RelayAdapterState::ReplayComplete);
+                            }
+                            match message {
                             Ok(message) => drive_relay_message(session, message, self.clock.now_seconds(), observer),
                             Err(error) => {
                                 observer.transport_error(&error);
                                 session.disconnected();
+                                observer.transport_state(RelayAdapterState::Disconnected);
                                 let _ = transport.close().await;
+                                observer.transport_state(RelayAdapterState::Backoff);
                                 break;
                             }
                         }
