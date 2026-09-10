@@ -1692,9 +1692,18 @@ mod tests {
         second_spec.harness_arguments = vec!["-c".into(), "echo second".into()];
         let second = adapter.start(&second_spec, &NoSecrets).unwrap();
         let _ = wait_for_exit(&adapter, &second);
-        thread::sleep(Duration::from_millis(50));
-        let live =
-            fs::read_to_string(adapter.log_path(&desired.launch_id, false).unwrap()).unwrap();
+        let live_path = adapter.log_path(&desired.launch_id, false).unwrap();
+        let live = (0..50)
+            .find_map(|_| {
+                let contents = fs::read_to_string(&live_path).unwrap();
+                if contents.contains("second") {
+                    Some(contents)
+                } else {
+                    thread::sleep(Duration::from_millis(10));
+                    None
+                }
+            })
+            .expect("second launch log is drained");
         assert!(live.contains("second"));
         assert!(!live.contains("first"));
         let rotated = fs::read_dir(directory.path().join("logs"))
