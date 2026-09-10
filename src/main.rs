@@ -22,7 +22,7 @@ use buzz_server::{
         AuthenticatedPrincipal, Authority, Nip98AuthorityPolicy, Principal, UnixAuthorityPolicy,
     },
     custody::{AgentIdentityCustody, FilesystemAgentIdentityCustody},
-    launch::{ExecutableIdentity, HealthPolicy, RestartPolicy, SecretRef},
+    launch::{ExecutableIdentity, HealthPolicy, LifecycleStamp, RestartPolicy, SecretRef},
     reconcile::{ProcessReceiptRepository, Reconciler},
     signer::DisposableSigner,
     supervisor::{
@@ -2181,6 +2181,12 @@ fn reconcile_dynamic_lifecycle_operation(
     );
     let stored_operation = store_operation(operation);
     let outcome = reconciler.reconcile(agent_id, &stored_operation, Some(&dynamic_launch));
+    stamp_receipt_lifecycle(
+        &receipts,
+        agent_id,
+        "reconcile",
+        outcome.as_ref().ok().map(|value| format!("{value:?}")),
+    )?;
     let (mut status, mut error_code) = match outcome {
         Ok(
             buzz_server::reconcile::ReconcileOutcome::FailedPreflight
@@ -2268,13 +2274,24 @@ fn purge_agent_paths(
             Err(error) => return Err(error),
         }
     }
-    for suffix in ["stdout.log", "stderr.log"] {
-        let path = log_directory.join(format!("{launch_id}.{suffix}"));
-        match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+    let prefix = format!("{launch_id}.");
+    match fs::read_dir(log_directory) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with(&prefix) {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        fs::remove_dir_all(path)?;
+                    } else {
+                        fs::remove_file(path)?;
+                    }
+                }
+            }
         }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
     Ok(())
 }
@@ -2369,6 +2386,14 @@ fn observe_dynamic_agents(context: &ReconcileContext) -> Result<(), DaemonError>
         let receipts = ReceiptFile::new(layout.receipt);
         if let Some(receipt) = receipts.get_receipt(agent.id)? {
             let observed = context.supervisor.inspect(&receipt)?;
+            let mut observed = observed;
+            observed.lifecycle = Some(LifecycleStamp {
+                actor: "health_check".into(),
+                decision: "observed".into(),
+                occurred_at_unix_ms: unix_millis_u64(),
+                before: receipt.observed_state,
+                after: observed.observed_state,
+            });
             receipts.put_receipt(&observed)?;
             sync_supervisor_logs(
                 context.store.as_ref(),
@@ -2379,6 +2404,33 @@ fn observe_dynamic_agents(context: &ReconcileContext) -> Result<(), DaemonError>
         }
     }
     Ok(())
+}
+
+fn stamp_receipt_lifecycle(
+    receipts: &ReceiptFile,
+    agent_id: buzz_server::AgentId,
+    actor: &str,
+    decision: Option<String>,
+) -> Result<(), DaemonError> {
+    let Some(mut receipt) = receipts.get_receipt(agent_id)? else {
+        return Ok(());
+    };
+    let before = receipt.observed_state;
+    receipt.lifecycle = Some(LifecycleStamp {
+        actor: actor.into(),
+        decision: decision.unwrap_or_else(|| "failed".into()),
+        occurred_at_unix_ms: unix_millis_u64(),
+        before,
+        after: receipt.observed_state,
+    });
+    receipts.put_receipt(&receipt)?;
+    Ok(())
+}
+
+fn unix_millis_u64() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as u64)
 }
 
 fn store_operation(resource: &buzz_server::api::OperationResource) -> DurableOperation {
