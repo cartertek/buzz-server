@@ -20,6 +20,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (3, include_str!("../migrations/0003_retention.sql")),
     (4, include_str!("../migrations/0004_relay_publications.sql")),
     (5, include_str!("../migrations/0005_auto_join.sql")),
+    (6, include_str!("../migrations/0006_diagnostics.sql")),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -167,6 +168,39 @@ pub struct IdempotencyRecord {
     pub created_at: i64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReconciliationJournalEntry {
+    pub occurred_at: i64,
+    pub actor: String,
+    pub operation_id: Option<OperationId>,
+    pub correlation_id: Option<String>,
+    pub agent_id: Option<AgentId>,
+    pub launch_id: Option<String>,
+    pub stage: String,
+    pub desired_state: Option<String>,
+    pub observed_state: Option<String>,
+    pub outcome: String,
+    pub reason: Option<String>,
+    pub pid: Option<u32>,
+    pub process_start_ticks: Option<u64>,
+    pub command_path: Option<String>,
+    pub exit_code: Option<i32>,
+    pub follow_up: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HealthHistoryEntry {
+    pub occurred_at: i64,
+    pub agent_id: AgentId,
+    pub launch_id: String,
+    pub workspace: String,
+    pub supervisor_pid: u32,
+    pub process_start_ticks: Option<u64>,
+    pub command_path: Option<String>,
+    pub observed_state: String,
+    pub exit_code: Option<i32>,
+}
+
 pub enum AgentCommandMutation<'a> {
     Create(&'a AgentSpec),
     Update {
@@ -233,7 +267,44 @@ pub struct SqliteStore {
     connection: Mutex<Connection>,
 }
 
+pub(crate) fn unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            duration.as_secs().try_into().unwrap_or(i64::MAX)
+        })
+}
+
 impl SqliteStore {
+    pub fn relay_transport_states(
+        &self,
+        agent_id: Option<AgentId>,
+    ) -> Result<Vec<String>, StorageError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT outcome FROM reconciliation_journal WHERE stage = 'relay_transport' AND (?1 IS NULL OR agent_id = ?1) ORDER BY sequence",
+        )?;
+        let rows =
+            statement.query_map(params![agent_id.map(|id| id.to_string())], |row| row.get(0))?;
+        rows.collect::<Result<Vec<String>, _>>()
+            .map_err(StorageError::from)
+    }
+
+    pub fn append_reconciliation_journal(
+        &self,
+        entry: &ReconciliationJournalEntry,
+    ) -> Result<i64, StorageError> {
+        let connection = self.connection()?;
+        connection.execute("INSERT INTO reconciliation_journal(occurred_at, actor, operation_id, correlation_id, agent_id, launch_id, stage, desired_state, observed_state, outcome, reason, pid, process_start_ticks, command_path, exit_code, follow_up) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)", params![entry.occurred_at, entry.actor, entry.operation_id.map(|v| v.to_string()), entry.correlation_id, entry.agent_id.map(|v| v.to_string()), entry.launch_id, entry.stage, entry.desired_state, entry.observed_state, entry.outcome, entry.reason, entry.pid, entry.process_start_ticks, entry.command_path, entry.exit_code, entry.follow_up])?;
+        Ok(connection.last_insert_rowid())
+    }
+
+    pub fn append_health_history(&self, entry: &HealthHistoryEntry) -> Result<i64, StorageError> {
+        let connection = self.connection()?;
+        connection.execute("INSERT INTO health_history(occurred_at, agent_id, launch_id, workspace, supervisor_pid, process_start_ticks, command_path, observed_state, exit_code) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", params![entry.occurred_at, entry.agent_id.to_string(), entry.launch_id, entry.workspace, entry.supervisor_pid, entry.process_start_ticks, entry.command_path, entry.observed_state, entry.exit_code])?;
+        Ok(connection.last_insert_rowid())
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         Self::from_connection(Connection::open(path)?)
     }
@@ -1853,5 +1924,66 @@ mod tests {
             .relay_projection_scopes(RelayProjectionKind::ManagedAgent, &subject_id)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn diagnostics_keep_reconciliation_and_health_history_separate_from_audit() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let agent_id = AgentId::new();
+        let operation_id = OperationId::new();
+        assert_eq!(
+            store
+                .append_reconciliation_journal(&ReconciliationJournalEntry {
+                    occurred_at: 10,
+                    actor: "operation".into(),
+                    operation_id: Some(operation_id),
+                    correlation_id: Some("corr-1".into()),
+                    agent_id: Some(agent_id),
+                    launch_id: Some("launch-1".into()),
+                    stage: "reconcile_desired".into(),
+                    desired_state: Some("Enabled".into()),
+                    observed_state: Some("Exited".into()),
+                    outcome: "failed_preflight".into(),
+                    reason: Some("preflight_failed".into()),
+                    pid: Some(42),
+                    process_start_ticks: Some(7),
+                    command_path: Some("/usr/bin/buzz-acp".into()),
+                    exit_code: Some(1),
+                    follow_up: Some("complete_operation".into()),
+                })
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .append_health_history(&HealthHistoryEntry {
+                    occurred_at: 11,
+                    agent_id,
+                    launch_id: "launch-1".into(),
+                    workspace: "/var/lib/buzz-server/agents/workspace".into(),
+                    supervisor_pid: 42,
+                    process_start_ticks: Some(7),
+                    command_path: Some("/usr/bin/buzz-acp".into()),
+                    observed_state: "Exited".into(),
+                    exit_code: Some(1),
+                })
+                .unwrap(),
+            1
+        );
+        let connection = store.connection().unwrap();
+        assert_eq!(
+            connection
+                .query_row::<i64, _, _>("SELECT COUNT(*) FROM reconciliation_journal", [], |row| {
+                    row.get(0)
+                })
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row::<i64, _, _>("SELECT COUNT(*) FROM health_history", [], |row| row.get(0))
+                .unwrap(),
+            1
+        );
     }
 }

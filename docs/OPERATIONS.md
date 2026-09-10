@@ -3,6 +3,52 @@
 This guide covers operational controls shipped with Buzz Server:
 community identity custody, encrypted backup and restore, host restrictions, release verification, and monitoring.
 
+## Diagnostic history
+
+The daemon keeps parent-observed lifecycle evidence in the configured SQLite state
+database. The `reconciliation_journal` table is an append-only record of startup,
+operation, and observation decisions; `health_history` is an append-only snapshot
+of each inspected launch. These records contain no credentials or arbitrary child
+text. They include only server-minted operation/correlation/launch IDs and process
+identity fields visible to the supervisor.
+
+The current adoptable receipt remains at
+`<state-database-parent>/agents/<agent-id>/process-receipt.json`. Timestamped
+revisions are appended beside it at
+`<state-database-parent>/agents/<agent-id>/process-receipt-history.jsonl`.
+Receipt writes are atomic; the current receipt is the adoption source of truth.
+The daemon creates these files under the agent state directory. Deployments must
+keep that directory owned by root with mode `0710`, and the agent workspace/runtime
+directories remain owned by the configured agent account with mode `0770`.
+
+Operators retrieve history from the authenticated host using the configured SQLite
+state database, for example:
+
+```sql
+SELECT * FROM reconciliation_journal WHERE agent_id = '<agent-id>' ORDER BY sequence;
+SELECT * FROM health_history WHERE agent_id = '<agent-id>' ORDER BY sequence;
+```
+
+History is retained with the lifecycle state database and is subject to the
+configured lifecycle retention policy. Purge cleanup may remove per-agent receipt
+files and workspaces; export SQLite rows before purge when longer retention is
+required. Supervisor stdout/stderr remains bounded by the existing log policy and
+is separately redacted before insertion into `agent_logs`.
+
+With the merged classified-diagnostic contract, parent-supported `agent_logs`
+entries may carry the sanitizer's allowlisted `class`, `code`, `phase`, `rule`,
+`action`, and `exit_code` fields. Launch-bounded provenance,
+`APP_SERVER_LOGS` configuration/writability, wait/signal/duration, and lifecycle
+action are available from the receipt, journal, health history, and bounded logs.
+
+The child-runtime boundary is explicit. A repository-wide search of
+`src/supervisor.rs`, `src/relay_adapter.rs`, `src/main.rs`, `src/storage.rs`, the
+receipt serializers, and the `agent_logs`/`reconciliation_journal` schema found
+no Buzz Server pipe, environment variable, receipt field, or persisted journal
+column carrying per-event receive/dispatch/dedup data, ACP envelopes, a Codex
+session ID, or an outbound reply event ID. Those values belong to `buzz-acp` and
+are not inferred or fabricated by Server diagnostics.
+
 ## Community identity custody
 
 Clean installs do not create or require a global Buzz owner identity. Each `buzz-server communities join` operation accepts the identity for that community through a hidden terminal prompt or `--secret-file FILE`. The root CLI derives the pubkey and stores the private key per pubkey. When `identity_custody.kms_key_id` is configured, the persisted form is a KMS envelope. Otherwise Buzz Server follows Buzz Desktop: it prefers the OS keyring and falls back to an owner-only local file when no keyring backend is available. The daemon reads only root-only ephemeral materializations under `/run/buzz-server/community-identities`. Only the pubkey crosses the lifecycle API. Multiple communities using the same pubkey share one custodied secret, and deleting the last reference removes its custody artifacts.
