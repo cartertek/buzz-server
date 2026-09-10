@@ -37,10 +37,22 @@ is separately redacted before insertion into `agent_logs`.
 
 With the merged classified-diagnostic contract, parent-supported `agent_logs`
 entries may carry the sanitizer's allowlisted `class`, `code`, `phase`, `rule`,
-`action`, and `exit_code` fields. PR2 launch-bounded provenance,
+`action`, and `exit_code` fields. Launch-bounded provenance,
 `APP_SERVER_LOGS` configuration/writability, wait/signal/duration, and all
 child-runtime/session/reply fields remain outside this branch until that contract
-is available.
+is available. The exact child boundary searched is the supervisor launch path in
+`src/supervisor.rs` (`Command::spawn`, piped stdout/stderr drains, sanitized log
+reader, and `ProcessReceipt`) plus the parent reconciliation path in
+`src/main.rs`; no per-event receive/dispatch/dedup/queue record, ACP envelope,
+Codex session ID, or outbound reply event ID crosses those pipes, environment
+variables, receipt fields, SQLite journal columns, or supported logs. These
+fields are therefore unavailable rather than inferred.
+
+Credential-free relay transport states are append-only JSONL records when a
+`RelayStateJournal` observer is used: `Connecting`, `Connected`, `Authenticated`,
+subscription sent, replay complete, close, disconnect, and backoff. Retrieve
+them through the journal's supported record reader; transport error text and
+relay payloads are intentionally not persisted.
 
 ## Community identity custody
 

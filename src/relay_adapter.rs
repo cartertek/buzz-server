@@ -1,6 +1,13 @@
 //! Live `buzz-ws-client` adapter for configured-community readiness sessions.
 
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{
+    fs::OpenOptions,
+    future::Future,
+    io::{self, Write},
+    path::PathBuf,
+    pin::Pin,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use buzz_ws_client::{NostrWsConnection, RelayMessage};
 use nostr::{Filter, Keys, Kind, Tag, Timestamp};
@@ -97,10 +104,10 @@ impl Default for RelayAdapterConfig {
 pub trait RelayAdapterObserver {
     fn readiness_changed(&mut self, readiness: CommunityReadiness);
     fn transport_error(&mut self, message: &str);
-    fn transport_state(&mut self, _state: RelayAdapterState) {}
+    fn transport_state(&mut self, state: RelayAdapterState);
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum RelayAdapterState {
     Connecting,
     Connected,
@@ -110,6 +117,71 @@ pub enum RelayAdapterState {
     Closed,
     Disconnected,
     Backoff,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct RelayStateRecord {
+    pub occurred_at_unix_ms: u64,
+    pub state: RelayAdapterState,
+}
+
+/// Credential-free operator evidence for the community transport lifecycle.
+/// Each record is append-only JSONL so operators can retrieve state after a
+/// failed connection without exposing relay credentials or event payloads.
+pub struct RelayStateJournal {
+    path: PathBuf,
+}
+
+impl RelayStateJournal {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    pub fn records(&self) -> io::Result<Vec<RelayStateRecord>> {
+        let payload = match std::fs::read_to_string(&self.path) {
+            Ok(payload) => payload,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        payload
+            .lines()
+            .map(|line| serde_json::from_str(line).map_err(io::Error::other))
+            .collect()
+    }
+
+    fn append(&self, state: RelayAdapterState) -> io::Result<()> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let record = RelayStateRecord {
+            occurred_at_unix_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX),
+            state,
+        };
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        serde_json::to_writer(&mut file, &record).map_err(io::Error::other)?;
+        file.write_all(b"\n")
+    }
+}
+
+impl RelayAdapterObserver for RelayStateJournal {
+    fn readiness_changed(&mut self, _readiness: CommunityReadiness) {}
+
+    fn transport_error(&mut self, _message: &str) {
+        // Error text may contain credentials or relay payloads; state transitions
+        // are the supported, credential-free diagnostic boundary.
+    }
+
+    fn transport_state(&mut self, state: RelayAdapterState) {
+        let _ = self.append(state);
+    }
 }
 
 pub trait RelayClock: Send + Sync {
@@ -307,6 +379,7 @@ mod tests {
     struct Observer {
         readiness: Vec<CommunityReadiness>,
         errors: Vec<String>,
+        states: Vec<RelayAdapterState>,
     }
     impl RelayAdapterObserver for Observer {
         fn readiness_changed(&mut self, readiness: CommunityReadiness) {
@@ -314,6 +387,9 @@ mod tests {
         }
         fn transport_error(&mut self, message: &str) {
             self.errors.push(message.to_owned());
+        }
+        fn transport_state(&mut self, state: RelayAdapterState) {
+            self.states.push(state);
         }
     }
 
@@ -344,6 +420,22 @@ mod tests {
         fn close(self: Box<Self>) -> RelayFuture<'static, Result<(), String>> {
             Box::pin(async { Ok(()) })
         }
+    }
+
+    #[test]
+    fn relay_state_journal_persists_and_retrieves_credential_free_states() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut journal = RelayStateJournal::new(directory.path().join("relay-state.jsonl"));
+        journal.transport_state(RelayAdapterState::Connecting);
+        journal.transport_state(RelayAdapterState::Backoff);
+        let records = journal.records().unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.state)
+                .collect::<Vec<_>>(),
+            vec![RelayAdapterState::Connecting, RelayAdapterState::Backoff]
+        );
     }
 
     fn session(keys: &Keys) -> CommunitySession {

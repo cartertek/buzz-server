@@ -115,7 +115,7 @@ struct ManagedChild {
     receipt: ProcessReceipt,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct LogProvenance {
     stream: String,
     launch_id: String,
@@ -127,7 +127,7 @@ struct LogProvenance {
     stored_bytes: u64,
     truncated_bytes: u64,
     dropped_bytes: u64,
-    redaction: &'static str,
+    redaction: String,
 }
 
 impl ManagedChild {
@@ -731,11 +731,13 @@ fn configure_app_server_logs(
         };
     }
     let path = root.join(format!("{launch_id}.{generation}.app-server-logs"));
-    if fs::create_dir_all(&path).is_ok() {
+    if fs::create_dir_all(&path).is_ok()
+        && fs::metadata(&path).is_ok_and(|metadata| metadata.is_dir())
+    {
         environment.insert("APP_SERVER_LOGS".into(), path.display().to_string());
         AppServerLogsStatus::Configured
     } else {
-        AppServerLogsStatus::Unset
+        AppServerLogsStatus::Unwritable
     }
 }
 
@@ -766,7 +768,7 @@ fn write_log_provenance(
         stored_bytes: 0,
         truncated_bytes: 0,
         dropped_bytes: 0,
-        redaction: "capture",
+        redaction: "capture".into(),
     };
     if let Ok(payload) = serde_json::to_vec(&provenance) {
         let _ = fs::write(provenance_path(path), payload);
@@ -1142,13 +1144,13 @@ fn append_sanitized_log(path: &Path, max_bytes: u64, sanitized: &str) -> io::Res
     options.mode(0o600);
     let mut file = options.open(path)?;
     let sanitized = sanitized.as_bytes();
-    if file
-        .metadata()?
-        .len()
-        .saturating_add(sanitized.len() as u64)
-        > max_bytes
-    {
+    let existing_len = file.metadata()?.len();
+    let mut rotated_provenance = None;
+    if existing_len.saturating_add(sanitized.len() as u64) > max_bytes {
         drop(file);
+        rotated_provenance = fs::read(provenance_path(path))
+            .ok()
+            .and_then(|payload| serde_json::from_slice::<LogProvenance>(&payload).ok());
         let mut segment = 0_u64;
         let rotated = loop {
             let candidate = path.with_file_name(format!(
@@ -1173,6 +1175,17 @@ fn append_sanitized_log(path: &Path, max_bytes: u64, sanitized: &str) -> io::Res
             ));
             let _ = fs::rename(metadata, rotated_metadata);
         }
+        if let Some(mut provenance) = rotated_provenance {
+            provenance.started_at_unix_ms = unix_millis().unwrap_or_default();
+            provenance.ended_at_unix_ms = None;
+            provenance.captured_bytes = 0;
+            provenance.stored_bytes = 0;
+            provenance.truncated_bytes = 0;
+            provenance.dropped_bytes = 0;
+            if let Ok(payload) = serde_json::to_vec(&provenance) {
+                fs::write(provenance_path(path), payload)?;
+            }
+        }
         let mut options = OpenOptions::new();
         options.create(true).append(true).read(true);
         #[cfg(unix)]
@@ -1180,7 +1193,38 @@ fn append_sanitized_log(path: &Path, max_bytes: u64, sanitized: &str) -> io::Res
         file = options.open(path)?;
     }
     let keep = usize::try_from(max_bytes.min(sanitized.len() as u64)).unwrap_or(sanitized.len());
-    file.write_all(&sanitized[sanitized.len() - keep..])
+    file.write_all(&sanitized[sanitized.len() - keep..])?;
+    update_log_provenance(
+        path,
+        sanitized.len() as u64,
+        keep as u64,
+        (sanitized.len() - keep) as u64,
+        0,
+    )
+}
+
+fn update_log_provenance(
+    path: &Path,
+    captured_bytes: u64,
+    stored_bytes: u64,
+    truncated_bytes: u64,
+    dropped_bytes: u64,
+) -> io::Result<()> {
+    let metadata = provenance_path(path);
+    let Ok(payload) = fs::read(&metadata) else {
+        return Ok(());
+    };
+    let Ok(mut provenance) = serde_json::from_slice::<LogProvenance>(&payload) else {
+        return Ok(());
+    };
+    provenance.captured_bytes = provenance.captured_bytes.saturating_add(captured_bytes);
+    provenance.stored_bytes = provenance.stored_bytes.saturating_add(stored_bytes);
+    provenance.truncated_bytes = provenance.truncated_bytes.saturating_add(truncated_bytes);
+    provenance.dropped_bytes = provenance.dropped_bytes.saturating_add(dropped_bytes);
+    fs::write(
+        metadata,
+        serde_json::to_vec(&provenance).map_err(io::Error::other)?,
+    )
 }
 
 #[cfg(all(test, unix))]
