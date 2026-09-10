@@ -1350,6 +1350,47 @@ mod tests {
     }
 
     #[test]
+    fn keeps_classified_lines_and_redacts_unknown_lines_in_mixed_input() {
+        let redacted = redact_log(concat!(
+            "Agent reported error (code -32603): unauthorized refresh token=secret\n",
+            "model output account=user@example.com token=secret\n",
+        ));
+
+        assert!(redacted.contains("[CHILD TASK ERROR class=unauthorized"));
+        assert!(redacted.contains("[REDACTED CHILD OUTPUT]"));
+        assert!(!redacted.contains("user@example.com"));
+        assert!(!redacted.contains("secret"));
+    }
+
+    #[test]
+    fn classified_task_failure_does_not_change_healthy_process_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let adapter = adapter(directory.path(), 4096);
+        let receipt = adapter
+            .start(&launch(directory.path(), "sleep 5"), &NoSecrets)
+            .unwrap();
+
+        let mut observed = receipt.clone();
+        for _ in 0..50 {
+            observed = adapter.inspect(&receipt).unwrap();
+            if observed.observed_state == ObservedProcessState::Healthy {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(observed.observed_state, ObservedProcessState::Healthy);
+
+        let diagnostic =
+            redact_log("Agent reported error (code -32603): unauthorized refresh token=secret\n");
+        assert!(diagnostic.contains("class=unauthorized"));
+        assert_eq!(
+            adapter.inspect(&observed).unwrap().observed_state,
+            ObservedProcessState::Healthy
+        );
+        adapter.stop(&observed).unwrap();
+    }
+
+    #[test]
     fn classified_diagnostic_survives_supported_log_persistence() {
         let store = crate::SqliteStore::open_in_memory().unwrap();
         let community = crate::CommunityConfig::new(
