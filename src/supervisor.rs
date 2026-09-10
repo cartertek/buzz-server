@@ -7,7 +7,10 @@ use std::{
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -16,7 +19,7 @@ use std::{
 use std::os::unix::{fs::OpenOptionsExt, process::CommandExt};
 
 use crate::{
-    launch::{HealthPolicy, SecretRef},
+    launch::{AppServerLogsStatus, HealthPolicy, ParentWaitOutcome, SecretRef},
     LaunchSpec, ObservedProcessState, ProcessReceipt, ValidationError,
 };
 
@@ -29,6 +32,7 @@ use nix::{
 
 const LAUNCH_MARKER: &str = "BUZZ_SERVER_LAUNCH_ID";
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 pub trait SecretResolver {
     /// Resolve an opaque reference at the final spawn boundary.
@@ -109,6 +113,21 @@ pub struct LocalProcessIdentity {
 struct ManagedChild {
     child: Child,
     receipt: ProcessReceipt,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct LogProvenance {
+    stream: String,
+    launch_id: String,
+    pid: Option<u32>,
+    generation: String,
+    started_at_unix_ms: u64,
+    ended_at_unix_ms: Option<u64>,
+    captured_bytes: u64,
+    stored_bytes: u64,
+    truncated_bytes: u64,
+    dropped_bytes: u64,
+    redaction: &'static str,
 }
 
 impl ManagedChild {
@@ -222,16 +241,34 @@ impl LocalProcessAdapter {
         Ok(redact_log(&String::from_utf8_lossy(&bytes)))
     }
 
-    fn prepare_log(&self, launch_id: &str, stderr: bool) -> Result<PathBuf, SupervisorError> {
+    fn prepare_log(
+        &self,
+        launch_id: &str,
+        stderr: bool,
+        generation: &str,
+    ) -> Result<PathBuf, SupervisorError> {
         let path = self.log_path(launch_id, stderr)?;
+        if path.exists() {
+            let stem = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("log");
+            let rotated = self.logs.directory.join(format!("{stem}.{generation}"));
+            fs::rename(&path, rotated)?;
+            let metadata = provenance_path(&path);
+            if metadata.exists() {
+                let rotated_metadata = self
+                    .logs
+                    .directory
+                    .join(format!("{stem}.{generation}.meta.json"));
+                fs::rename(metadata, rotated_metadata)?;
+            }
+        }
         let mut options = OpenOptions::new();
-        options.create(true).append(true).read(true);
+        options.create(true).write(true).truncate(true).read(true);
         #[cfg(unix)]
         options.mode(0o600);
-        let file = options.open(&path)?;
-        if file.metadata()?.len() >= self.logs.max_file_bytes {
-            file.set_len(0)?;
-        }
+        let _file = options.open(&path)?;
         Ok(path)
     }
 
@@ -505,11 +542,22 @@ impl ProcessSupervisor for LocalProcessAdapter {
     ) -> Result<ProcessReceipt, SupervisorError> {
         desired.validate()?;
         let identity = self.identity_for(desired.agent_id)?;
-        let environment = self.resolve_environment(desired, secrets, identity.as_ref())?;
+        let generation = format!(
+            "{}-{}",
+            unix_millis()?,
+            NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut environment = self.resolve_environment(desired, secrets, identity.as_ref())?;
+        let app_server_logs = configure_app_server_logs(
+            &mut environment,
+            &self.logs.directory,
+            &desired.launch_id,
+            &generation,
+        );
         self.run_preflight(desired, &environment, identity.as_ref())?;
 
-        let stdout_path = self.prepare_log(&desired.launch_id, false)?;
-        let stderr_path = self.prepare_log(&desired.launch_id, true)?;
+        let stdout_path = self.prepare_log(&desired.launch_id, false, &generation)?;
+        let stderr_path = self.prepare_log(&desired.launch_id, true, &generation)?;
         #[cfg(unix)]
         let mut command = Self::command_for_identity(&desired.harness.path, identity.as_ref());
         #[cfg(not(unix))]
@@ -535,13 +583,16 @@ impl ProcessSupervisor for LocalProcessAdapter {
         let mut child = command.spawn()?;
         let pid = child.id();
         if let Some(stdout) = child.stdout.take() {
+            write_log_provenance(&stdout_path, "stdout", desired, &generation, pid);
             spawn_log_drain(stdout, stdout_path, self.logs.max_file_bytes);
         }
         if let Some(stderr) = child.stderr.take() {
+            write_log_provenance(&stderr_path, "stderr", desired, &generation, pid);
             spawn_log_drain(stderr, stderr_path, self.logs.max_file_bytes);
         }
         let receipt = ProcessReceipt {
             launch_id: desired.launch_id.clone(),
+            generation: Some(generation.clone()),
             agent_id: desired.agent_id,
             process_group_id: desired.process_group_id.clone(),
             desired: desired.identity(),
@@ -564,6 +615,12 @@ impl ProcessSupervisor for LocalProcessAdapter {
             command_path: None,
             observed_state: ObservedProcessState::Starting,
             exit_code: None,
+            wait_outcome: None,
+            ended_at_unix_ms: None,
+            duration_ms: None,
+            failure: None,
+            app_server_logs,
+            lifecycle: None,
         };
         receipt.validate()?;
         self.children
@@ -592,6 +649,7 @@ impl ProcessSupervisor for LocalProcessAdapter {
             }
             if let Some(status) = managed.child.try_wait()? {
                 observed.observe(ObservedProcessState::Exited, status.code())?;
+                observe_wait(&mut observed, status);
                 children.remove(&receipt.pid);
             } else if observed.observed_state == ObservedProcessState::Starting
                 && Self::health_ready(&observed)
@@ -644,6 +702,7 @@ impl ProcessSupervisor for LocalProcessAdapter {
         {
             let status = managed.child.wait()?;
             observed.observe(ObservedProcessState::Exited, status.code())?;
+            observe_wait(&mut observed, status);
         } else {
             observed.observe(ObservedProcessState::Lost, None)?;
         }
@@ -658,11 +717,92 @@ fn unix_millis() -> Result<u64, SupervisorError> {
     u64::try_from(duration.as_millis()).map_err(|_| SupervisorError::Clock)
 }
 
+fn configure_app_server_logs(
+    environment: &mut BTreeMap<String, String>,
+    root: &Path,
+    launch_id: &str,
+    generation: &str,
+) -> AppServerLogsStatus {
+    if let Some(path) = environment.get("APP_SERVER_LOGS") {
+        return if fs::create_dir_all(path).is_ok() && fs::metadata(path).is_ok_and(|m| m.is_dir()) {
+            AppServerLogsStatus::Configured
+        } else {
+            AppServerLogsStatus::Unwritable
+        };
+    }
+    let path = root.join(format!("{launch_id}.{generation}.app-server-logs"));
+    if fs::create_dir_all(&path).is_ok() {
+        environment.insert("APP_SERVER_LOGS".into(), path.display().to_string());
+        AppServerLogsStatus::Configured
+    } else {
+        AppServerLogsStatus::Unset
+    }
+}
+
+fn provenance_path(path: &Path) -> PathBuf {
+    path.with_file_name(format!(
+        "{}.meta.json",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("log")
+    ))
+}
+
+fn write_log_provenance(
+    path: &Path,
+    stream: &str,
+    desired: &LaunchSpec,
+    generation: &str,
+    pid: u32,
+) {
+    let provenance = LogProvenance {
+        stream: stream.to_owned(),
+        launch_id: desired.launch_id.clone(),
+        pid: Some(pid),
+        generation: generation.to_owned(),
+        started_at_unix_ms: unix_millis().unwrap_or_default(),
+        ended_at_unix_ms: None,
+        captured_bytes: 0,
+        stored_bytes: 0,
+        truncated_bytes: 0,
+        dropped_bytes: 0,
+        redaction: "capture",
+    };
+    if let Ok(payload) = serde_json::to_vec(&provenance) {
+        let _ = fs::write(provenance_path(path), payload);
+    }
+}
+
 fn exit_description(status: ExitStatus) -> String {
     status.code().map_or_else(
         || "terminated by signal".to_owned(),
         |code| format!("exit {code}"),
     )
+}
+
+fn observe_wait(receipt: &mut ProcessReceipt, status: ExitStatus) {
+    receipt.ended_at_unix_ms = unix_millis().ok();
+    receipt.duration_ms = receipt
+        .ended_at_unix_ms
+        .map(|ended| ended.saturating_sub(receipt.started_at_unix_ms));
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
+    receipt.wait_outcome = Some({
+        #[cfg(unix)]
+        if let Some(signal) = status.signal() {
+            ParentWaitOutcome::Signaled { signal }
+        } else {
+            ParentWaitOutcome::Exited {
+                code: status.code().unwrap_or(-1),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            ParentWaitOutcome::Exited {
+                code: status.code().unwrap_or(-1),
+            }
+        }
+    });
 }
 
 fn redact_log(input: &str) -> String {
@@ -1008,7 +1148,36 @@ fn append_sanitized_log(path: &Path, max_bytes: u64, sanitized: &str) -> io::Res
         .saturating_add(sanitized.len() as u64)
         > max_bytes
     {
-        file.set_len(0)?;
+        drop(file);
+        let mut segment = 0_u64;
+        let rotated = loop {
+            let candidate = path.with_file_name(format!(
+                "{}.segment-{segment}",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("log")
+            ));
+            if !candidate.exists() {
+                break candidate;
+            }
+            segment += 1;
+        };
+        fs::rename(path, rotated)?;
+        let metadata = provenance_path(path);
+        if metadata.exists() {
+            let rotated_metadata = metadata.with_file_name(format!(
+                "{}.segment-{segment}.meta.json",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("log")
+            ));
+            let _ = fs::rename(metadata, rotated_metadata);
+        }
+        let mut options = OpenOptions::new();
+        options.create(true).append(true).read(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        file = options.open(path)?;
     }
     let keep = usize::try_from(max_bytes.min(sanitized.len() as u64)).unwrap_or(sanitized.len());
     file.write_all(&sanitized[sanitized.len() - keep..])
@@ -1496,6 +1665,12 @@ mod tests {
         let receipt = adapter.start(&desired, &NoSecrets).unwrap();
         let exited = wait_for_exit(&adapter, &receipt);
         assert_eq!(exited.observed_state, ObservedProcessState::Exited);
+        assert_eq!(exited.exit_code, Some(0));
+        assert!(exited.duration_ms.is_some());
+        assert!(matches!(
+            exited.wait_outcome,
+            Some(ParentWaitOutcome::Exited { code: 0 })
+        ));
         thread::sleep(Duration::from_millis(50));
         let stdout = adapter.read_log_tail(&desired.launch_id, false).unwrap();
         let stderr = adapter.read_log_tail(&desired.launch_id, true).unwrap();
@@ -1503,5 +1678,60 @@ mod tests {
         assert!(stderr.len() <= 128);
         assert!(stderr.contains("[REDACTED CHILD OUTPUT]"));
         assert!(!stderr.contains("credential"));
+    }
+
+    #[test]
+    fn sequential_starts_rotate_the_stable_live_log() {
+        let directory = tempfile::tempdir().unwrap();
+        let adapter = adapter(directory.path(), 4096);
+        let desired = launch(directory.path(), "echo '[CHILD INITIALIZATION ERROR]'");
+        let first = adapter.start(&desired, &NoSecrets).unwrap();
+        let _ = wait_for_exit(&adapter, &first);
+        let live_path = adapter.log_path(&desired.launch_id, false).unwrap();
+        assert!((0..500).any(|_| {
+            let drained = fs::read_to_string(&live_path)
+                .map(|contents| contents.contains("[CHILD INITIALIZATION ERROR]"))
+                .unwrap_or(false);
+            if !drained {
+                thread::sleep(Duration::from_millis(20));
+            }
+            drained
+        }));
+        let mut second_spec = desired.clone();
+        second_spec.harness_arguments = vec![
+            "-c".into(),
+            "echo '[CHILD ERROR class=sqlite_state_initialization_failed]'".into(),
+        ];
+        let second = adapter.start(&second_spec, &NoSecrets).unwrap();
+        let _ = wait_for_exit(&adapter, &second);
+        let live = (0..500)
+            .find_map(|_| {
+                let contents = fs::read_to_string(&live_path).unwrap();
+                if contents.contains("[CHILD ERROR class=sqlite_state_initialization_failed]") {
+                    Some(contents)
+                } else {
+                    thread::sleep(Duration::from_millis(20));
+                    None
+                }
+            })
+            .expect("second launch log is drained");
+        assert!(live.contains("[CHILD ERROR class=sqlite_state_initialization_failed]"));
+        assert!(!live.contains("[CHILD INITIALIZATION ERROR]"));
+        let rotated = fs::read_dir(directory.path().join("logs"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains(".stdout.log.")
+                    && !path.to_string_lossy().ends_with(".meta.json")
+            })
+            .expect("first launch log is rotated");
+        assert!(fs::read_to_string(rotated)
+            .unwrap()
+            .contains("[CHILD INITIALIZATION ERROR]"));
+        assert_ne!(first.generation, second.generation);
     }
 }
