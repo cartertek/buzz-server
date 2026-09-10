@@ -1696,7 +1696,10 @@ mod tests {
             .find(|path| {
                 path.file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("safe-test-launch.stdout.log."))
+                    .is_some_and(|name| {
+                        name.starts_with("safe-test-launch.stdout.log.")
+                            && !name.ends_with(".meta.json")
+                    })
             })
             .expect("prior launch log was not rotated");
         assert!(fs::read_to_string(rotated)
