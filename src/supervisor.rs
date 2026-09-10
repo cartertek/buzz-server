@@ -115,7 +115,7 @@ struct ManagedChild {
     receipt: ProcessReceipt,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct LogProvenance {
     stream: String,
     launch_id: String,
