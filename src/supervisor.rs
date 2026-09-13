@@ -629,14 +629,16 @@ impl ProcessSupervisor for LocalProcessAdapter {
                     .children
                     .lock()
                     .map_err(|_| SupervisorError::LockPoisoned)?;
-                let managed = children
-                    .get_mut(&receipt.pid)
-                    .ok_or(SupervisorError::ReceiptMismatch)?;
-                if !managed.matches(receipt) {
-                    return Err(SupervisorError::ReceiptMismatch);
-                }
-                if let Some(status) = managed.child.try_wait()? {
-                    drop(managed);
+                let status = {
+                    let managed = children
+                        .get_mut(&receipt.pid)
+                        .ok_or(SupervisorError::ReceiptMismatch)?;
+                    if !managed.matches(receipt) {
+                        return Err(SupervisorError::ReceiptMismatch);
+                    }
+                    managed.child.try_wait()?
+                };
+                if let Some(status) = status {
                     children.remove(&receipt.pid);
                     Some(status)
                 } else {
