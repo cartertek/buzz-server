@@ -12,9 +12,17 @@ case "$command" in
   restart) systemctl restart buzz-server.service ;;
   stop) systemctl stop buzz-server.service ;;
   status) systemctl status --no-pager buzz-server.service ;;
+  deploy)
+    if [ "${2:-}" = status ]; then
+      shift 2
+      exec /usr/libexec/buzz-server/install-release.sh --status "$@"
+    fi
+    exec /usr/libexec/buzz-server/install-release.sh --handoff "$@"
+    ;;
   redeploy)
-    [ "$#" -ge 3 ] && [ "$#" -le 4 ] || { echo "usage: buzz-serverctl redeploy VERSION TARGET [OWNER/REPOSITORY]" >&2; exit 64; }
-    exec /usr/libexec/buzz-server/install-release.sh "$2" "$3" "${4:-cartertek/buzz-server}"
+    echo "warning: 'redeploy' is deprecated; use 'deploy'" >&2
+    shift
+    exec /usr/libexec/buzz-server/install-release.sh --handoff deploy "$@"
     ;;
   backup)
     [ "$#" -ge 2 ] && [ "$#" -le 3 ] || { echo "usage: buzz-serverctl backup OUTPUT [KMS_KEY_ID]" >&2; exit 64; }
@@ -68,7 +76,7 @@ case "$command" in
     fi
     ;;
   *)
-    echo "usage: buzz-serverctl {health|check|start|restart|stop|status|redeploy|rollback|backup|restore}" >&2
+    echo "usage: buzz-serverctl {health|check|start|restart|stop|status|deploy|rollback|backup|restore}" >&2
     exit 64
     ;;
 esac
