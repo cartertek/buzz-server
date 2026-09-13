@@ -89,6 +89,11 @@ fi
 identity=$1
 target=$2
 source_directory=$(cd "$3" && pwd)
+service_group=$(systemctl show buzz-server.service -p ControlGroup --value 2>/dev/null || true)
+if [ -n "$service_group" ] && awk -F: -v group="$service_group" '$3 == group || index($3, group "/") == 1 { found=1 } END { exit found ? 0 : 1 }' /proc/self/cgroup; then
+  echo "Refusing to install from inside buzz-server.service; use 'buzz-server deploy' to queue a durable deployment" >&2
+  exit 78
+fi
 operation_root=${BUZZ_DEPLOY_OPERATION_DIR:-}
 if [ -n "$operation_root" ]; then
   case "$operation_root" in /var/lib/buzz-server/runtime/deploy/*) ;; *) fail "invalid deployment operation directory";; esac

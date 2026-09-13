@@ -110,7 +110,7 @@ if [ "$mode" = handoff ]; then
     echo "release staging failed; operation retained at $operation" >&2
     exit 1
   fi
-  if ! systemd-run --unit="$unit" --service-type=oneshot --property=KillMode=control-group --property=TimeoutStartSec=infinity -- "$operation/buzz-server/deploy/install-release.sh" --run "$operation"; then
+  if ! systemd-run --unit="$unit" --collect --service-type=oneshot --property=KillMode=control-group --property=TimeoutStartSec=infinity -- "$operation/buzz-server/deploy/install-release.sh" --run "$operation"; then
     update_state failed "systemd-run failed"
     echo "systemd-run failed; operation retained at $operation" >&2
     exit 1
