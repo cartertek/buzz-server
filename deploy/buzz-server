@@ -24,7 +24,7 @@ Commands:
   restart        Restart the system service
   stop           Stop the system service
   status         Show service status
-  redeploy       Deploy a release by version and target
+  deploy         Queue a release deployment by version and target
   rollback       Roll back to an installed release
   backup         Back up Buzz Server state
   restore        Restore a backup
@@ -53,7 +53,7 @@ command_help() {
     restart)      printf '%s\n' 'Usage: buzz-server restart' 'Restart the Buzz Server system service.' ;;
     stop)         printf '%s\n' 'Usage: buzz-server stop' 'Stop the Buzz Server system service.' ;;
     status)       printf '%s\n' 'Usage: buzz-server status' 'Show the Buzz Server system service status.' ;;
-    redeploy)     printf '%s\n' 'Usage: buzz-server redeploy VERSION TARGET [OWNER/REPOSITORY]' 'Deploy an immutable release by version and Linux target.' ;;
+    deploy)       printf '%s\n' 'Usage: buzz-server deploy VERSION TARGET [OWNER/REPOSITORY]' 'Queue an immutable release deployment by version and Linux target.' ;;
     rollback)     printf '%s\n' 'Usage: buzz-server rollback VERSION' 'Switch atomically to an already installed release.' ;;
     backup)       printf '%s\n' 'Usage: buzz-server backup OUTPUT [KMS_KEY_ID]' 'Write a backup to OUTPUT, optionally encrypted with AWS KMS.' ;;
     restore)      printf '%s\n' 'Usage: buzz-server restore BACKUP' 'Restore Buzz Server state from BACKUP.' ;;
@@ -553,7 +553,7 @@ case "$command" in
       exec "$release/buzz-secretsctl" "$@"
     fi
     ;;
-  run|health|check|start|restart|stop|status|redeploy|rollback|backup|restore)
+  run|health|check|start|restart|stop|status|deploy|redeploy|rollback|backup|restore)
     if is_help "${2:-}"; then
       command_help "$command"
     else
