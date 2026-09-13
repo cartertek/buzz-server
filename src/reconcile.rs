@@ -258,6 +258,7 @@ mod tests {
             }
             Ok(ProcessReceipt {
                 launch_id: desired.launch_id.clone(),
+                generation: None,
                 agent_id: desired.agent_id,
                 process_group_id: desired.process_group_id.clone(),
                 desired: desired.identity(),
@@ -267,6 +268,12 @@ mod tests {
                 command_path: Some(desired.harness.path.clone()),
                 observed_state: crate::ObservedProcessState::Healthy,
                 exit_code: None,
+                wait_outcome: None,
+                ended_at_unix_ms: None,
+                duration_ms: None,
+                failure: None,
+                app_server_logs: crate::launch::AppServerLogsStatus::Unset,
+                lifecycle: None,
             })
         }
 
