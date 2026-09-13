@@ -2738,7 +2738,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let agent_id = buzz_server::AgentId::new();
         let desired = LaunchSpec {
-            launch_id: "receipt-revision-launch".into(),
+            launch_id: "receipt-revision-pre-session-failure".into(),
             agent_id,
             role: buzz_server::launch::LocalProcessRole::AcpBridge,
             harness: ExecutableIdentity {
@@ -2747,7 +2747,10 @@ mod tests {
                 version: "1".into(),
                 sha256: None,
             },
-            harness_arguments: vec!["-c".into(), "exit 0".into()],
+            harness_arguments: vec![
+                "-c".into(),
+                "printf '%s\\n' '[CHILD TASK ERROR class=no_session code=-32603 action=retry phase=pre_session rule=provider_no_session]'; exit 17".into(),
+            ],
             runtime: buzz_server::launch::ResolvedRuntime {
                 runtime_id: buzz_server::RuntimeId::parse("test-runtime").unwrap(),
                 executable: ExecutableIdentity {
@@ -2764,7 +2767,7 @@ mod tests {
             working_directory: directory.path().display().to_string(),
             workspace_path: directory.path().display().to_string(),
             runtime_path: directory.path().display().to_string(),
-            process_group_id: "receipt-revision-group".into(),
+            process_group_id: "receipt-revision-pre-session-group".into(),
             restart: RestartPolicy {
                 mode: buzz_server::launch::RestartMode::OnFailure,
                 max_attempts: 1,
@@ -2788,16 +2791,28 @@ mod tests {
         )
         .unwrap();
         let receipt = adapter.start(&desired, &NoTestSecrets).unwrap();
+        let mut observed = receipt.clone();
+        for _ in 0..100 {
+            observed = adapter.inspect(&receipt).unwrap();
+            if observed.exit_code.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(observed.exit_code, Some(17));
+        assert_eq!(observed.launch_id, desired.launch_id);
         let receipts = ReceiptFile::new(directory.path().join("process-receipt.json"));
-        receipts.put_receipt(&receipt).unwrap();
+        receipts.put_receipt(&observed).unwrap();
         stamp_receipt_lifecycle(&receipts, agent_id, "reconcile", Some("retry".into())).unwrap();
         let restored = receipts.get_receipt(agent_id).unwrap().unwrap();
         let lifecycle = restored.lifecycle.unwrap();
         assert_eq!(lifecycle.actor, "reconcile");
         assert_eq!(lifecycle.decision, "retry");
-        assert!(fs::read_to_string(receipts.history_path)
-            .unwrap()
-            .contains("\"decision\":\"retry\""));
+        assert_eq!(restored.exit_code, Some(17));
+        let history = fs::read_to_string(receipts.history_path).unwrap();
+        assert!(history.contains("receipt-revision-pre-session-failure"));
+        assert!(history.contains("\"exit_code\":17"));
+        assert!(history.contains("\"decision\":\"retry\""));
     }
 
     #[test]
