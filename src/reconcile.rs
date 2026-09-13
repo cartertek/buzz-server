@@ -6,6 +6,7 @@ use crate::{
 };
 
 use crate::supervisor::{ProcessSupervisor, SecretResolver, SupervisorError};
+use std::time::Duration;
 
 /// Persistence hook for process receipts. Implementations must durably commit a
 /// receipt before an operation is reported successful.
@@ -28,6 +29,8 @@ pub enum ReconcileOutcome {
     /// Spawn failed before a receipt was produced. Callers must not announce
     /// presence or transition an operation to success.
     NoPresence,
+    /// The exact spawned process exited during the startup confirmation window.
+    FailedStartup(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +52,7 @@ pub struct Reconciler<'a, A, R, S> {
     receipts: &'a R,
     supervisor: &'a S,
     secrets: &'a dyn SecretResolver,
+    startup_window: Duration,
 }
 
 impl<'a, A, R, S> Reconciler<'a, A, R, S>
@@ -68,7 +72,14 @@ where
             receipts,
             supervisor,
             secrets,
+            startup_window: crate::supervisor::STARTUP_WINDOW,
         }
+    }
+
+    #[must_use]
+    pub const fn with_startup_window(mut self, startup_window: Duration) -> Self {
+        self.startup_window = startup_window;
+        self
     }
 
     /// Reconciles one durable operation. Pending work is deferred, terminal
@@ -142,7 +153,20 @@ where
                 // This write is the presence boundary: callers may only publish
                 // presence after the durable receipt has been committed.
                 self.receipts.put_receipt(&started)?;
-                Ok(ReconcileOutcome::Started)
+                match self
+                    .supervisor
+                    .confirm_startup(&started, self.startup_window)
+                {
+                    Ok(confirmed) => {
+                        self.receipts.put_receipt(&confirmed)?;
+                        Ok(ReconcileOutcome::Started)
+                    }
+                    Err(SupervisorError::Startup(detail)) => {
+                        self.receipts.delete_receipt(started.agent_id)?;
+                        Ok(ReconcileOutcome::FailedStartup(detail))
+                    }
+                    Err(error) => Err(error.into()),
+                }
             }
             Err(SupervisorError::Preflight(_)) => Ok(ReconcileOutcome::FailedPreflight),
             Err(SupervisorError::SecretResolution | SupervisorError::InvalidSpec(_)) => {

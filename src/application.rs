@@ -316,7 +316,7 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
             .ok_or(ApplicationError::NotFound)?;
         self.store
             .transition_operation(id, OperationStatus::Running, None, (self.now)())?;
-        self.audit_reconciliation(&operation, "operation.running", "accepted")
+        self.audit_reconciliation(&operation, "operation.running", "accepted", None)
     }
 
     /// Persists a terminal reconciliation result. Successful purge completion, audit, tombstone,
@@ -326,6 +326,16 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
         id: OperationId,
         status: OperationStatus,
         error_code: Option<crate::ErrorCode>,
+    ) -> Result<(), ApplicationError> {
+        self.complete_operation_with_detail(id, status, error_code, None)
+    }
+
+    pub fn complete_operation_with_detail(
+        &self,
+        id: OperationId,
+        status: OperationStatus,
+        error_code: Option<crate::ErrorCode>,
+        detail: Option<&str>,
     ) -> Result<(), ApplicationError> {
         if !matches!(
             status,
@@ -382,6 +392,7 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
             } else {
                 "failed"
             },
+            detail,
         )?;
         self.completion.notify()?;
         Ok(())
@@ -392,6 +403,7 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
         operation: &DurableOperation,
         action: &'static str,
         outcome: &'static str,
+        detail: Option<&str>,
     ) -> Result<(), ApplicationError> {
         let subject = operation.agent_id.map(|id| id.to_string());
         let community = operation
@@ -410,7 +422,7 @@ impl<E: LifecycleEffects> SqliteLifecycleApplication<E> {
             subject_type: "agent",
             subject_id: subject.as_deref(),
             outcome,
-            redacted_detail: None,
+            redacted_detail: detail,
         })?;
         Ok(())
     }
