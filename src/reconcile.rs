@@ -16,7 +16,7 @@ pub trait ProcessReceiptRepository {
     fn delete_receipt(&self, agent_id: AgentId) -> Result<(), StorageError>;
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReconcileOutcome {
     Deferred,
     Unchanged,
