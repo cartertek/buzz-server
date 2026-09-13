@@ -107,6 +107,7 @@ if [ "$mode" = handoff ]; then
   unit="buzz-server-deploy-${operation_id}.service"
   python3 -c 'import json,os,sys,tempfile; from datetime import datetime,timezone; p=sys.argv[1]; r={"operation_id":sys.argv[2],"version":sys.argv[3],"target":sys.argv[4],"repository":sys.argv[5],"unit":sys.argv[6],"staging_path":os.path.dirname(p)+"/buzz-server","state":"accepted","accepted_at":datetime.now(timezone.utc).isoformat()}; fd,t=tempfile.mkstemp(prefix="operation.",dir=os.path.dirname(p)); f=os.fdopen(fd,"w"); json.dump(r,f,sort_keys=True); f.write("\\n"); f.flush(); os.fsync(f.fileno()); f.close(); os.chmod(t,0o600); os.replace(t,p)' "$operation/operation.json" "$operation_id" "$version" "$target" "$repository" "$unit"
   if ! "$0" --stage "$operation" "$version" "$target" "$repository" >/dev/null; then
+    update_state failed "release staging failed"
     echo "release staging failed; operation retained at $operation" >&2
     exit 1
   fi
