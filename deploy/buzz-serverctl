@@ -21,6 +21,10 @@ case "$command" in
     ;;
   redeploy)
     echo "warning: 'redeploy' is deprecated; use 'deploy'" >&2
+    if [ "${2:-}" = status ]; then
+      shift 2
+      exec /usr/libexec/buzz-server/install-release.sh --status "$@"
+    fi
     shift
     exec /usr/libexec/buzz-server/install-release.sh --handoff deploy "$@"
     ;;

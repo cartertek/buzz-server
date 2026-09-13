@@ -90,7 +90,7 @@ if [ "$mode" = install ]; then
     exit 78
   fi
 fi
-for command in curl tar sha256sum awk mktemp; do command -v "$command" >/dev/null 2>&1 || { echo "required command not found: $command" >&2; exit 69; }; done
+for command in curl tar sha256sum awk mktemp python3; do command -v "$command" >/dev/null 2>&1 || { echo "required command not found: $command" >&2; exit 69; }; done
 
 if [ "$mode" = handoff ]; then
   operations=/var/lib/buzz-server/runtime/deploy/operations
