@@ -2181,20 +2181,27 @@ fn reconcile_dynamic_lifecycle_operation(
     );
     let stored_operation = store_operation(operation);
     let outcome = reconciler.reconcile(agent_id, &stored_operation, Some(&dynamic_launch));
-    let (mut status, mut error_code) = match outcome {
+    let (mut status, mut error_code, mut error_detail) = match outcome {
         Ok(
             buzz_server::reconcile::ReconcileOutcome::FailedPreflight
             | buzz_server::reconcile::ReconcileOutcome::NoPresence,
         ) => (
             buzz_server::OperationStatus::Failed,
             Some(buzz_server::ErrorCode::Internal),
+            None,
         ),
-        Ok(_) => (buzz_server::OperationStatus::Succeeded, None),
+        Ok(buzz_server::reconcile::ReconcileOutcome::FailedStartup(detail)) => (
+            buzz_server::OperationStatus::Failed,
+            Some(buzz_server::ErrorCode::Internal),
+            Some(detail),
+        ),
+        Ok(_) => (buzz_server::OperationStatus::Succeeded, None, None),
         Err(error) => {
             eprintln!("dynamic lifecycle reconciliation failed: {error}");
             (
                 buzz_server::OperationStatus::Failed,
                 Some(buzz_server::ErrorCode::Internal),
+                None,
             )
         }
     };
@@ -2241,12 +2248,16 @@ fn reconcile_dynamic_lifecycle_operation(
             eprintln!("dynamic purge cleanup failed: {error}");
             status = buzz_server::OperationStatus::Failed;
             error_code = Some(buzz_server::ErrorCode::Internal);
+            error_detail = None;
         }
     }
     if finish_operation {
-        context
-            .application
-            .complete_operation(operation.id, status, error_code)?;
+        context.application.complete_operation_with_detail(
+            operation.id,
+            status,
+            error_code,
+            error_detail.as_deref(),
+        )?;
     } else if status == buzz_server::OperationStatus::Failed {
         return Err(DaemonError::Task(format!(
             "startup reconciliation failed for dynamic agent {agent_id}: {error_code:?}"
