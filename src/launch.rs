@@ -1006,7 +1006,8 @@ mod tests {
                     health: resolved.health.clone(),
                 },
             ),
-            Err(LaunchResolutionError::SecretShadow(key)) if key == "OPENAI_API_KEY"
+            Err(LaunchResolutionError::Validation(error))
+                if error.field == "runtime.environment"
         ));
 
         let mut configured_secret_agent = agent.clone();
