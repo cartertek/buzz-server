@@ -1051,10 +1051,10 @@ mod tests {
         })
         .unwrap();
         let object = value["agent"].as_object().unwrap();
-        assert!(!object.contains_key("environment"));
+        assert!(object.contains_key("secret_environment"));
         assert!(!object.contains_key("env"));
         assert!(!object.contains_key("private_key"));
-        assert!(!object.contains_key("secret"));
+        assert!(object["secret_environment"].is_object());
         let internal = api_application(ApplicationError::from(StorageError::InvalidData(
             "private_key=leak".into(),
         )));
