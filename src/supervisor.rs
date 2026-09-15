@@ -56,29 +56,7 @@ pub trait ProcessSupervisor {
         &self,
         receipt: &ProcessReceipt,
         timeout: Duration,
-    ) -> Result<ProcessReceipt, SupervisorError> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let observed = self.inspect(receipt)?;
-            if observed.observed_state.is_terminal() {
-                return Err(SupervisorError::Startup(format!(
-                    "{}; stderr: {}",
-                    observed.exit_code.map_or_else(
-                        || "terminated by signal".to_owned(),
-                        |code| format!("exit {code}")
-                    ),
-                    "[REDACTED CHILD OUTPUT]"
-                )));
-            }
-            if observed.observed_state == ObservedProcessState::Healthy {
-                return Ok(observed);
-            }
-            if Instant::now() >= deadline {
-                return Ok(observed);
-            }
-            thread::sleep(POLL_INTERVAL);
-        }
-    }
+    ) -> Result<ProcessReceipt, SupervisorError>;
     fn stop(&self, receipt: &ProcessReceipt) -> Result<ProcessReceipt, SupervisorError>;
 }
 
@@ -696,7 +674,17 @@ impl ProcessSupervisor for LocalProcessAdapter {
                     managed.child.try_wait()?
                 };
                 if let Some(status) = status {
+                    let signal_error = Self::signal_group(receipt.pid, "-KILL").err();
+                    let reap_error = children
+                        .get_mut(&receipt.pid)
+                        .and_then(|managed| managed.child.wait().err());
                     children.remove(&receipt.pid);
+                    if let Some(error) = signal_error {
+                        return Err(error);
+                    }
+                    if let Some(error) = reap_error {
+                        return Err(error.into());
+                    }
                     Some(status)
                 } else {
                     None
@@ -1977,7 +1965,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_window_accepts_process_surviving_real_nine_second_window() {
+    fn startup_window_rejects_process_exiting_before_startup_window() {
         let directory = tempfile::tempdir().unwrap();
         let adapter = adapter(directory.path(), 4096);
         let mut desired = launch(directory.path(), "sleep 9");

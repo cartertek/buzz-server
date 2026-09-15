@@ -165,7 +165,10 @@ where
                         self.receipts.delete_receipt(started.agent_id)?;
                         Ok(ReconcileOutcome::FailedStartup(detail))
                     }
-                    Err(error) => Err(error.into()),
+                    Err(error) => {
+                        self.receipts.delete_receipt(started.agent_id)?;
+                        Err(error.into())
+                    }
                 }
             }
             Err(SupervisorError::Preflight(_)) => Ok(ReconcileOutcome::FailedPreflight),
@@ -261,7 +264,9 @@ mod tests {
     struct FakeSupervisor {
         starts: Mutex<u32>,
         stops: Mutex<u32>,
+        confirmations: Mutex<u32>,
         failure: Mutex<Option<StartFailure>>,
+        startup_failure: Mutex<Option<String>>,
     }
 
     impl ProcessSupervisor for FakeSupervisor {
@@ -302,6 +307,18 @@ mod tests {
         }
 
         fn inspect(&self, receipt: &ProcessReceipt) -> Result<ProcessReceipt, SupervisorError> {
+            Ok(receipt.clone())
+        }
+
+        fn confirm_startup(
+            &self,
+            receipt: &ProcessReceipt,
+            _timeout: Duration,
+        ) -> Result<ProcessReceipt, SupervisorError> {
+            *self.confirmations.lock().unwrap() += 1;
+            if let Some(detail) = self.startup_failure.lock().unwrap().take() {
+                return Err(SupervisorError::Startup(detail));
+            }
             Ok(receipt.clone())
         }
 
@@ -476,5 +493,46 @@ mod tests {
             );
             assert!(receipts.get_receipt(agent.id).unwrap().is_none());
         }
+    }
+
+    #[test]
+    fn startup_failure_deletes_receipt_and_returns_detail() {
+        let agent = agent(DesiredAgentState::Enabled);
+        let desired = launch(agent.id, "1");
+        let agents = AgentMemory(Mutex::new(Some(agent.clone())));
+        let receipts = ReceiptMemory::default();
+        let supervisor = FakeSupervisor::default();
+        *supervisor.startup_failure.lock().unwrap() = Some("exit 7; stderr: child failed".into());
+        let reconciler = Reconciler::new(&agents, &receipts, &supervisor, &NoSecrets)
+            .with_startup_window(Duration::from_millis(1));
+
+        assert_eq!(
+            reconciler
+                .reconcile_desired(&agent, Some(&desired))
+                .unwrap(),
+            ReconcileOutcome::FailedStartup("exit 7; stderr: child failed".into())
+        );
+        assert!(receipts.get_receipt(agent.id).unwrap().is_none());
+        assert_eq!(*supervisor.confirmations.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn startup_success_commits_receipt_after_confirmation() {
+        let agent = agent(DesiredAgentState::Enabled);
+        let desired = launch(agent.id, "1");
+        let agents = AgentMemory(Mutex::new(Some(agent.clone())));
+        let receipts = ReceiptMemory::default();
+        let supervisor = FakeSupervisor::default();
+        let reconciler = Reconciler::new(&agents, &receipts, &supervisor, &NoSecrets)
+            .with_startup_window(Duration::from_millis(1));
+
+        assert_eq!(
+            reconciler
+                .reconcile_desired(&agent, Some(&desired))
+                .unwrap(),
+            ReconcileOutcome::Started
+        );
+        assert!(receipts.get_receipt(agent.id).unwrap().is_some());
+        assert_eq!(*supervisor.confirmations.lock().unwrap(), 1);
     }
 }
