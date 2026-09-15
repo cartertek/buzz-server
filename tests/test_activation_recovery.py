@@ -1,11 +1,15 @@
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 HELPER = Path(__file__).resolve().parents[1] / "deploy" / "activation.py"
 UNIT = Path(__file__).resolve().parents[1] / "deploy" / "buzz-server.service"
+sys.path.insert(0, str(HELPER.parent))
+import activation
 
 
 class ActivationRecoveryTests(unittest.TestCase):
@@ -62,6 +66,15 @@ class ActivationRecoveryTests(unittest.TestCase):
             check=True,
         )
 
+    def reconcile_with_fchown_spy(self, source):
+        with mock.patch.object(activation.os, "fchown", wraps=activation.os.fchown) as fchown:
+            activation.reconcile(self.record)
+        self.assertEqual(fchown.call_count, 1)
+        _, uid, gid = fchown.call_args.args
+        source_metadata = source.stat()
+        self.assertEqual(uid, source_metadata.st_uid)
+        self.assertEqual(gid, source_metadata.st_gid)
+
     def assert_config_metadata(self, source):
         metadata = self.config.stat()
         source_metadata = source.stat()
@@ -72,7 +85,7 @@ class ActivationRecoveryTests(unittest.TestCase):
     def test_before_first_swap_keeps_previous_pair_and_is_idempotent(self):
         self.current.symlink_to(self.previous)
         self.prepare()
-        self.reconcile()
+        self.reconcile_with_fchown_spy(self.previous_config)
         self.assertEqual(self.current.resolve(), self.previous)
         self.assertEqual(self.config.read_bytes(), self.old_config)
         self.assert_config_metadata(self.previous_config)
@@ -82,7 +95,7 @@ class ActivationRecoveryTests(unittest.TestCase):
     def test_between_swaps_completes_intended_pair(self):
         self.current.symlink_to(self.intended)
         self.prepare()
-        self.reconcile()
+        self.reconcile_with_fchown_spy(self.intended_config)
         self.assertEqual(self.current.resolve(), self.intended)
         self.assertEqual(self.config.read_bytes(), self.new_config)
         self.assert_config_metadata(self.intended_config)
