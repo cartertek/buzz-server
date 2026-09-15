@@ -724,6 +724,8 @@ mod tests {
                 system_prompt_file: Some("/etc/buzz/prompts/builder.md".into()),
                 runtime_id: Some("codex-acp".parse().unwrap()),
                 filesystem_user: None,
+                environment: Default::default(),
+                secret_environment: Default::default(),
             },
         });
         let created = router.handle(&administrator(), &serde_json::to_vec(&create).unwrap());

@@ -1619,6 +1619,7 @@ mod tests {
             runtime: crate::RuntimeSpec {
                 runtime_id: "codex-acp".parse().unwrap(),
                 environment: BTreeMap::new(),
+                secret_environment: BTreeMap::new(),
             },
             desired_state: crate::DesiredAgentState::Enabled,
         };

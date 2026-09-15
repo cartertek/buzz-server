@@ -449,7 +449,8 @@ impl LifecycleEffects for LifecycleWake {
             model: None,
             provider: None,
             name_pool: vec![],
-            environment: Default::default(),
+            environment: request.environment.clone(),
+            secret_environment: request.secret_environment.clone(),
             respond_to: None,
             respond_to_allowlist: vec![],
             parallelism: None,
@@ -480,6 +481,12 @@ impl LifecycleEffects for LifecycleWake {
         }
         if let Some(value) = &request.changes.runtime {
             persona.runtime = Some(value.clone());
+        }
+        if let Some(value) = &request.changes.environment {
+            persona.environment = value.clone();
+        }
+        if let Some(value) = &request.changes.secret_environment {
+            persona.secret_environment = value.clone();
         }
         self.agent_files
             .write_persona(&persona)
@@ -554,6 +561,8 @@ impl LifecycleEffects for LifecycleWake {
                     system_prompt_file: input.system_prompt_file.clone(),
                     runtime: input.runtime_id.clone(),
                     filesystem_user: input.filesystem_user.clone(),
+                    environment: input.environment.clone(),
+                    secret_environment: input.secret_environment.clone(),
                 },
             )
             .map_err(agent_file_application_error)?;
@@ -586,6 +595,8 @@ impl LifecycleEffects for LifecycleWake {
                     system_prompt_file: input.system_prompt_file.clone(),
                     runtime: input.runtime_id.clone(),
                     filesystem_user: input.filesystem_user.clone(),
+                    environment: input.environment.clone(),
+                    secret_environment: input.secret_environment.clone(),
                 },
             )
             .map_err(agent_file_application_error)?;
@@ -642,6 +653,12 @@ impl LifecycleEffects for LifecycleWake {
         }
         if let Some(value) = &changes.filesystem_user {
             file.filesystem.user = Some(value.clone());
+        }
+        if let Some(value) = &changes.environment {
+            file.environment = value.clone();
+        }
+        if let Some(value) = &changes.secret_environment {
+            file.secret_environment = value.clone();
         }
         self.agent_files
             .write_agent(&file)
@@ -2219,6 +2236,16 @@ fn reconcile_dynamic_lifecycle_operation(
             health: context.config.health.clone(),
         },
     )?;
+    for internal_key in [HARNESS_PRIVATE_KEY_ENV, HARNESS_AUTH_TAG_ENV] {
+        if dynamic_launch.secret_environment.contains_key(internal_key) {
+            return Err(buzz_server::LaunchResolutionError::Validation(
+                buzz_server::ValidationError::new(
+                    "secret_environment",
+                    format!("configured secret key {internal_key} collides with a Server-internal secret"),
+                ),
+            ));
+        }
+    }
     dynamic_launch.environment.insert(
         buzz_server::launch::HARNESS_RELAY_URL_ENV.into(),
         community.relay_url.to_string(),

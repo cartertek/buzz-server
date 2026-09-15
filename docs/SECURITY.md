@@ -53,3 +53,21 @@ Provider executables are trusted deployment plugins because the current Buzz pro
 may give them agent secrets. Buzz Server therefore requires explicit administrator
 trust, path/hash pinning, bounded input/output, redacted logging, private staged
 execution, and a restricted subprocess environment before invoking a provider.
+
+## Managed-agent secret references
+
+Agent and persona JSON may map child environment names to Server-held references:
+
+```json
+"secret_environment": {
+  "OPENAI_API_KEY": { "key": "agent/example/openai-api-key", "version": "v1" }
+}
+```
+
+`environment` remains non-secret and versionable. `secret_environment` contains
+references only; resolved values are never persisted in configuration, API
+responses, receipts, audit records, diagnostics, or command arguments. The value
+is resolved only at the final spawn boundary. Update the reference version or
+generation marker when rotating a secret so reconciliation observes the change.
+Migrate inline values into the Server secret backend and remove them from
+configuration; never place secret values in either map.

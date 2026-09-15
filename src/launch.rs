@@ -197,7 +197,7 @@ impl LaunchSpec {
             } => (format!("{manager}:{name}"), None),
         };
         let resolved_preflight = runtime.preflight.clone();
-        let mut secret_environment = BTreeMap::new();
+        let mut secret_environment = agent.runtime.secret_environment.clone();
         for required in &runtime.required_secrets {
             if agent
                 .runtime
@@ -207,6 +207,20 @@ impl LaunchSpec {
                 return Err(LaunchResolutionError::SecretShadow(
                     required.environment_key.clone(),
                 ));
+            }
+            if agent
+                .runtime
+                .secret_environment
+                .contains_key(&required.environment_key)
+            {
+                return Err(ValidationError::new(
+                    "secret_environment",
+                    format!(
+                        "configured secret key {} collides with runtime-required secret",
+                        required.environment_key
+                    ),
+                )
+                .into());
             }
             secret_environment.insert(
                 required.environment_key.clone(),
@@ -890,6 +904,7 @@ mod tests {
             runtime: RuntimeSpec {
                 runtime_id: RuntimeId::parse("codex-acp").unwrap(),
                 environment: BTreeMap::from([("RUST_LOG".into(), "info".into())]),
+                secret_environment: BTreeMap::new(),
             },
             desired_state: crate::DesiredAgentState::Enabled,
         };

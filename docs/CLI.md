@@ -15,6 +15,26 @@ buzz-server secrets COMMAND [OPTIONS]
 The systemd service uses `buzz-server run --config /etc/buzz-server/config.json`.
 Lifecycle commands connect to `/run/buzz-server/lifecycle.sock` by default.
 
+## Managed-agent environment configuration
+
+Managed-agent and persona JSON files support `environment` for non-secret values
+and `secret_environment` for Server-held references only:
+
+```json
+{
+  "environment": { "LOG_LEVEL": "info" },
+  "secret_environment": {
+    "OPENAI_API_KEY": { "key": "agent/example/openai-api-key", "version": "v1" }
+  }
+}
+```
+
+The maps must not share a child environment name. Runtime-required and
+Server-internal names are reserved and rejected on collision. Rotate a secret by
+updating its reference version/generation marker, never by placing the value in
+`environment` or source control. Existing inline values must be moved into the
+Server secret backend and removed from configuration.
+
 ## Communities
 
 ### `join`

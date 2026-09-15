@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     auth::{authorize, AuthenticatedPrincipal, AuthorizationError, Capability, PrincipalOwnership},
+    launch::SecretRef,
     AgentId, CommunityConfig, CommunityConfigId, DesiredAgentState, ErrorCode, OperationId,
     OperationKind, OperationStatus, PersonaDefinition, RuntimeId, StorageError, ValidationError,
 };
@@ -45,6 +46,10 @@ pub struct CreatePersonaRequest {
     pub system_prompt: String,
     #[serde(default)]
     pub runtime: Option<RuntimeId>,
+    #[serde(default)]
+    pub environment: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub secret_environment: std::collections::BTreeMap<String, SecretRef>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -52,6 +57,8 @@ pub struct UpdatePersonaInput {
     pub display_name: Option<String>,
     pub system_prompt: Option<String>,
     pub runtime: Option<RuntimeId>,
+    pub environment: Option<std::collections::BTreeMap<String, String>>,
+    pub secret_environment: Option<std::collections::BTreeMap<String, SecretRef>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -74,6 +81,10 @@ pub struct CreateAgentInput {
     pub runtime_id: Option<RuntimeId>,
     #[serde(default)]
     pub filesystem_user: Option<String>,
+    #[serde(default)]
+    pub environment: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub secret_environment: std::collections::BTreeMap<String, SecretRef>,
 }
 
 impl CreateAgentInput {
@@ -135,6 +146,8 @@ pub struct UpdateAgentInput {
     pub system_prompt_file: Option<String>,
     pub runtime_id: Option<RuntimeId>,
     pub filesystem_user: Option<String>,
+    pub environment: Option<std::collections::BTreeMap<String, String>>,
+    pub secret_environment: Option<std::collections::BTreeMap<String, SecretRef>>,
 }
 
 impl UpdateAgentInput {
@@ -204,6 +217,8 @@ pub struct AgentResource {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt_file: Option<String>,
     pub runtime_id: RuntimeId,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub secret_environment: std::collections::BTreeMap<String, SecretRef>,
     pub desired_state: DesiredAgentState,
     pub purge_after: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -945,6 +960,8 @@ mod tests {
             system_prompt_file: None,
             runtime_id: Some("codex-acp".parse().unwrap()),
             filesystem_user: None,
+            environment: Default::default(),
+            secret_environment: Default::default(),
         }
     }
 
