@@ -22,6 +22,12 @@ done
 
 case "$identity" in *[!A-Za-z0-9._-]*|'') echo "invalid package identity" >&2; exit 64;; esac
 
+service_group=$(systemctl show buzz-server.service -p ControlGroup --value 2>/dev/null || true)
+if [ -n "$service_group" ] && awk -F: -v group="$service_group" '$3 == group || index($3, group "/") == 1 { found=1 } END { exit found ? 0 : 1 }' /proc/self/cgroup; then
+  echo "Refusing to install from inside buzz-server.service; use 'buzz-server deploy' to queue a durable deployment" >&2
+  exit 78
+fi
+
 case "$(uname -m)" in
   x86_64|amd64) host_target=x86_64-unknown-linux-gnu ;;
   aarch64|arm64) host_target=aarch64-unknown-linux-gnu ;;

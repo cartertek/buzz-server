@@ -89,6 +89,19 @@ fi
 identity=$1
 target=$2
 source_directory=$(cd "$3" && pwd)
+service_group=$(systemctl show buzz-server.service -p ControlGroup --value 2>/dev/null || true)
+if [ -n "$service_group" ] && awk -F: -v group="$service_group" '$3 == group || index($3, group "/") == 1 { found=1 } END { exit found ? 0 : 1 }' /proc/self/cgroup; then
+  echo "Refusing to install from inside buzz-server.service; use 'buzz-server deploy' to queue a durable deployment" >&2
+  exit 78
+fi
+operation_root=${BUZZ_DEPLOY_OPERATION_DIR:-}
+if [ -n "$operation_root" ]; then
+  case "$operation_root" in /var/lib/buzz-server/runtime/deploy/*) ;; *) fail "invalid deployment operation directory";; esac
+else
+  install -d -o root -g root -m 0700 /var/lib/buzz-server/runtime/deploy
+  operation_root=$(mktemp -d /var/lib/buzz-server/runtime/deploy/standalone.XXXXXX)
+  install -d -o root -g root -m 0700 "$operation_root"
+fi
 case "$identity" in *[!A-Za-z0-9._-]*|'') echo "identity contains unsafe characters" >&2; exit 64;; esac
 case "$target" in x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;; *) echo "unsupported target" >&2; exit 64;; esac
 [ "$(basename "$source_directory")" = buzz-server ] || { echo "package directory must be named buzz-server" >&2; exit 65; }
@@ -197,11 +210,13 @@ if [ ! -e /etc/buzz-server/config.json ]; then
   install -o root -g buzz-server -m 0640 "$config_source" /etc/buzz-server/config.json
 fi
 config_migrated=false
-config_backup="$temporary/config.json.previous"
+config_backup="$operation_root/config.json.previous"
+config_candidate="$operation_root/config.json.candidate"
 cp -p /etc/buzz-server/config.json "$config_backup"
+cp -p /etc/buzz-server/config.json "$config_candidate"
 legacy_owner_pubkey=
 legacy_owner_migrated=false
-if python3 - /etc/buzz-server/config.json <<'PYLEGACYOWNER' >/dev/null
+  if python3 - "$config_candidate" <<'PYLEGACYOWNER' >/dev/null
 import json, sys
 config = json.load(open(sys.argv[1]))
 raise SystemExit(0 if "owner_secret_file" in config else 1)
@@ -246,16 +261,14 @@ PYKMS
       --service buzz-server \
       --name "community-identity:$legacy_owner_pubkey"
   fi
-  set -- /etc/buzz-server/config.json "$legacy_owner_pubkey"
+  set -- "$config_candidate" "$legacy_owner_pubkey"
   if [ -n "$legacy_kms_key_id" ]; then set -- "$@" --kms-key-id "$legacy_kms_key_id"; fi
   run_bounded 30 "Migrating legacy owner configuration" \
     python3 "$release_source/share/deploy/migrate-legacy-owner.py" "$@"
-  chown root:buzz-server /etc/buzz-server/config.json
-  chmod 0640 /etc/buzz-server/config.json
   config_migrated=true
   legacy_owner_migrated=true
 fi
-legacy_agent_id=$(python3 - /etc/buzz-server/config.json <<'PYLEGACYID'
+legacy_agent_id=$(python3 - "$config_candidate" <<'PYLEGACYID'
 import json
 import sys
 config = json.load(open(sys.argv[1]))
@@ -297,7 +310,7 @@ PYLEGACYSECRET
     unset legacy_agent_secret
   fi
 fi
-if python3 - /etc/buzz-server/config.json <<'PYMIGRATE'
+if python3 - "$config_candidate" <<'PYMIGRATE'
 import json
 import os
 import sys
@@ -373,8 +386,6 @@ os.chmod(temporary, 0o640)
 os.replace(temporary, path)
 PYMIGRATE
 then
-  chown root:buzz-server /etc/buzz-server/config.json
-  chmod 0640 /etc/buzz-server/config.json
   config_migrated=true
 else
   migration_status=$?
@@ -391,6 +402,11 @@ if [ ! -e /etc/buzz-server/secrets.env ]; then
   test -f "$secrets_source"
   install -o root -g buzz-server -m 0640 "$secrets_source" /etc/buzz-server/secrets.env
 fi
+log "Validating target configuration with the target binary"
+# Validate the exact configuration that will be activated. The old service
+# remains on its old release and old configuration until after this succeeds;
+# rollback restores both from the operation backups if the target is unhealthy.
+"$release_source/buzz-server-daemon" --check-config "$config_candidate" || fail "target binary cannot parse the migrated configuration candidate"
 runtime_assets_valid() {
   harness_dir=/opt/buzz-server/runtimes/sprig-0.1.0
   runtime_dir=/opt/buzz-server/runtimes/codex-acp-1.1.7
@@ -422,9 +438,9 @@ timeout --kill-after=5s 15s runuser --user buzz-server -- /usr/bin/env -i \
     echo "pinned Codex ACP runtime failed the availability/version preflight" >&2
     exit 66
   }
-unit_backup="$temporary/buzz-server.service.previous"
-health_service_backup="$temporary/buzz-server-healthcheck.service.previous"
-health_timer_backup="$temporary/buzz-server-healthcheck.timer.previous"
+unit_backup="$operation_root/buzz-server.service.previous"
+health_service_backup="$operation_root/buzz-server-healthcheck.service.previous"
+health_timer_backup="$operation_root/buzz-server-healthcheck.timer.previous"
 unit_existed=false
 health_service_existed=false
 health_timer_existed=false
@@ -459,6 +475,9 @@ if [ -n "$release_staging" ]; then
 fi
 ln -sfn "$release" /opt/buzz-server/current.next
 mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
+if [ "$config_migrated" = true ]; then
+  install -o root -g buzz-server -m 0640 "$config_candidate" /etc/buzz-server/config.json
+fi
 install -o root -g root -m 0444 "$release/share/deploy/buzz-server.service" /etc/systemd/system/buzz-server.service
 install -o root -g root -m 0444 "$release/share/deploy/buzz-server-healthcheck.service" /etc/systemd/system/buzz-server-healthcheck.service
 install -o root -g root -m 0444 "$release/share/deploy/buzz-server-healthcheck.timer" /etc/systemd/system/buzz-server-healthcheck.timer

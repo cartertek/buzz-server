@@ -803,8 +803,11 @@ async fn main() -> Result<(), DaemonError> {
         .map_err(|_| {
             DaemonError::InvalidConfig("TLS crypto provider is already configured".into())
         })?;
-    let config_path = parse_args()?;
+    let (config_path, check_only) = parse_args()?;
     let config = DaemonConfig::load(&config_path)?;
+    if check_only {
+        return Ok(());
+    }
 
     for directory in [
         config.state_database.parent(),
@@ -1791,16 +1794,24 @@ fn reconcile_startup_agent(
     reconcile_dynamic_lifecycle_operation(context, &startup, false)
 }
 
-fn parse_args() -> Result<PathBuf, DaemonError> {
-    let mut arguments = std::env::args_os().skip(1);
-    if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--config")) {
-        return Err(DaemonError::Usage);
-    }
+fn parse_args() -> Result<(PathBuf, bool), DaemonError> {
+    parse_args_from(std::env::args_os().skip(1))
+}
+
+fn parse_args_from<I>(mut arguments: I) -> Result<(PathBuf, bool), DaemonError>
+where
+    I: Iterator<Item = std::ffi::OsString>,
+{
+    let check_only = match arguments.next().as_deref() {
+        Some(value) if value == std::ffi::OsStr::new("--check-config") => true,
+        Some(value) if value == std::ffi::OsStr::new("--config") => false,
+        _ => return Err(DaemonError::Usage),
+    };
     let path = arguments.next().ok_or(DaemonError::Usage)?;
     if arguments.next().is_some() {
         return Err(DaemonError::Usage);
     }
-    Ok(path.into())
+    Ok((path.into(), check_only))
 }
 
 fn secret_generation(value: &str) -> String {
@@ -2831,6 +2842,21 @@ mod tests {
         let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
         value["runtime_user"] = serde_json::json!("ec2-user");
         assert!(serde_json::from_value::<DaemonConfig>(value).is_err());
+    }
+
+    #[test]
+    fn check_config_argument_is_inert_and_strict() {
+        use std::ffi::OsString;
+        let args = vec![
+            OsString::from("--check-config"),
+            OsString::from("config.json"),
+        ];
+        assert!(parse_args_from(args.into_iter()).unwrap().1);
+        let source = include_str!("../config/buzz-server.dev.example.json");
+        let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
+        value["unknown"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<DaemonConfig>(value).is_err());
+        assert!(serde_json::from_str::<DaemonConfig>(source).is_ok());
     }
 
     #[test]

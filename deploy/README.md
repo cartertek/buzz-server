@@ -88,6 +88,21 @@ or older release artifact and run its `deploy/install.sh`. The release pointer i
 switched atomically; if the selected release fails its health check, the previously
 active release is restored automatically.
 
+Use `buzz-server deploy VERSION TARGET [OWNER/REPOSITORY]` to queue a durable,
+detached deployment. Inspect it with `buzz-server deploy status [OPERATION-ID]`
+or add `--json` for the persisted record. The first release containing this path
+must be installed from an external operator session because older releases still
+run `redeploy` inline; later deployments survive Buzz Server service teardown.
+The staged configuration must be accepted by the incoming binary after
+migration, before the service is stopped. The existing
+service keeps using the previous release and configuration until that check
+passes; if the activated release fails health checks, rollback restores both
+the previous release and its configuration backup. A stale started operation
+can be retried with
+`buzz-server deploy recover OPERATION-ID`; if its staged installer is missing,
+the operation requires a fresh deploy. Standalone installer operation roots are
+retained under the runtime deployment directory for operator cleanup.
+
 The installer enables the service for boot and restarts it after switching the
 release pointer. The systemd service uses `KillMode=control-group`; the daemon
 reconciles every hosted agent from durable database state after startup.
