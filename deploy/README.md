@@ -93,6 +93,12 @@ detached deployment. Inspect it with `buzz-server deploy status [OPERATION-ID]`
 or add `--json` for the persisted record. The first release containing this path
 must be installed from an external operator session because older releases still
 run `redeploy` inline; later deployments survive Buzz Server service teardown.
+Every release must remain backward-compatible with the currently active
+configuration schema so the incoming binary can validate the old config before
+the service is stopped. A stale started operation can be retried with
+`buzz-server deploy recover OPERATION-ID`; if its staged installer is missing,
+the operation requires a fresh deploy. Standalone installer operation roots are
+retained under the runtime deployment directory for operator cleanup.
 
 The installer enables the service for boot and restarts it after switching the
 release pointer. The systemd service uses `KillMode=control-group`; the daemon

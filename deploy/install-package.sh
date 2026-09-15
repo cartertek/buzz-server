@@ -403,8 +403,11 @@ if [ ! -e /etc/buzz-server/secrets.env ]; then
   install -o root -g buzz-server -m 0640 "$secrets_source" /etc/buzz-server/secrets.env
 fi
 log "Validating target configuration with the target binary"
+# The incoming binary must retain backward-compatible parsing for the active
+# schema: this check prevents the old service from being stranded if the
+# release/config activation has to be rolled back.
 "$release_source/buzz-server-daemon" --check-config /etc/buzz-server/config.json || fail "target binary cannot parse the existing configuration; refusing to stop the running service"
-"$release_source/buzz-server-daemon" --check-config "$config_candidate"
+"$release_source/buzz-server-daemon" --check-config "$config_candidate" || fail "target binary cannot parse the migrated configuration candidate"
 runtime_assets_valid() {
   harness_dir=/opt/buzz-server/runtimes/sprig-0.1.0
   runtime_dir=/opt/buzz-server/runtimes/codex-acp-1.1.7

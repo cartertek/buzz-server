@@ -22,7 +22,7 @@ os.chmod(t,0o600); os.replace(t,p)
 PY
 }
 case "${1:-}" in
-  --stage|--handoff|--run|--status) mode=${1#--}; shift ;;
+  --stage|--handoff|--run|--status|--recover) mode=${1#--}; shift ;;
 esac
 if [ "$mode" = run ]; then
   operation_root=${1:-}; [ "$#" -eq 1 ] || { echo "usage: install-release.sh --run OPERATION_DIRECTORY" >&2; exit 64; }
@@ -60,6 +60,20 @@ PY
   fi
   exit 0
 fi
+if [ "$mode" = recover ]; then
+  operation_id=${1:-}
+  operations=/var/lib/buzz-server/runtime/deploy/operations
+  record="$operations/$operation_id/operation.json"
+  [ -n "$operation_id" ] && [ -f "$record" ] || { echo "deployment operation not found" >&2; exit 66; }
+  state=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("state",""))' "$record")
+  unit=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("unit",""))' "$record")
+  [ "$state" = started ] || { echo "deployment is not recoverable from state: $state" >&2; exit 65; }
+  ! systemctl is-active --quiet "$unit" || { echo "deployment unit is already active: $unit" >&2; exit 75; }
+  operation_root=/var/lib/buzz-server/runtime/deploy/$operation_id
+  [ -x "$operation_root/buzz-server/deploy/install-release.sh" ] || { echo "staged installer is missing; deployment cannot be recovered" >&2; exit 66; }
+  systemd-run --unit="$unit" --collect --service-type=oneshot --property=KillMode=control-group --property=TimeoutStartSec=infinity -- "$operation_root/buzz-server/deploy/install-release.sh" --run "$operation_root"
+  exit 0
+fi
 if [ "$mode" = handoff ]; then
   [ "${1:-}" = deploy ] || { echo "usage: install-release.sh --handoff deploy VERSION TARGET [OWNER/REPOSITORY]" >&2; exit 64; }
   shift
@@ -90,11 +104,13 @@ if [ "$mode" = install ]; then
     exit 78
   fi
 fi
-for command in curl tar sha256sum awk mktemp python3; do command -v "$command" >/dev/null 2>&1 || { echo "required command not found: $command" >&2; exit 69; }; done
+for command in curl tar sha256sum awk mktemp python3 flock; do command -v "$command" >/dev/null 2>&1 || { echo "required command not found: $command" >&2; exit 69; }; done
 
 if [ "$mode" = handoff ]; then
   operations=/var/lib/buzz-server/runtime/deploy/operations
   install -d -o root -g root -m 0700 /var/lib/buzz-server/runtime/deploy "$operations"
+  exec 9>"$operations/.lock"
+  flock -x 9
   for record in "$operations"/*/operation.json; do
     [ -f "$record" ] || continue
     unit=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r.get("unit","") if r.get("state") in {"accepted","started"} else "")' "$record")

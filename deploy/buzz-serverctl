@@ -17,6 +17,10 @@ case "$command" in
       shift 2
       exec /usr/libexec/buzz-server/install-release.sh --status "$@"
     fi
+    if [ "${2:-}" = recover ]; then
+      shift 2
+      exec /usr/libexec/buzz-server/install-release.sh --recover "$@"
+    fi
     exec /usr/libexec/buzz-server/install-release.sh --handoff "$@"
     ;;
   redeploy)
@@ -80,7 +84,7 @@ case "$command" in
     fi
     ;;
   *)
-    echo "usage: buzz-serverctl {health|check|start|restart|stop|status|deploy|rollback|backup|restore}" >&2
+    echo "usage: buzz-serverctl {health|check|start|restart|stop|status|deploy [status|recover]|rollback|backup|restore}" >&2
     exit 64
     ;;
 esac

@@ -2851,7 +2851,7 @@ mod tests {
             OsString::from("--check-config"),
             OsString::from("config.json"),
         ];
-        assert_eq!(parse_args_from(args.into_iter()).unwrap().1, true);
+        assert!(parse_args_from(args.into_iter()).unwrap().1);
         let source = include_str!("../config/buzz-server.dev.example.json");
         let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
         value["unknown"] = serde_json::json!(true);
