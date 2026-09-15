@@ -62,6 +62,7 @@ impl<S: LifecycleApplication> LifecycleJsonRouter<S> {
 
 #[derive(serde::Serialize)]
 #[serde(tag = "status", content = "value", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 enum LifecycleWireResponse {
     Ok(LifecycleRouteResource),
     Error(ApiError),
