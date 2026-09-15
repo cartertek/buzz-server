@@ -16,7 +16,10 @@ use std::{
 };
 
 #[cfg(unix)]
-use std::os::unix::{fs::OpenOptionsExt, process::CommandExt};
+use std::os::unix::{
+    fs::OpenOptionsExt,
+    process::{CommandExt, ExitStatusExt},
+};
 
 use crate::{
     launch::{AppServerLogsStatus, HealthPolicy, ParentWaitOutcome, SecretRef},
@@ -32,6 +35,7 @@ use nix::{
 
 const LAUNCH_MARKER: &str = "BUZZ_SERVER_LAUNCH_ID";
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+pub const STARTUP_WINDOW: Duration = Duration::from_secs(10);
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 pub trait SecretResolver {
@@ -46,6 +50,13 @@ pub trait ProcessSupervisor {
         secrets: &dyn SecretResolver,
     ) -> Result<ProcessReceipt, SupervisorError>;
     fn inspect(&self, receipt: &ProcessReceipt) -> Result<ProcessReceipt, SupervisorError>;
+    /// Confirm that the exact spawned process survives the startup window.
+    /// Implementations must not hold their process registry lock while waiting.
+    fn confirm_startup(
+        &self,
+        receipt: &ProcessReceipt,
+        timeout: Duration,
+    ) -> Result<ProcessReceipt, SupervisorError>;
     fn stop(&self, receipt: &ProcessReceipt) -> Result<ProcessReceipt, SupervisorError>;
 }
 
@@ -59,6 +70,8 @@ pub enum SupervisorError {
     Preflight(String),
     #[error("process receipt is not owned by this launch")]
     ReceiptMismatch,
+    #[error("process exited during startup: {0}")]
+    Startup(String),
     #[error("process operation failed: {0}")]
     Io(#[from] io::Error),
     #[error("process lock is poisoned")]
@@ -138,6 +151,8 @@ impl ManagedChild {
             && self.receipt.desired == receipt.desired
             && self.receipt.pid == receipt.pid
             && self.receipt.started_at_unix_ms == receipt.started_at_unix_ms
+            && self.receipt.process_start_ticks == receipt.process_start_ticks
+            && self.receipt.command_path == receipt.command_path
     }
 }
 
@@ -636,6 +651,75 @@ impl ProcessSupervisor for LocalProcessAdapter {
         Ok(receipt)
     }
 
+    fn confirm_startup(
+        &self,
+        receipt: &ProcessReceipt,
+        timeout: Duration,
+    ) -> Result<ProcessReceipt, SupervisorError> {
+        receipt.validate()?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            let terminal = {
+                let mut children = self
+                    .children
+                    .lock()
+                    .map_err(|_| SupervisorError::LockPoisoned)?;
+                let status = {
+                    let managed = children
+                        .get_mut(&receipt.pid)
+                        .ok_or(SupervisorError::ReceiptMismatch)?;
+                    if !managed.matches(receipt) {
+                        return Err(SupervisorError::ReceiptMismatch);
+                    }
+                    managed.child.try_wait()?
+                };
+                if let Some(status) = status {
+                    let signal_error = Self::signal_group(receipt.pid, "-KILL").err();
+                    let reap_error = children
+                        .get_mut(&receipt.pid)
+                        .and_then(|managed| managed.child.wait().err());
+                    children.remove(&receipt.pid);
+                    if let Some(error) = signal_error {
+                        return Err(error);
+                    }
+                    if let Some(error) = reap_error {
+                        return Err(error.into());
+                    }
+                    Some(status)
+                } else {
+                    None
+                }
+            };
+            if let Some(status) = terminal {
+                let mut stderr = String::new();
+                for _ in 0..10 {
+                    stderr = self.read_log_tail(&receipt.launch_id, true)?;
+                    if !stderr.is_empty() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                return Err(SupervisorError::Startup(format!(
+                    "{}; stderr: {}",
+                    exit_description(status),
+                    if stderr.is_empty() {
+                        "[no stderr captured]"
+                    } else {
+                        stderr.trim_end()
+                    }
+                )));
+            }
+            if Instant::now() >= deadline {
+                let mut confirmed = receipt.clone();
+                if confirmed.observed_state == ObservedProcessState::Starting {
+                    confirmed.observe(ObservedProcessState::Healthy, None)?;
+                }
+                return Ok(confirmed);
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+    }
+
     fn inspect(&self, receipt: &ProcessReceipt) -> Result<ProcessReceipt, SupervisorError> {
         receipt.validate()?;
         let mut observed = receipt.clone();
@@ -776,6 +860,10 @@ fn write_log_provenance(
 }
 
 fn exit_description(status: ExitStatus) -> String {
+    #[cfg(unix)]
+    if let Some(signal) = status.signal() {
+        return format!("signal {signal}");
+    }
     status.code().map_or_else(
         || "terminated by signal".to_owned(),
         |code| format!("exit {code}"),
@@ -1242,6 +1330,18 @@ mod tests {
     impl SecretResolver for NoSecrets {
         fn resolve(&self, _reference: &SecretRef) -> Result<String, SupervisorError> {
             Err(SupervisorError::SecretResolution)
+        }
+    }
+
+    struct HarnessSecret;
+
+    impl SecretResolver for HarnessSecret {
+        fn resolve(&self, reference: &SecretRef) -> Result<String, SupervisorError> {
+            if reference.key == crate::launch::HARNESS_PRIVATE_KEY_ENV {
+                Ok("configured-private-key-value".into())
+            } else {
+                Err(SupervisorError::SecretResolution)
+            }
         }
     }
 
@@ -1822,6 +1922,75 @@ mod tests {
         assert!(stderr.len() <= 128);
         assert!(stderr.contains("[REDACTED CHILD OUTPUT]"));
         assert!(!stderr.contains("credential"));
+    }
+
+    #[test]
+    fn startup_window_rejects_immediate_exit_and_reports_exit_code() {
+        let directory = tempfile::tempdir().unwrap();
+        let adapter = adapter(directory.path(), 4096);
+        let mut desired = launch(directory.path(), "exit 7");
+        desired.harness.path = "/bin/sh".into();
+        desired.harness_arguments = vec!["-c".into(), "exit 7".into()];
+        let receipt = adapter.start(&desired, &NoSecrets).unwrap();
+        let error = adapter
+            .confirm_startup(&receipt, Duration::from_millis(250))
+            .unwrap_err();
+        assert!(matches!(error, SupervisorError::Startup(detail) if detail.contains("exit 7")));
+    }
+
+    #[test]
+    fn startup_window_redacts_the_configured_harness_secret() {
+        let directory = tempfile::tempdir().unwrap();
+        let adapter = adapter(directory.path(), 4096);
+        let mut desired = launch(directory.path(), "exit 1");
+        desired.harness.path = "/bin/sh".into();
+        desired.harness_arguments = vec![
+            "-c".into(),
+            "printf '%s\\n' \"$BUZZ_PRIVATE_KEY\" >&2; exit 1".into(),
+        ];
+        desired.secret_environment.insert(
+            crate::launch::HARNESS_PRIVATE_KEY_ENV.into(),
+            SecretRef {
+                key: crate::launch::HARNESS_PRIVATE_KEY_ENV.into(),
+                version: None,
+            },
+        );
+        let receipt = adapter.start(&desired, &HarnessSecret).unwrap();
+        let error = adapter
+            .confirm_startup(&receipt, Duration::from_millis(250))
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("configured-private-key-value"));
+        assert!(error.contains("[REDACTED CHILD OUTPUT]"));
+    }
+
+    #[test]
+    fn startup_window_rejects_process_exiting_before_startup_window() {
+        let directory = tempfile::tempdir().unwrap();
+        let adapter = adapter(directory.path(), 4096);
+        let mut desired = launch(directory.path(), "sleep 9");
+        desired.harness.path = "/bin/sh".into();
+        desired.harness_arguments = vec!["-c".into(), "sleep 9".into()];
+        let receipt = adapter.start(&desired, &NoSecrets).unwrap();
+        let error = adapter
+            .confirm_startup(&receipt, STARTUP_WINDOW)
+            .unwrap_err();
+        assert!(matches!(error, SupervisorError::Startup(detail) if detail.contains("exit")));
+    }
+
+    #[test]
+    fn startup_window_accepts_a_process_after_an_injected_window() {
+        let directory = tempfile::tempdir().unwrap();
+        let adapter = adapter(directory.path(), 4096);
+        let mut desired = launch(directory.path(), "sleep 1");
+        desired.harness.path = "/bin/sh".into();
+        desired.harness_arguments = vec!["-c".into(), "sleep 1".into()];
+        let receipt = adapter.start(&desired, &NoSecrets).unwrap();
+        let confirmed = adapter
+            .confirm_startup(&receipt, Duration::from_millis(50))
+            .unwrap();
+        assert_eq!(confirmed.observed_state, ObservedProcessState::Healthy);
+        adapter.stop(&confirmed).unwrap();
     }
 
     #[test]
