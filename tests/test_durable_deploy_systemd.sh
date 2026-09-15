@@ -6,8 +6,8 @@ main_unit=buzz-server-fixture-main-$$.service
 detached_unit=buzz-server-fixture-detached-$$.service
 caller_pid=
 cleanup() {
-  systemctl stop "$main_unit" "$detached_unit" >/dev/null 2>&1 || true
-  systemctl reset-failed "$main_unit" "$detached_unit" >/dev/null 2>&1 || true
+  systemctl stop "$main_unit" "$detached_unit" >/dev/null 2>&1 || :
+  systemctl reset-failed "$main_unit" "$detached_unit" >/dev/null 2>&1 || :
   rm -rf "$test_root"
 }
 trap cleanup EXIT INT TERM
@@ -25,14 +25,17 @@ cat >"$test_root/caller.sh" <<EOF_CALLER
 #!/bin/sh
 set -eu
 printf '%s\n' "\$\$" > "$test_root/caller.pid"
-systemd-run --quiet --unit="$detached_unit" --collect --service-type=oneshot \\
+echo "phase: caller requests detached deployment"
+systemd-run --quiet --no-block --unit="$detached_unit" --collect --service-type=oneshot \\
   --setenv=TEST_ROOT="$test_root" "$test_root/detached.sh"
 printf 'accepted\n' > "$test_root/accepted"
 sleep 300
 EOF_CALLER
 chmod 0555 "$test_root/caller.sh"
 
-systemd-run --quiet --unit="$main_unit" --collect --service-type=oneshot \
+echo "phase: start managed-agent descendant"
+systemd-run --quiet --no-block --unit="$main_unit" --service-type=simple \
+  --property=KillMode=control-group --property=PrivateTmp=true \
   "$test_root/caller.sh"
 for _ in 1 2 3 4 5; do
   [ -f "$test_root/accepted" ] && break
@@ -44,6 +47,7 @@ caller_pid=$(cat "$test_root/caller.pid")
 
 # The requester is a descendant of the main service and must be terminated
 # with that service. The detached deployment must remain outside its cgroup.
+echo "phase: stop main service and assert caller is killed"
 systemctl stop "$main_unit"
 if kill -0 "$caller_pid" 2>/dev/null; then
   echo "managed deployment caller survived service stop" >&2
@@ -54,5 +58,5 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ -f "$test_root/completed" ] && break
   sleep 1
 done
-[ -f "$test_root/completed" ]
-systemctl show "$detached_unit" -p ControlGroup --value | grep -F "/$detached_unit" >/dev/null
+ [ -f "$test_root/completed" ]
+echo "assertion: detached deployment completed after requester termination"

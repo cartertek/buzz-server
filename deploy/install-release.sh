@@ -71,7 +71,7 @@ if [ "$mode" = recover ]; then
   ! systemctl is-active --quiet "$unit" || { echo "deployment unit is already active: $unit" >&2; exit 75; }
   operation_root=/var/lib/buzz-server/runtime/deploy/$operation_id
   [ -x "$operation_root/buzz-server/deploy/install-release.sh" ] || { echo "staged installer is missing; deployment cannot be recovered" >&2; exit 66; }
-  systemd-run --unit="$unit" --collect --service-type=oneshot --property=KillMode=control-group --property=TimeoutStartSec=infinity -- "$operation_root/buzz-server/deploy/install-release.sh" --run "$operation_root"
+  systemd-run --no-block --unit="$unit" --collect --service-type=oneshot --property=KillMode=control-group --property=TimeoutStartSec=infinity -- "$operation_root/buzz-server/deploy/install-release.sh" --run "$operation_root"
   exit 0
 fi
 if [ "$mode" = handoff ]; then
@@ -127,7 +127,7 @@ if [ "$mode" = handoff ]; then
     echo "release staging failed; operation retained at $operation" >&2
     exit 1
   fi
-  if ! systemd-run --unit="$unit" --collect --service-type=oneshot --property=KillMode=control-group --property=TimeoutStartSec=infinity -- "$operation/buzz-server/deploy/install-release.sh" --run "$operation"; then
+  if ! systemd-run --no-block --unit="$unit" --collect --service-type=oneshot --property=KillMode=control-group --property=TimeoutStartSec=infinity -- "$operation/buzz-server/deploy/install-release.sh" --run "$operation"; then
     update_state failed "systemd-run failed"
     echo "systemd-run failed; operation retained at $operation" >&2
     exit 1
