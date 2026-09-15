@@ -2236,14 +2236,18 @@ fn reconcile_dynamic_lifecycle_operation(
             health: context.config.health.clone(),
         },
     )?;
-    for internal_key in [HARNESS_PRIVATE_KEY_ENV, HARNESS_AUTH_TAG_ENV] {
+    for internal_key in [
+        buzz_server::launch::HARNESS_PRIVATE_KEY_ENV,
+        buzz_server::launch::HARNESS_AUTH_TAG_ENV,
+    ] {
         if dynamic_launch.secret_environment.contains_key(internal_key) {
-            return Err(buzz_server::LaunchResolutionError::Validation(
+            return Err(DaemonError::Launch(
+                buzz_server::LaunchResolutionError::Validation(
                 buzz_server::ValidationError::new(
                     "secret_environment",
                     format!("configured secret key {internal_key} collides with a Server-internal secret"),
                 ),
-            ));
+            )));
         }
     }
     dynamic_launch.environment.insert(
