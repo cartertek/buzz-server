@@ -4,7 +4,10 @@ use std::{collections::BTreeMap, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{community::validate_nonempty, AgentId, CommunityConfigId, RuntimeId, ValidationError};
+use crate::{
+    community::validate_nonempty, launch::SecretRef, provider::secret_shaped_key, AgentId,
+    CommunityConfigId, RuntimeId, ValidationError,
+};
 
 pub const DEFAULT_AGENT_PARALLELISM: u32 = 10;
 
@@ -49,20 +52,15 @@ pub struct RuntimeSpec {
     pub runtime_id: RuntimeId,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secret_environment: BTreeMap<String, SecretRef>,
 }
 
 impl RuntimeSpec {
     pub fn validate(&self) -> Result<(), ValidationError> {
-        if self
-            .environment
-            .keys()
-            .any(|key| !valid_environment_key(key))
-        {
-            return Err(ValidationError::new(
-                "runtime.environment",
-                "contains an invalid environment variable name",
-            ));
-        }
+        validate_environment(&self.environment)
+            .map_err(|error| ValidationError::new("runtime.environment", error.message))?;
+        validate_secret_environment(&self.environment, &self.secret_environment, "runtime")?;
         Ok(())
     }
 }
@@ -110,6 +108,8 @@ pub struct PersonaDefinition {
     pub name_pool: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secret_environment: BTreeMap<String, SecretRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub respond_to: Option<RespondToMode>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -135,6 +135,7 @@ impl PersonaDefinition {
             ));
         }
         validate_environment(&self.environment)?;
+        validate_secret_environment(&self.environment, &self.secret_environment, "persona")?;
         validate_behavior(
             self.parallelism,
             self.respond_to,
@@ -169,6 +170,8 @@ pub struct AgentConfigFile {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secret_environment: BTreeMap<String, SecretRef>,
     /// Host filesystem identity for the local runtime. When omitted, Buzz
     /// Server provisions a dedicated Unix account for this agent.
     #[serde(default, skip_serializing_if = "FilesystemConfig::is_default")]
@@ -243,6 +246,7 @@ impl AgentConfigFile {
             ));
         }
         validate_environment(&self.environment)?;
+        validate_secret_environment(&self.environment, &self.secret_environment, "agent")?;
         self.filesystem.validate()?;
         validate_agent_args(&self.agent_args)?;
         validate_behavior(
@@ -321,6 +325,54 @@ fn validate_environment(environment: &BTreeMap<String, String>) -> Result<(), Va
             "contains an invalid environment variable name",
         ));
     }
+    if environment.keys().any(|key| secret_shaped_key(key)) {
+        return Err(ValidationError::new(
+            "environment",
+            "contains a secret-shaped key; use secret_environment with a Server secret reference",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_secret_environment(
+    environment: &BTreeMap<String, String>,
+    secret_environment: &BTreeMap<String, SecretRef>,
+    scope: &str,
+) -> Result<(), ValidationError> {
+    for (key, reference) in secret_environment {
+        if !valid_environment_key(key) {
+            return Err(ValidationError::new(
+                "secret_environment",
+                "contains an invalid environment variable name",
+            ));
+        }
+        if environment.contains_key(key) {
+            return Err(ValidationError::new(
+                "secret_environment",
+                format!("{scope} secret key {key} shadows a non-secret environment value"),
+            ));
+        }
+        if reference.key.is_empty()
+            || reference.key.len() > 256
+            || reference.key.contains(char::is_whitespace)
+            || reference.key.contains('\0')
+        {
+            return Err(ValidationError::new(
+                "secret_environment",
+                "contains an invalid secret reference",
+            ));
+        }
+        if reference
+            .version
+            .as_ref()
+            .is_some_and(|version| version.is_empty() || version.len() > 160)
+        {
+            return Err(ValidationError::new(
+                "secret_environment",
+                "secret reference version must contain 1 to 160 characters when present",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -388,6 +440,7 @@ mod tests {
             runtime: RuntimeSpec {
                 runtime_id: "codex-acp".parse().unwrap(),
                 environment: BTreeMap::from([("CODEX_HOME".to_owned(), "/state".to_owned())]),
+                secret_environment: BTreeMap::new(),
             },
             desired_state: DesiredAgentState::Enabled,
         }
@@ -408,6 +461,111 @@ mod tests {
             .environment
             .insert("invalid-key".to_owned(), "secret".to_owned());
         assert_eq!(spec.validate().unwrap_err().field, "runtime.environment");
+    }
+
+    #[test]
+    fn plain_environment_rejects_secret_shaped_keys_but_accepts_ordinary_keys() {
+        let mut spec = valid_spec();
+        spec.runtime
+            .environment
+            .insert("OPENAI_API_KEY".to_owned(), "inline-value".to_owned());
+        let error = spec.validate().unwrap_err();
+        assert_eq!(error.field, "runtime.environment");
+        assert!(!error.to_string().contains("inline-value"));
+
+        let mut persona = PersonaDefinition {
+            id: "safe".into(),
+            display_name: "Safe".into(),
+            avatar_url: None,
+            system_prompt: "Safe".into(),
+            runtime: None,
+            model: None,
+            provider: None,
+            name_pool: vec![],
+            environment: BTreeMap::from([(String::from("LOG_LEVEL"), String::from("info"))]),
+            secret_environment: BTreeMap::new(),
+            respond_to: None,
+            respond_to_allowlist: vec![],
+            parallelism: None,
+            is_builtin: false,
+            is_active: true,
+            shared: false,
+        };
+        persona.validate().unwrap();
+        persona
+            .environment
+            .insert("SERVICE_PASSWORD".into(), "inline-value".into());
+        assert_eq!(persona.validate().unwrap_err().field, "environment");
+    }
+
+    #[test]
+    fn config_files_round_trip_secret_references_and_omit_legacy_field() {
+        let secret = SecretRef {
+            key: "agent/example/openai".into(),
+            version: Some("v1".into()),
+        };
+        let agent = AgentConfigFile {
+            id: AgentId::new(),
+            display_name: "Builder".into(),
+            persona_id: None,
+            avatar_url: None,
+            system_prompt: Some("Build safely.".into()),
+            system_prompt_file: None,
+            runtime: Some("codex-acp".parse().unwrap()),
+            model: None,
+            provider: None,
+            environment: BTreeMap::from([(String::from("LOG_LEVEL"), String::from("info"))]),
+            secret_environment: BTreeMap::from([(String::from("OPENAI_API_KEY"), secret)]),
+            filesystem: FilesystemConfig::default(),
+            auto_join_open_channels: AutoJoinOpenChannels::Disabled,
+            agent_args: vec![],
+            parallelism: DEFAULT_AGENT_PARALLELISM,
+            respond_to: RespondToMode::OwnerOnly,
+            respond_to_allowlist: vec![],
+            idle_timeout_seconds: None,
+            max_turn_duration_seconds: None,
+        };
+        let encoded = serde_json::to_string(&agent).unwrap();
+        assert!(encoded.contains("agent/example/openai"));
+        assert!(!encoded.contains("inline-value"));
+        assert_eq!(
+            serde_json::from_str::<AgentConfigFile>(&encoded).unwrap(),
+            agent
+        );
+
+        let mut legacy = serde_json::to_value(&agent).unwrap();
+        legacy.as_object_mut().unwrap().remove("secret_environment");
+        let loaded = serde_json::from_value::<AgentConfigFile>(legacy).unwrap();
+        assert!(loaded.secret_environment.is_empty());
+    }
+
+    #[test]
+    fn secret_environment_round_trips_without_a_secret_value() {
+        let mut spec = valid_spec();
+        spec.runtime.secret_environment.insert(
+            "OPENAI_API_KEY".into(),
+            SecretRef {
+                key: "agent/example/openai".into(),
+                version: Some("v1".into()),
+            },
+        );
+        let encoded = serde_json::to_string(&spec).unwrap();
+        assert!(encoded.contains("agent/example/openai"));
+        assert!(!encoded.contains("secret-value"));
+        assert_eq!(serde_json::from_str::<AgentSpec>(&encoded).unwrap(), spec);
+    }
+
+    #[test]
+    fn plain_and_secret_environment_keys_collide() {
+        let mut spec = valid_spec();
+        spec.runtime.secret_environment.insert(
+            "CODEX_HOME".into(),
+            SecretRef {
+                key: "x".into(),
+                version: None,
+            },
+        );
+        assert_eq!(spec.validate().unwrap_err().field, "secret_environment");
     }
 
     #[test]

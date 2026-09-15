@@ -272,6 +272,8 @@ fn route(
             display_name: required(options, "--display-name")?.into(),
             system_prompt: options.get("--system-prompt").cloned().unwrap_or_default(),
             runtime: optional_parse(options, "--runtime", "runtime ID")?,
+            environment: Default::default(),
+            secret_environment: Default::default(),
         })),
         "persona-get" => Ok(LifecycleRouteRequest::GetPersona {
             persona_id: required(options, "--persona")?.into(),
@@ -283,6 +285,8 @@ fn route(
                 display_name: options.get("--display-name").cloned(),
                 system_prompt: options.get("--system-prompt").cloned(),
                 runtime: optional_parse(options, "--runtime", "runtime ID")?,
+                environment: None,
+                secret_environment: None,
             },
         })),
         "persona-delete" => Ok(LifecycleRouteRequest::DeletePersona {
@@ -308,6 +312,8 @@ fn route(
                 system_prompt_file: options.get("--system-prompt-file").cloned(),
                 runtime_id: optional_parse(options, "--runtime", "runtime ID")?,
                 filesystem_user: options.get("--filesystem-user").cloned(),
+                environment: None,
+                secret_environment: None,
             },
         })),
         "enable" | "disable" => Ok(LifecycleRouteRequest::ChangeAgentState(
@@ -355,6 +361,8 @@ fn create_input(options: &BTreeMap<String, String>) -> Result<CreateAgentInput, 
         system_prompt_file: options.get("--system-prompt-file").cloned(),
         runtime_id: optional_parse(options, "--runtime", "runtime ID")?,
         filesystem_user: options.get("--filesystem-user").cloned(),
+        environment: Default::default(),
+        secret_environment: Default::default(),
     })
 }
 

@@ -83,6 +83,7 @@ pub trait LifecycleEffects: Send + Sync {
             runtime: RuntimeSpec {
                 runtime_id,
                 environment: Default::default(),
+                secret_environment: Default::default(),
             },
             desired_state: DesiredAgentState::Enabled,
         })
@@ -875,6 +876,7 @@ fn agent_resource(
         system_prompt: agent.system_prompt,
         system_prompt_file,
         runtime_id: agent.runtime.runtime_id,
+        secret_environment: agent.runtime.secret_environment,
         desired_state: agent.desired_state,
         purge_after,
         public_key,
@@ -967,6 +969,8 @@ mod tests {
                     persona_id: None,
                     system_prompt: Some("Build safely.".into()),
                     system_prompt_file: None,
+                    environment: Default::default(),
+                    secret_environment: Default::default(),
                     runtime_id: Some("codex-acp".parse().unwrap()),
                     filesystem_user: None,
                 },
@@ -1008,6 +1012,8 @@ mod tests {
                 system_prompt_file: None,
                 runtime_id: Some("codex-acp".parse().unwrap()),
                 filesystem_user: None,
+                environment: Default::default(),
+                secret_environment: Default::default(),
             },
         };
         let first_id;
@@ -1059,6 +1065,8 @@ mod tests {
                     system_prompt_file: None,
                     runtime_id: Some("codex-acp".parse().unwrap()),
                     filesystem_user: None,
+                    environment: Default::default(),
+                    secret_environment: Default::default(),
                 },
             )
             .unwrap();
@@ -1117,6 +1125,8 @@ mod tests {
                         system_prompt_file: None,
                         runtime_id: Some("codex-acp".parse().unwrap()),
                         filesystem_user: None,
+                        environment: Default::default(),
+                        secret_environment: Default::default(),
                     },
                 },
             )
@@ -1176,6 +1186,8 @@ mod tests {
                     system_prompt_file: None,
                     runtime_id: Some("codex-acp".parse().unwrap()),
                     filesystem_user: None,
+                    environment: Default::default(),
+                    secret_environment: Default::default(),
                 },
             )
             .unwrap();

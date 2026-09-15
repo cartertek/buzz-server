@@ -308,6 +308,7 @@ mod tests {
             runtime: RuntimeSpec {
                 runtime_id: RuntimeId::parse("test-runtime").unwrap(),
                 environment: BTreeMap::new(),
+                secret_environment: BTreeMap::new(),
             },
             desired_state: state,
         }

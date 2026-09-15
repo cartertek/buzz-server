@@ -530,7 +530,7 @@ fn validate_config_against_schema(
     Ok(())
 }
 
-fn secret_shaped_key(key: &str) -> bool {
+pub(crate) fn secret_shaped_key(key: &str) -> bool {
     let mut words = Vec::new();
     let mut current = String::new();
     let characters: Vec<char> = key.chars().collect();

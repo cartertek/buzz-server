@@ -26,6 +26,8 @@ pub struct AgentCreateFileOptions {
     pub system_prompt_file: Option<String>,
     pub runtime: Option<RuntimeId>,
     pub filesystem_user: Option<String>,
+    pub environment: BTreeMap<String, String>,
+    pub secret_environment: BTreeMap<String, crate::launch::SecretRef>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -195,6 +197,7 @@ impl AgentFileStore {
             model: None,
             provider: None,
             environment: spec.runtime.environment.clone(),
+            secret_environment: spec.runtime.secret_environment.clone(),
             filesystem: Default::default(),
             auto_join_open_channels: AutoJoinOpenChannels::Disabled,
             agent_args: vec![],
@@ -213,7 +216,7 @@ impl AgentFileStore {
         desired_state: DesiredAgentState,
     ) -> Result<ResolvedAgentConfig, AgentFileError> {
         file.validate()?;
-        let (runtime_id, system_prompt, model, provider, environment) =
+        let (runtime_id, system_prompt, model, provider, environment, secret_environment) =
             if let Some(persona_id) = file.persona_id.as_deref() {
                 let persona = self.load_persona(persona_id)?;
                 let runtime = file
@@ -223,12 +226,15 @@ impl AgentFileStore {
                     .ok_or_else(|| AgentFileError::RuntimeRequired(persona_id.to_owned()))?;
                 let mut env = persona.environment;
                 env.extend(file.environment.clone());
+                let mut secret_env = persona.secret_environment;
+                secret_env.extend(file.secret_environment.clone());
                 (
                     runtime,
                     persona.system_prompt.trim().to_owned(),
                     nonblank(persona.model),
                     nonblank(persona.provider),
                     env,
+                    secret_env,
                 )
             } else {
                 (
@@ -239,6 +245,7 @@ impl AgentFileStore {
                     nonblank(file.model.clone()),
                     nonblank(file.provider.clone()),
                     file.environment.clone(),
+                    file.secret_environment.clone(),
                 )
             };
         let spec = AgentSpec {
@@ -249,6 +256,7 @@ impl AgentFileStore {
             runtime: RuntimeSpec {
                 runtime_id,
                 environment,
+                secret_environment,
             },
             desired_state,
         };
@@ -308,7 +316,8 @@ impl AgentFileStore {
             runtime: options.runtime,
             model: None,
             provider: None,
-            environment: BTreeMap::new(),
+            environment: options.environment,
+            secret_environment: options.secret_environment,
             filesystem: FilesystemConfig {
                 user: options.filesystem_user,
             },
@@ -405,6 +414,7 @@ mod tests {
                 ("PERSONA_ONLY".into(), "one".into()),
                 ("SHARED".into(), "persona".into()),
             ]),
+            secret_environment: BTreeMap::new(),
             respond_to: Some(RespondToMode::Anyone),
             respond_to_allowlist: vec![],
             parallelism: Some(3),
@@ -434,6 +444,7 @@ mod tests {
                 ("AGENT_ONLY".into(), "two".into()),
                 ("SHARED".into(), "agent".into()),
             ]),
+            secret_environment: BTreeMap::new(),
             filesystem: FilesystemConfig::default(),
             auto_join_open_channels: AutoJoinOpenChannels::All,
             agent_args: vec!["--stdio".into()],
@@ -606,6 +617,50 @@ mod tests {
             json.contains("\n  \"display_name\""),
             "files are pretty-printed"
         );
+    }
+
+    #[test]
+    fn agent_and_persona_files_round_trip_secret_references_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = AgentFileStore::new(directory.path()).unwrap();
+        let mut definition = persona();
+        definition.secret_environment.insert(
+            "OPENAI_API_KEY".into(),
+            crate::launch::SecretRef {
+                key: "agent/reviewer/openai".into(),
+                version: Some("generation-2".into()),
+            },
+        );
+        store.write_persona(&definition).unwrap();
+        assert_eq!(store.load_persona("reviewer").unwrap(), definition);
+        let persona_json =
+            std::fs::read_to_string(store.persona_path("reviewer").unwrap()).unwrap();
+        assert!(persona_json.contains("agent/reviewer/openai"));
+        assert!(!persona_json.contains("resolved-secret-value"));
+
+        let id = AgentId::new();
+        let file = store
+            .build_create_file(
+                id,
+                AgentCreateFileOptions {
+                    display_name: "Reviewer one".into(),
+                    persona_id: Some("reviewer".into()),
+                    secret_environment: BTreeMap::from([(
+                        "ANTHROPIC_API_KEY".into(),
+                        crate::launch::SecretRef {
+                            key: "agent/reviewer/anthropic".into(),
+                            version: None,
+                        },
+                    )]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        store.write_agent(&file).unwrap();
+        assert_eq!(store.load_agent(id).unwrap(), file);
+        let agent_json = std::fs::read_to_string(store.agent_path(id)).unwrap();
+        assert!(agent_json.contains("agent/reviewer/anthropic"));
+        assert!(!agent_json.contains("resolved-secret-value"));
     }
 
     #[test]

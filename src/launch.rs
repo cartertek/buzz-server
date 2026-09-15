@@ -197,7 +197,7 @@ impl LaunchSpec {
             } => (format!("{manager}:{name}"), None),
         };
         let resolved_preflight = runtime.preflight.clone();
-        let mut secret_environment = BTreeMap::new();
+        let mut secret_environment = agent.runtime.secret_environment.clone();
         for required in &runtime.required_secrets {
             if agent
                 .runtime
@@ -207,6 +207,20 @@ impl LaunchSpec {
                 return Err(LaunchResolutionError::SecretShadow(
                     required.environment_key.clone(),
                 ));
+            }
+            if agent
+                .runtime
+                .secret_environment
+                .contains_key(&required.environment_key)
+            {
+                return Err(ValidationError::new(
+                    "secret_environment",
+                    format!(
+                        "configured secret key {} collides with runtime-required secret",
+                        required.environment_key
+                    ),
+                )
+                .into());
             }
             secret_environment.insert(
                 required.environment_key.clone(),
@@ -869,6 +883,20 @@ mod tests {
     }
 
     #[test]
+    fn secret_reference_version_changes_launch_identity() {
+        let launch = spec();
+        let mut rotated = launch.clone();
+        rotated
+            .secret_environment
+            .get_mut("BUZZ_PRIVATE_KEY")
+            .unwrap()
+            .version = Some("4".into());
+        assert_ne!(launch.identity(), rotated.identity());
+        let durable = receipt(&launch);
+        assert!(!rotated.can_adopt(&durable));
+    }
+
+    #[test]
     fn terminal_receipts_cannot_be_resurrected() {
         let launch = spec();
         let mut durable = receipt(&launch);
@@ -890,6 +918,7 @@ mod tests {
             runtime: RuntimeSpec {
                 runtime_id: RuntimeId::parse("codex-acp").unwrap(),
                 environment: BTreeMap::from([("RUST_LOG".into(), "info".into())]),
+                secret_environment: BTreeMap::new(),
             },
             desired_state: crate::DesiredAgentState::Enabled,
         };
@@ -977,8 +1006,36 @@ mod tests {
                     health: resolved.health.clone(),
                 },
             ),
-            Err(LaunchResolutionError::SecretShadow(key)) if key == "OPENAI_API_KEY"
+            Err(LaunchResolutionError::Validation(error))
+                if error.field == "runtime.environment"
         ));
+
+        let mut configured_secret_agent = agent.clone();
+        configured_secret_agent.runtime.secret_environment.insert(
+            "OPENAI_API_KEY".into(),
+            SecretRef {
+                key: "agent/configured/openai".into(),
+                version: Some("1".into()),
+            },
+        );
+        let error = LaunchSpec::resolve_local(
+            &configured_secret_agent,
+            &catalog,
+            LocalLaunchContext {
+                launch_id: resolved.launch_id.clone(),
+                harness: resolved.harness.clone(),
+                harness_arguments: resolved.harness_arguments.clone(),
+                working_directory: resolved.working_directory.clone(),
+                workspace_path: resolved.workspace_path.clone(),
+                runtime_path: resolved.runtime_path.clone(),
+                process_group_id: resolved.process_group_id.clone(),
+                restart: resolved.restart.clone(),
+                health: resolved.health.clone(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("runtime-required secret"));
+        assert!(!error.to_string().contains("agent/configured/openai"));
 
         let mut overriding_agent = agent.clone();
         overriding_agent.runtime.environment.insert(

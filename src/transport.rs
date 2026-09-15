@@ -62,6 +62,7 @@ impl<S: LifecycleApplication> LifecycleJsonRouter<S> {
 
 #[derive(serde::Serialize)]
 #[serde(tag = "status", content = "value", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 enum LifecycleWireResponse {
     Ok(LifecycleRouteResource),
     Error(ApiError),
@@ -603,6 +604,7 @@ mod tests {
                 system_prompt: input.system_prompt.clone().unwrap_or_default(),
                 system_prompt_file: input.system_prompt_file.clone(),
                 runtime_id: input.runtime_id.clone().expect("test input has runtime"),
+                secret_environment: input.secret_environment.clone(),
                 desired_state: crate::DesiredAgentState::Enabled,
                 purge_after: None,
                 public_key: None,
@@ -724,6 +726,8 @@ mod tests {
                 system_prompt_file: Some("/etc/buzz/prompts/builder.md".into()),
                 runtime_id: Some("codex-acp".parse().unwrap()),
                 filesystem_user: None,
+                environment: Default::default(),
+                secret_environment: Default::default(),
             },
         });
         let created = router.handle(&administrator(), &serde_json::to_vec(&create).unwrap());
