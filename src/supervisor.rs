@@ -1459,7 +1459,7 @@ mod tests {
         let error = adapter(directory.path(), 1024)
             .resolve_environment(&desired, &NoSecrets, None)
             .unwrap_err();
-        assert_eq!(error, SupervisorError::SecretResolution);
+        assert!(matches!(error, SupervisorError::SecretResolution));
         let message = error.to_string();
         assert!(!message.contains("agent/missing/openai"));
         assert!(!message.contains("generation-7"));
