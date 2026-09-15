@@ -561,6 +561,31 @@ pub enum ObservedProcessState {
     Lost,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ParentWaitOutcome {
+    Exited { code: i32 },
+    Signaled { signal: i32 },
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppServerLogsStatus {
+    #[default]
+    Unset,
+    Configured,
+    Unwritable,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct LifecycleStamp {
+    pub actor: String,
+    pub decision: String,
+    pub occurred_at_unix_ms: u64,
+    pub before: ObservedProcessState,
+    pub after: ObservedProcessState,
+}
+
 impl ObservedProcessState {
     #[must_use]
     pub const fn is_terminal(self) -> bool {
@@ -598,6 +623,9 @@ impl ObservedProcessState {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProcessReceipt {
     pub launch_id: String,
+    /// A per-start generation. The stable launch_id remains the adoption key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
     pub agent_id: AgentId,
     pub process_group_id: String,
     pub desired: LaunchIdentity,
@@ -612,6 +640,18 @@ pub struct ProcessReceipt {
     pub observed_state: ObservedProcessState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_outcome: Option<ParentWaitOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+    #[serde(default)]
+    pub app_server_logs: AppServerLogsStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<LifecycleStamp>,
 }
 
 impl ProcessReceipt {
@@ -755,6 +795,7 @@ mod tests {
     fn receipt(spec: &LaunchSpec) -> ProcessReceipt {
         ProcessReceipt {
             launch_id: spec.launch_id.clone(),
+            generation: None,
             agent_id: spec.agent_id,
             process_group_id: spec.process_group_id.clone(),
             desired: spec.identity(),
@@ -764,6 +805,12 @@ mod tests {
             command_path: Some(spec.harness.path.clone()),
             observed_state: ObservedProcessState::Healthy,
             exit_code: None,
+            wait_outcome: None,
+            ended_at_unix_ms: None,
+            duration_ms: None,
+            failure: None,
+            app_server_logs: AppServerLogsStatus::Unset,
+            lifecycle: None,
         }
     }
 
