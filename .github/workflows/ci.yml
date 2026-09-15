@@ -32,6 +32,8 @@ jobs:
         run: sudo tests/test_durable_deploy_systemd.sh
       - name: Test transactional configuration schema boundary
         run: python3 -m unittest tests/test_deploy_config_schema.py
+      - name: Test durable activation recovery boundaries
+        run: python3 -m unittest tests/test_activation_recovery.py
       - name: Test Buzz upstream release resolution
         run: bash tests/check_buzz_upstream.sh
       - run: cargo test --all-targets --locked

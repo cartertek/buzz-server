@@ -190,7 +190,8 @@ chmod 0555 \
   "$release_staging/share/deploy/migrate-legacy-owner.py" \
   "$release_staging/share/deploy/backup.sh" \
   "$release_staging/share/deploy/restore.sh" \
-  "$release_staging/share/deploy/healthcheck.sh"
+  "$release_staging/share/deploy/healthcheck.sh" \
+  "$release_staging/share/deploy/activation.py"
 chmod 0555 "$release_staging"
 release_source="$release_staging"
 if [ -e "$release" ] || [ -L "$release" ]; then
@@ -212,6 +213,7 @@ fi
 config_migrated=false
 config_backup="$operation_root/config.json.previous"
 config_candidate="$operation_root/config.json.candidate"
+activation_record=/var/lib/buzz-server/runtime/deploy/activation.json
 cp -p /etc/buzz-server/config.json "$config_backup"
 cp -p /etc/buzz-server/config.json "$config_candidate"
 legacy_owner_pubkey=
@@ -448,6 +450,43 @@ health_timer_existed=false
 [ ! -e /etc/systemd/system/buzz-server-healthcheck.service ] || { cp -L /etc/systemd/system/buzz-server-healthcheck.service "$health_service_backup"; health_service_existed=true; }
 [ ! -e /etc/systemd/system/buzz-server-healthcheck.timer ] || { cp -L /etc/systemd/system/buzz-server-healthcheck.timer "$health_timer_backup"; health_timer_existed=true; }
 
+if [ -n "$release_staging" ]; then
+  # The intended release must be durable before the guard is published. This
+  # also lets startup recovery complete the pair if the installer disappears.
+  mv -T "$release_staging" "$release"
+  release_staging=
+fi
+
+# Install the recovery helper and guarded unit before publishing the activation
+# record. From this point onward, a reboot runs recovery before ExecStart.
+install -o root -g root -m 0555 "$release_source/share/deploy/activation.py" /usr/libexec/buzz-server/activation.py
+install -o root -g root -m 0444 "$release_source/share/deploy/buzz-server.service" /etc/systemd/system/buzz-server.service
+run_bounded 20 "Reloading systemd configuration before activation" systemctl daemon-reload
+if [ -e "$activation_record" ]; then
+  run_bounded 20 "Reconciling previous durable activation" \
+    python3 "$release_source/share/deploy/activation.py" reconcile --record "$activation_record"
+fi
+if [ -n "$previous" ]; then
+  run_bounded 20 "Recording durable release/config activation" \
+    python3 "$release_source/share/deploy/activation.py" prepare \
+    --record "$activation_record" \
+    --current-link /opt/buzz-server/current \
+    --config-path /etc/buzz-server/config.json \
+    --previous-release "$previous" \
+    --previous-config "$config_backup" \
+    --intended-release "$release" \
+    --intended-config "$config_candidate"
+else
+  run_bounded 20 "Recording durable release/config activation" \
+    python3 "$release_source/share/deploy/activation.py" prepare \
+    --record "$activation_record" \
+    --current-link /opt/buzz-server/current \
+    --config-path /etc/buzz-server/config.json \
+    --previous-config "$config_backup" \
+    --intended-release "$release" \
+    --intended-config "$config_candidate"
+fi
+
 if timeout 5 systemctl cat buzz-server.service >/dev/null 2>&1; then
   drain_service "Stopping existing Buzz Server process tree"
 fi
@@ -469,16 +508,11 @@ chown -R buzz-server:buzz-agent "$new_codex_home"
 chmod 0700 "$new_codex_home"
 
 log "Activating release $identity-$target"
-if [ -n "$release_staging" ]; then
-  mv -T "$release_staging" "$release"
-  release_staging=
-fi
 ln -sfn "$release" /opt/buzz-server/current.next
 mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
 if [ "$config_migrated" = true ]; then
   install -o root -g buzz-server -m 0640 "$config_candidate" /etc/buzz-server/config.json
 fi
-install -o root -g root -m 0444 "$release/share/deploy/buzz-server.service" /etc/systemd/system/buzz-server.service
 install -o root -g root -m 0444 "$release/share/deploy/buzz-server-healthcheck.service" /etc/systemd/system/buzz-server-healthcheck.service
 install -o root -g root -m 0444 "$release/share/deploy/buzz-server-healthcheck.timer" /etc/systemd/system/buzz-server-healthcheck.timer
 ln -sfn /opt/buzz-server/current/share/deploy/install-release.sh /usr/libexec/buzz-server/install-release.sh
@@ -510,6 +544,8 @@ if [ "$deployment_ok" != true ]; then
   if [ -n "$previous" ] && [ -x "$previous/buzz-server" ]; then
     ln -sfn "$previous" /opt/buzz-server/current.next
     mv -Tf /opt/buzz-server/current.next /opt/buzz-server/current
+    python3 /usr/libexec/buzz-server/activation.py reconcile --record "$activation_record" ||
+      fail "deployment rollback left an unreconciled activation record"
     if [ "$unit_existed" = true ]; then install -o root -g root -m 0444 "$unit_backup" /etc/systemd/system/buzz-server.service; else rm -f /etc/systemd/system/buzz-server.service; fi
     if [ "$health_service_existed" = true ]; then install -o root -g root -m 0444 "$health_service_backup" /etc/systemd/system/buzz-server-healthcheck.service; else rm -f /etc/systemd/system/buzz-server-healthcheck.service; fi
     if [ "$health_timer_existed" = true ]; then install -o root -g root -m 0444 "$health_timer_backup" /etc/systemd/system/buzz-server-healthcheck.timer; else rm -f /etc/systemd/system/buzz-server-healthcheck.timer; fi
@@ -525,8 +561,12 @@ if [ "$deployment_ok" != true ]; then
   fi
   rm -f /opt/buzz-server/current
   timeout 20 systemctl --no-block stop buzz-server.service >/dev/null 2>&1 || true
+  python3 /usr/libexec/buzz-server/activation.py clear --record "$activation_record"
   fail "deployment failed; no previous release was available"
 fi
+
+python3 /usr/libexec/buzz-server/activation.py reconcile --record "$activation_record" ||
+  fail "successful deployment left an unreconciled activation record"
 
 if [ "$legacy_owner_migrated" = true ]; then
   "$release/buzz-secretsctl" clear-local     --key-file /etc/buzz-server/owner-secret     --marker /etc/buzz-server/owner-secret.keyring || true

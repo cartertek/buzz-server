@@ -8,6 +8,7 @@ Type=simple
 User=root
 Group=buzz-server
 SupplementaryGroups=buzz-agent
+ExecStartPre=+/usr/bin/python3 /usr/libexec/buzz-server/activation.py reconcile --record /var/lib/buzz-server/runtime/deploy/activation.json
 ExecStartPre=+/opt/buzz-server/current/share/deploy/prepare-community-identities.sh
 ExecStartPre=+/usr/bin/install -d -o buzz-server -g buzz-agent -m 0710 /var/lib/buzz-server/runtime
 ExecStartPre=+/usr/bin/install -d -o root -g buzz-agent -m 0710 /var/lib/buzz-server/agents
