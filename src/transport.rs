@@ -603,6 +603,7 @@ mod tests {
                 system_prompt: input.system_prompt.clone().unwrap_or_default(),
                 system_prompt_file: input.system_prompt_file.clone(),
                 runtime_id: input.runtime_id.clone().expect("test input has runtime"),
+                secret_environment: input.secret_environment.clone(),
                 desired_state: crate::DesiredAgentState::Enabled,
                 purge_after: None,
                 public_key: None,
