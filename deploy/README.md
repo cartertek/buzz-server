@@ -104,7 +104,11 @@ the operation requires a fresh deploy. Standalone installer operation roots are
 retained under the runtime deployment directory for operator cleanup.
 
 The installer enables the service for boot and restarts it after switching the
-release pointer. The systemd service uses `KillMode=control-group`; the daemon
+release pointer. Activation records are written before the pointer/config pair
+is changed. The service reconciles an incomplete record before starting, so a
+reboot between either swap restores a coherent previous pair or completes the
+intended pair; the guard is cleared only after the selected pair is durable.
+The systemd service uses `KillMode=control-group`; the daemon
 reconciles every hosted agent from durable database state after startup.
 
 Before a live deployment, replace example artifact paths, versions, and checksums.
