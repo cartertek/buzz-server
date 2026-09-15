@@ -114,15 +114,6 @@ sudo buzz-server agents create \
 
 Optionally pass either `--persona <persona-id>` or `--system-prompt '...'`.
 
-For a prompt maintained outside the JSON config, use
-`--system-prompt-file /absolute/path/to/prompt.md`. The path must be absolute
-and readable by the Buzz Server service account. A non-empty inline
-`system_prompt` takes precedence; otherwise the file is read as strict UTF-8
-each time the agent configuration is resolved, so edits take effect on the
-next restart or reconciliation. If the file is inside the agent's
-workspace, workspace-write access can therefore influence the next session's
-prompt; treat that as part of the workspace security boundary.
-
 Creating the agent starts its ACP runtime against the selected community relay.
 The response includes the new `agent_...` ID and the agent's Nostr public key.
 
@@ -177,6 +168,16 @@ all messages in every channel it belongs to with:
   "BUZZ_ACP_SUBSCRIBE": "all"
 }
 ```
+
+For a prompt maintained outside the JSON config, use
+`--system-prompt-file /absolute/path/to/prompt.md`. The path must be absolute and
+readable by the Buzz Server service account. A non-empty inline `system_prompt`
+takes precedence; otherwise the file is read as strict UTF-8 each time the agent
+configuration is resolved, so edits take effect on the next restart or
+reconciliation. If the file is inside the agent's workspace, workspace-write
+access can therefore influence the next session's prompt; treat that as part of
+the workspace security boundary. See [`docs/CLI.md`](docs/CLI.md) for file
+validation errors and the update behavior for transitioning from an inline prompt.
 
 `CODEX_HOME` is consumed by Codex; `BUZZ_ACP_SUBSCRIBE` is consumed by `buzz-acp`.
 The default `BUZZ_ACP_SUBSCRIBE=mentions` subscribes to events that structurally
