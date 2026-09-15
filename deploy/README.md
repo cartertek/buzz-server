@@ -93,9 +93,12 @@ detached deployment. Inspect it with `buzz-server deploy status [OPERATION-ID]`
 or add `--json` for the persisted record. The first release containing this path
 must be installed from an external operator session because older releases still
 run `redeploy` inline; later deployments survive Buzz Server service teardown.
-Every release must remain backward-compatible with the currently active
-configuration schema so the incoming binary can validate the old config before
-the service is stopped. A stale started operation can be retried with
+The staged configuration must be accepted by the incoming binary after
+migration, before the service is stopped. The existing
+service keeps using the previous release and configuration until that check
+passes; if the activated release fails health checks, rollback restores both
+the previous release and its configuration backup. A stale started operation
+can be retried with
 `buzz-server deploy recover OPERATION-ID`; if its staged installer is missing,
 the operation requires a fresh deploy. Standalone installer operation roots are
 retained under the runtime deployment directory for operator cleanup.
