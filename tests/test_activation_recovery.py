@@ -62,12 +62,20 @@ class ActivationRecoveryTests(unittest.TestCase):
             check=True,
         )
 
+    def assert_config_metadata(self, source):
+        metadata = self.config.stat()
+        source_metadata = source.stat()
+        self.assertEqual(metadata.st_uid, source_metadata.st_uid)
+        self.assertEqual(metadata.st_gid, source_metadata.st_gid)
+        self.assertEqual(metadata.st_mode & 0o777, 0o640)
+
     def test_before_first_swap_keeps_previous_pair_and_is_idempotent(self):
         self.current.symlink_to(self.previous)
         self.prepare()
         self.reconcile()
         self.assertEqual(self.current.resolve(), self.previous)
         self.assertEqual(self.config.read_bytes(), self.old_config)
+        self.assert_config_metadata(self.previous_config)
         self.reconcile()
         self.assertFalse(self.record.exists())
 
@@ -77,6 +85,7 @@ class ActivationRecoveryTests(unittest.TestCase):
         self.reconcile()
         self.assertEqual(self.current.resolve(), self.intended)
         self.assertEqual(self.config.read_bytes(), self.new_config)
+        self.assert_config_metadata(self.intended_config)
         self.assertFalse(self.record.exists())
 
     def test_after_second_swap_only_clears_guard(self):
@@ -85,6 +94,7 @@ class ActivationRecoveryTests(unittest.TestCase):
         self.prepare()
         self.reconcile()
         self.assertEqual(self.config.read_bytes(), self.new_config)
+        self.assert_config_metadata(self.intended_config)
         self.assertFalse(self.record.exists())
 
     def test_missing_pointer_publishes_intended_pair_after_config(self):
@@ -92,6 +102,7 @@ class ActivationRecoveryTests(unittest.TestCase):
         self.reconcile()
         self.assertEqual(self.current.resolve(), self.intended)
         self.assertEqual(self.config.read_bytes(), self.new_config)
+        self.assert_config_metadata(self.intended_config)
         self.assertFalse(self.record.exists())
 
     def test_unknown_pointer_fails_closed_and_keeps_guard(self):

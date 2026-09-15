@@ -73,12 +73,14 @@ def release_is_usable(path: Path) -> bool:
 def install_config(source: Path, destination: Path) -> None:
     if not source.is_file():
         raise RuntimeError(f"activation config is missing: {source}")
+    source_stat = source.stat()
     destination.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
     try:
         with os.fdopen(fd, "wb") as output, source.open("rb") as input_stream:
             shutil.copyfileobj(input_stream, output)
             output.flush()
+            os.fchown(output.fileno(), source_stat.st_uid, source_stat.st_gid)
             os.fchmod(output.fileno(), stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)
             os.fsync(output.fileno())
         os.replace(temporary, destination)
