@@ -1446,6 +1446,26 @@ mod tests {
     }
 
     #[test]
+    fn configured_secret_reference_failures_are_redacted() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut desired = launch(directory.path(), "true");
+        desired.secret_environment.insert(
+            "OPENAI_API_KEY".into(),
+            SecretRef {
+                key: "agent/missing/openai".into(),
+                version: Some("generation-7".into()),
+            },
+        );
+        let error = adapter(directory.path(), 1024)
+            .resolve_environment(&desired, &NoSecrets, None)
+            .unwrap_err();
+        assert_eq!(error, SupervisorError::SecretResolution);
+        let message = error.to_string();
+        assert!(!message.contains("agent/missing/openai"));
+        assert!(!message.contains("generation-7"));
+    }
+
+    #[test]
     fn preflight_does_not_receive_agent_identity_secrets() {
         let directory = tempfile::tempdir().unwrap();
         let output = directory.path().join("preflight-environment.txt");

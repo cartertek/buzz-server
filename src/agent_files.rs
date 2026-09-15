@@ -620,6 +620,50 @@ mod tests {
     }
 
     #[test]
+    fn agent_and_persona_files_round_trip_secret_references_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = AgentFileStore::new(directory.path()).unwrap();
+        let mut definition = persona();
+        definition.secret_environment.insert(
+            "OPENAI_API_KEY".into(),
+            crate::launch::SecretRef {
+                key: "agent/reviewer/openai".into(),
+                version: Some("generation-2".into()),
+            },
+        );
+        store.write_persona(&definition).unwrap();
+        assert_eq!(store.load_persona("reviewer").unwrap(), definition);
+        let persona_json =
+            std::fs::read_to_string(store.persona_path("reviewer").unwrap()).unwrap();
+        assert!(persona_json.contains("agent/reviewer/openai"));
+        assert!(!persona_json.contains("resolved-secret-value"));
+
+        let id = AgentId::new();
+        let file = store
+            .build_create_file(
+                id,
+                AgentCreateFileOptions {
+                    display_name: "Reviewer one".into(),
+                    persona_id: Some("reviewer".into()),
+                    secret_environment: BTreeMap::from([(
+                        "ANTHROPIC_API_KEY".into(),
+                        crate::launch::SecretRef {
+                            key: "agent/reviewer/anthropic".into(),
+                            version: None,
+                        },
+                    )]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        store.write_agent(&file).unwrap();
+        assert_eq!(store.load_agent(id).unwrap(), file);
+        let agent_json = std::fs::read_to_string(store.agent_path(id)).unwrap();
+        assert!(agent_json.contains("agent/reviewer/anthropic"));
+        assert!(!agent_json.contains("resolved-secret-value"));
+    }
+
+    #[test]
     fn filesystem_user_round_trips_and_resolves() {
         let directory = tempfile::tempdir().unwrap();
         let store = AgentFileStore::new(directory.path()).unwrap();

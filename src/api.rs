@@ -1065,6 +1065,30 @@ mod tests {
     }
 
     #[test]
+    fn secret_reference_maps_round_trip_through_agent_api_inputs() {
+        let mut create = input();
+        create.secret_environment.insert(
+            "OPENAI_API_KEY".into(),
+            SecretRef {
+                key: "agent/example/openai".into(),
+                version: Some("v3".into()),
+            },
+        );
+        let create_json = serde_json::to_string(&create).unwrap();
+        let loaded = serde_json::from_str::<CreateAgentInput>(&create_json).unwrap();
+        assert_eq!(loaded.secret_environment, create.secret_environment);
+        assert!(!create_json.contains("resolved-secret-value"));
+
+        let update = UpdateAgentInput {
+            secret_environment: Some(loaded.secret_environment.clone()),
+            ..Default::default()
+        };
+        let update_json = serde_json::to_string(&update).unwrap();
+        let updated = serde_json::from_str::<UpdateAgentInput>(&update_json).unwrap();
+        assert_eq!(updated.secret_environment, update.secret_environment);
+    }
+
+    #[test]
     fn deleted_state_cannot_bypass_the_delete_capability() {
         let administrator = actor(Authority::Administrator, 1);
         let handler = make_handler(PrincipalOwnership::UnixUid { uid: 2 });

@@ -5,8 +5,8 @@ use std::{collections::BTreeMap, path::Path};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    community::validate_nonempty, launch::SecretRef, AgentId, CommunityConfigId, RuntimeId,
-    ValidationError,
+    community::validate_nonempty, launch::SecretRef, provider::secret_shaped_key, AgentId,
+    CommunityConfigId, RuntimeId, ValidationError,
 };
 
 pub const DEFAULT_AGENT_PARALLELISM: u32 = 10;
@@ -58,16 +58,8 @@ pub struct RuntimeSpec {
 
 impl RuntimeSpec {
     pub fn validate(&self) -> Result<(), ValidationError> {
-        if self
-            .environment
-            .keys()
-            .any(|key| !valid_environment_key(key))
-        {
-            return Err(ValidationError::new(
-                "runtime.environment",
-                "contains an invalid environment variable name",
-            ));
-        }
+        validate_environment(&self.environment)
+            .map_err(|error| ValidationError::new("runtime.environment", error.message))?;
         validate_secret_environment(&self.environment, &self.secret_environment, "runtime")?;
         Ok(())
     }
@@ -333,6 +325,12 @@ fn validate_environment(environment: &BTreeMap<String, String>) -> Result<(), Va
             "contains an invalid environment variable name",
         ));
     }
+    if environment.keys().any(|key| secret_shaped_key(key)) {
+        return Err(ValidationError::new(
+            "environment",
+            "contains a secret-shaped key; use secret_environment with a Server secret reference",
+        ));
+    }
     Ok(())
 }
 
@@ -463,6 +461,82 @@ mod tests {
             .environment
             .insert("invalid-key".to_owned(), "secret".to_owned());
         assert_eq!(spec.validate().unwrap_err().field, "runtime.environment");
+    }
+
+    #[test]
+    fn plain_environment_rejects_secret_shaped_keys_but_accepts_ordinary_keys() {
+        let mut spec = valid_spec();
+        spec.runtime
+            .environment
+            .insert("OPENAI_API_KEY".to_owned(), "inline-value".to_owned());
+        let error = spec.validate().unwrap_err();
+        assert_eq!(error.field, "runtime.environment");
+        assert!(!error.to_string().contains("inline-value"));
+
+        let mut persona = PersonaDefinition {
+            id: "safe".into(),
+            display_name: "Safe".into(),
+            avatar_url: None,
+            system_prompt: "Safe".into(),
+            runtime: None,
+            model: None,
+            provider: None,
+            name_pool: vec![],
+            environment: BTreeMap::from([(String::from("LOG_LEVEL"), String::from("info"))]),
+            secret_environment: BTreeMap::new(),
+            respond_to: None,
+            respond_to_allowlist: vec![],
+            parallelism: None,
+            is_builtin: false,
+            is_active: true,
+            shared: false,
+        };
+        persona.validate().unwrap();
+        persona
+            .environment
+            .insert("SERVICE_PASSWORD".into(), "inline-value".into());
+        assert_eq!(persona.validate().unwrap_err().field, "environment");
+    }
+
+    #[test]
+    fn config_files_round_trip_secret_references_and_omit_legacy_field() {
+        let secret = SecretRef {
+            key: "agent/example/openai".into(),
+            version: Some("v1".into()),
+        };
+        let agent = AgentConfigFile {
+            id: AgentId::new(),
+            display_name: "Builder".into(),
+            persona_id: None,
+            avatar_url: None,
+            system_prompt: Some("Build safely.".into()),
+            system_prompt_file: None,
+            runtime: Some("codex-acp".parse().unwrap()),
+            model: None,
+            provider: None,
+            environment: BTreeMap::from([(String::from("LOG_LEVEL"), String::from("info"))]),
+            secret_environment: BTreeMap::from([(String::from("OPENAI_API_KEY"), secret)]),
+            filesystem: FilesystemConfig::default(),
+            auto_join_open_channels: AutoJoinOpenChannels::Disabled,
+            agent_args: vec![],
+            parallelism: DEFAULT_AGENT_PARALLELISM,
+            respond_to: RespondToMode::OwnerOnly,
+            respond_to_allowlist: vec![],
+            idle_timeout_seconds: None,
+            max_turn_duration_seconds: None,
+        };
+        let encoded = serde_json::to_string(&agent).unwrap();
+        assert!(encoded.contains("agent/example/openai"));
+        assert!(!encoded.contains("inline-value"));
+        assert_eq!(
+            serde_json::from_str::<AgentConfigFile>(&encoded).unwrap(),
+            agent
+        );
+
+        let mut legacy = serde_json::to_value(&agent).unwrap();
+        legacy.as_object_mut().unwrap().remove("secret_environment");
+        let loaded = serde_json::from_value::<AgentConfigFile>(legacy).unwrap();
+        assert!(loaded.secret_environment.is_empty());
     }
 
     #[test]
